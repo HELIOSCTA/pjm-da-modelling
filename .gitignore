@@ -4,7 +4,7 @@
 **/.env.*
 .mcp.json
 azure-infra/config.secrets.sh
-.claude/settings.local.json
+**/.claude/settings.local.json
 
 # Python build/dist directories
 dist/*
