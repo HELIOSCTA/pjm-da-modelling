@@ -1,0 +1,34 @@
+name: 'dbt_azure_postgresql'
+version: '1.0.0'
+
+profile: 'dbt_azure_postgresql'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  dbt_azure_postgresql:
+    power:
+      pjm:
+        +schema: pjm_cleaned_v3_2026_04_22
+        +materialized: ephemeral
+        source:
+          +materialized: ephemeral
+        staging:
+          +materialized: ephemeral
+        marts:
+          marts:
+            tables:
+              +materialized: table
+            views:
+              +materialized: view
+            feeder:
+              +materialized: view
+            modelling:
+              +materialized: table
+            utils:
+              +materialized: view
