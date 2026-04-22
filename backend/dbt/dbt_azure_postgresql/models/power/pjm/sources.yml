@@ -1,0 +1,45 @@
+version: 2
+
+sources:
+
+  - name: pjm_v1
+    schema: pjm
+    tables:
+      - name: hourly_load_metered
+        description: "Hourly metered (actual) load by load area from PJM Data Miner 2. Updated daily with ~2 day lag."
+      - name: hourly_load_prelim
+        description: "Hourly preliminary real-time load by load area from PJM Data Miner 2. Available same-day with ~1 hour lag."
+      - name: five_min_instantaneous_load_v1_2025_oct_15
+        description: "Five-minute instantaneous load by load area from PJM API. Near real-time with ~5 minute lag."
+      - name: hrl_dmd_bids
+        description: "Hourly day-ahead demand bids (cleared load) by load area and market region from PJM Data Miner 2."
+      - name: da_hrl_lmps
+        description: "Hourly day-ahead LMPs (total, energy, congestion, loss) by pricing node from PJM Data Miner 2."
+      - name: rt_settlements_verified_hourly_lmps
+        description: "Hourly real-time verified settlement LMPs by pricing node from PJM Data Miner 2. Updated with ~60 day lag."
+      - name: rt_unverified_hourly_lmps
+        description: "Hourly real-time unverified (preliminary) LMPs by pricing node from PJM Data Miner 2. Available same-day."
+      - name: seven_day_outage_forecast
+        description: "Seven-day generation outage forecast (total, planned, maintenance, forced MW) by region from PJM API."
+      - name: five_min_tie_flows
+        description: "Five-minute actual and scheduled tie flows by interface from PJM API."
+      - name: seven_day_load_forecast_v1_2025_08_13
+        description: "Seven-day hourly load forecast by forecast area from PJM API. Multiple revisions per day."
+      - name: ancillary_services
+        description: "Ancillary services prices (synchronized reserve, non-synchronized reserve, secondary reserve, regulation) from PJM Data Miner 2. Hourly grain."
+      - name: dispatched_reserves
+        description: "Dispatched reserve quantity, requirement, clearing price, and shortage indicator by area and reserve type from PJM Data Miner 2. 5-minute updates, 30-day retention."
+      - name: unverified_five_min_lmps
+        description: "Unverified 5-minute real-time LMPs by pricing hub from PJM Data Miner 2. Reveals intra-hour spike severity masked by hourly averages."
+
+  - name: gridstatus_v1
+    schema: gridstatus
+    tables:
+      - name: pjm_load_forecast
+        description: "PJM 7-day load forecast by region, ingested via GridStatus. Regions already normalized (RTO, MIDATL, WEST, SOUTH)."
+      - name: pjm_fuel_mix_hourly
+        description: "PJM hourly fuel mix generation by fuel type (coal, gas, nuclear, wind, solar, etc.) from GridStatus."
+      - name: pjm_solar_forecast_hourly
+        description: "PJM 2-day hourly solar generation forecast (front-of-meter and behind-the-meter) from GridStatus."
+      - name: pjm_wind_forecast_hourly
+        description: "PJM 2-day hourly wind generation forecast from GridStatus."
