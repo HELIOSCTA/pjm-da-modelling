@@ -47,6 +47,8 @@ services:
       - PREFECT_API_URL=http://prefect-server:4200/api
     env_file:
       - .env
+    volumes:
+      - ./cache:/app/cache
     command:
       - bash
       - -c

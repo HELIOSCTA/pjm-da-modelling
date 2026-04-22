@@ -21,14 +21,4 @@ models:
         staging:
           +materialized: ephemeral
         marts:
-          marts:
-            tables:
-              +materialized: table
-            views:
-              +materialized: view
-            feeder:
-              +materialized: view
-            modelling:
-              +materialized: table
-            utils:
-              +materialized: view
+          +materialized: ephemeral

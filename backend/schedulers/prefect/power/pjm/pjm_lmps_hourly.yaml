@@ -14,7 +14,7 @@ deployments:
   # ────── PJM LMPs Hourly ──────
   # Daily poll for next-day DA prices with tenacity retries
 
-  - name: Power - PJM LMPs Hourly
+  - name: PJM LMPs Hourly
     entrypoint: schedulers/prefect/power/pjm/pjm_lmps_hourly_flows.py:pjm_lmps_hourly
     work_pool:
       name: default-agent-pool
@@ -29,7 +29,7 @@ deployments:
   # ────── PJM LMPs Hourly Backfill ──────
   # 7-day lookback backfill, no polling
 
-  - name: Power - PJM LMPs Hourly Backfill
+  - name: PJM LMPs Hourly Backfill
     entrypoint: schedulers/prefect/power/pjm/pjm_lmps_hourly_flows.py:pjm_lmps_hourly_backfill
     work_pool:
       name: default-agent-pool
@@ -38,5 +38,5 @@ deployments:
     schedules:
 
       # ────── Daily backfill at 6:00 AM MST, data already available ──────
-      - cron: "0 6 * * *"
+      - cron: "0 4,19 * * *"
         timezone: "America/Denver"

@@ -5,18 +5,10 @@
 .mcp.json
 azure-infra/config.secrets.sh
 **/.claude/settings.local.json
-backend/test.py
 
 # Python build/dist directories
 dist/*
 *.egg-info/
-
-# Docusaurus
-node_modules/
-documentation/build/
-documentation/.docusaurus/
-documentation/.cache-loader/
-site/
 
 # Python cache files
 __pycache__/
@@ -41,9 +33,7 @@ TODO/*
 *.xlsx
 *.xlsm
 *.xlsb
+*.parquet
 
-# refactor
-.refactor/
-
-# meteologica
-backend/scripts/migrate_db_tables.py
+# cache
+backend/cache/
