@@ -1,2 +1,0 @@
-"""ICE Python ingestion package."""
-

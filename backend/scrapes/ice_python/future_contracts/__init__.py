@@ -1,2 +1,0 @@
-"""Future contracts ICE scripts."""
-

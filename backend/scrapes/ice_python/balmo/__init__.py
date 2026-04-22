@@ -1,2 +1,0 @@
-"""BALMO ICE scripts."""
-
