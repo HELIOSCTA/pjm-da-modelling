@@ -1,0 +1,27 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM LMPs DA ──────
+  # Daily poll for next-day DA prices with tenacity retries
+
+  - name: Power - PJM LMPs DA
+    entrypoint: schedulers/prefect/power/pjm/pjm_lmps_da_flows.py:pjm_lmps_da
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, lmps_da]
+    schedules:
+
+      # ────── Daily run at 11:00 AM MST (1:00 PM EPT), polls every 10s until data lands ──────
+      - cron: "0 11 * * *"
+        timezone: "America/Denver"

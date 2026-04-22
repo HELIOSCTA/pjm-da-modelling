@@ -1,0 +1,31 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM LMPs Daily ──────
+  # Twice-daily scrape of DA hourly (7-day backfill, no polling) + RT settlements
+  # verified hourly LMPs and rebuild of the pjm_lmps_hourly mart. PJM publishes
+  # DA ~12:00–13:30 EPT and RT verified ~11:00–12:00 EST on biz days; we run
+  # at 06:00 (catches yesterday's late corrections) and 23:00 (end-of-day
+  # final scrape before the next intra-day cycle).
+
+  - name: Power - PJM LMPs Daily
+    entrypoint: schedulers/prefect/power/pjm/pjm_lmps_daily_flows.py:pjm_lmps_daily
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, lmps, daily]
+    schedules:
+
+      # ────── 06:00 and 23:00 daily ──────
+      - cron: "0 6,23 * * *"
+        timezone: "America/Denver"

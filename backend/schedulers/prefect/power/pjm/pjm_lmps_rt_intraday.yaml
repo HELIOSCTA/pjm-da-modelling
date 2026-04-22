@@ -1,0 +1,29 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM LMPs RT Intraday ──────
+  # Hourly scrape of RT unverified hourly + 5-min LMPs and rebuild of the
+  # pjm_lmps_hourly mart. Provides intra-day freshness; the daily flow
+  # later overrides these values with verified settlements via priority ranking.
+
+  - name: Power - PJM LMPs RT Intraday
+    entrypoint: schedulers/prefect/power/pjm/pjm_lmps_rt_intraday_flows.py:pjm_lmps_rt_intraday
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, lmps_rt, intraday]
+    schedules:
+
+      # ────── Hourly at the top of the hour ──────
+      - cron: "0 * * * *"
+        timezone: "America/Denver"

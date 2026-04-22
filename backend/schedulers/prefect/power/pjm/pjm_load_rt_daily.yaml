@@ -1,0 +1,30 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Load RT Daily ──────
+  # Twice-daily scrape of hourly metered + prelim load and rebuild of the
+  # pjm_load_rt_hourly mart. PJM publishes prelim ~04:55 EPT and metered
+  # ~05:30 EPT; we run at 06:00 (after both land) and again at 23:00 to
+  # catch any late corrections before the next day's intra-day cycle.
+
+  - name: Power - PJM Load RT Daily
+    entrypoint: schedulers/prefect/power/pjm/pjm_load_rt_daily_flows.py:pjm_load_rt_daily
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, load_rt, daily]
+    schedules:
+
+      # ────── 06:00 and 23:00 daily ──────
+      - cron: "0 6,23 * * *"
+        timezone: "America/Denver"

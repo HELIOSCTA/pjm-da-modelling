@@ -1,0 +1,29 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Load RT Intraday ──────
+  # Hourly scrape of 5-min instantaneous load + rebuild of incremental
+  # pjm_load_rt_hourly mart. Provides intra-day freshness; the daily flow
+  # later overrides these values with metered/prelim via priority ranking.
+
+  - name: Power - PJM Load RT Intraday
+    entrypoint: schedulers/prefect/power/pjm/pjm_load_rt_intraday_flows.py:pjm_load_rt_intraday
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, load_rt, intraday]
+    schedules:
+
+      # ────── Hourly at the top of the hour ──────
+      - cron: "0 * * * *"
+        timezone: "America/Denver"

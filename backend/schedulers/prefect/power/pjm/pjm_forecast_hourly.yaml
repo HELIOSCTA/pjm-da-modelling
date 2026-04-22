@@ -1,0 +1,29 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Forecast Hourly ──────
+  # Hourly umbrella: scrape PJM load + gridstatus solar/wind forecasts,
+  # rebuild dbt forecast marts (load, solar, wind, net_load — DA cutoff),
+  # then export each mart to parquet for downstream consumers.
+
+  - name: Power - PJM Forecast Hourly
+    entrypoint: schedulers/prefect/power/pjm/pjm_forecast_hourly_flows.py:pjm_forecast_hourly
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, forecast_hourly]
+    schedules:
+
+      # ────── Hourly at the top of the hour ──────
+      - cron: "0 * * * *"
+        timezone: "America/Denver"
