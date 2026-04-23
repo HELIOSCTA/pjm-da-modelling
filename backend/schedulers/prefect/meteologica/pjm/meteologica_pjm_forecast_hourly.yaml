@@ -1,0 +1,31 @@
+name: helioscta-meteologica-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── Meteologica PJM Forecast Hourly ──────
+  # Hourly umbrella: scrape Meteologica load + solar + wind forecasts
+  # (4 regions each: RTO, MIDATL, SOUTH, WEST), rebuild dbt DA-cutoff marts
+  # (load, solar, wind, net_load), then export each mart to parquet.
+
+  - name: Meteologica PJM Forecast Hourly
+    entrypoint: schedulers/prefect/meteologica/pjm/meteologica_pjm_forecast_hourly_flows.py:meteologica_pjm_forecast_hourly
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, meteologica, forecast_hourly]
+    schedules:
+
+      # ────── Hourly at :35 EPT ──────
+      # Meteologica issues updates every 30 min on the quarter (e.g. :15, :45);
+      # running at :35 EPT catches the :15 issue after it has fully propagated.
+      - cron: "35 * * * *"
+        timezone: "America/New_York"
