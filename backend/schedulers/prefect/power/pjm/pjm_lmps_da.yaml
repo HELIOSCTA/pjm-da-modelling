@@ -14,7 +14,7 @@ deployments:
   # ────── PJM LMPs DA ──────
   # Daily poll for next-day DA prices with tenacity retries
 
-  - name: Power - PJM LMPs DA
+  - name: PJM LMPs DA
     entrypoint: schedulers/prefect/power/pjm/pjm_lmps_da_flows.py:pjm_lmps_da
     work_pool:
       name: default-agent-pool

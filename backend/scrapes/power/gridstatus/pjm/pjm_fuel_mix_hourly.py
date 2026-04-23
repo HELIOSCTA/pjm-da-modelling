@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import gridstatus
+from gridstatus.base import NoDataFoundException
 
 from backend.utils import (
     azure_postgresql_utils as azure_postgresql,
@@ -153,10 +154,17 @@ def main(
 
         logger.header(f"{API_SCRAPE_NAME}")
 
+        succeeded: list[str] = []
+        no_data: list[str] = []
         for date in dates:
 
             logger.section(f"Pulling data for {date}...")
-            df = _pull(date=date)
+            try:
+                df = _pull(date=date)
+            except NoDataFoundException as e:
+                no_data.append(str(date))
+                logger.warning(f"Upstream has no data for {date} yet: {e} — skipping")
+                continue
 
             # format
             logger.section(f"Formatting data...")
@@ -166,7 +174,13 @@ def main(
             logger.section(f"Upserting {len(df)} rows...")
             _upsert(df)
             logger.success(f"Successfully pulled and upserted data for {date}!")
+            succeeded.append(str(date))
 
+        if not succeeded:
+            # All dates empty — surface to the flow so it can classify as no-data.
+            raise NoDataFoundException(
+                f"No data found for any of {dates} (upstream gap)"
+            )
 
         run.success(rows_processed=len(df) if 'df' in locals() else 0)
 

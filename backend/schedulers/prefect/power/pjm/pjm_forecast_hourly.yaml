@@ -16,7 +16,7 @@ deployments:
   # rebuild dbt forecast marts (load, solar, wind, net_load — DA cutoff),
   # then export each mart to parquet for downstream consumers.
 
-  - name: Power - PJM Forecast Hourly
+  - name: PJM Forecast Hourly
     entrypoint: schedulers/prefect/power/pjm/pjm_forecast_hourly_flows.py:pjm_forecast_hourly
     work_pool:
       name: default-agent-pool
@@ -24,6 +24,8 @@ deployments:
     tags: [pjm, power, forecast_hourly]
     schedules:
 
-      # ────── Hourly at the top of the hour ──────
-      - cron: "0 * * * *"
+      # ────── Hourly at :05 ──────
+      # Upstream forecasts (PJM load, gridstatus solar/wind) publish at/near
+      # the top of the hour; a 5-minute buffer lets them finalize.
+      - cron: "5 * * * *"
         timezone: "America/Denver"

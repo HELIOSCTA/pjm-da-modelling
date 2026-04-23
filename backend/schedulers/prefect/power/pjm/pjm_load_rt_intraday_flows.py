@@ -5,13 +5,12 @@ from pathlib import Path
 from dbt.cli.main import dbtRunner
 from prefect import flow
 
-from backend.settings import CACHE_DIR, DBT_PROJECT_DIR
+from backend.settings import CACHE_DIR, DBT_PROJECT_DIR, DBT_SCHEMA
 from backend.utils import logging_utils, pipeline_run_logger, azure_postgresql_utils
 
 
 logger = logging.getLogger(__name__)
 
-DBT_SCHEMA = "pjm_cleaned_v3_2026_04_22"
 MART = "pjm_load_rt_hourly"
 
 

@@ -19,7 +19,7 @@ deployments:
   # Upstream cadence: PJM posts the feed daily at 06:00 EPT (04:00 MST).
   # We run at 05:00 MST to give the publisher a one-hour buffer.
 
-  - name: Power - PJM Outages Daily
+  - name: PJM Outages Daily
     entrypoint: schedulers/prefect/power/pjm/pjm_outages_daily_flows.py:pjm_outages_daily
     work_pool:
       name: default-agent-pool

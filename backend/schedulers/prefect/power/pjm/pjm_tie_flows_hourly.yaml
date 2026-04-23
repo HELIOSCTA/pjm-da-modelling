@@ -15,11 +15,11 @@ deployments:
   # Hourly umbrella: scrape PJM 5-min tie flows, rebuild dbt hourly
   # aggregation mart, export parquet.
   #
-  # Upstream posts every 5 min. We run 5 minutes past the hour so the
+  # Upstream posts every 5 min. We run 15 minutes past the hour so the
   # just-completed hour has all twelve 5-min intervals landed before
-  # dbt aggregates. Staggered off the forecast flow at :00.
+  # dbt aggregates. Staggered off forecast (:05) and fuel_mix (:10).
 
-  - name: Power - PJM Tie Flows Hourly
+  - name: PJM Tie Flows Hourly
     entrypoint: schedulers/prefect/power/pjm/pjm_tie_flows_hourly_flows.py:pjm_tie_flows_hourly
     work_pool:
       name: default-agent-pool
@@ -27,6 +27,6 @@ deployments:
     tags: [pjm, power, tie_flows_hourly]
     schedules:
 
-      # ────── Hourly at :05 ──────
-      - cron: "5 * * * *"
+      # ────── Hourly at :15 ──────
+      - cron: "15 * * * *"
         timezone: "America/Denver"

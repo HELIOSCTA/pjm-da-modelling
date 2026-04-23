@@ -18,7 +18,7 @@ deployments:
   # at 06:00 (catches yesterday's late corrections) and 23:00 (end-of-day
   # final scrape before the next intra-day cycle).
 
-  - name: Power - PJM LMPs Daily
+  - name: PJM LMPs Daily
     entrypoint: schedulers/prefect/power/pjm/pjm_lmps_daily_flows.py:pjm_lmps_daily
     work_pool:
       name: default-agent-pool

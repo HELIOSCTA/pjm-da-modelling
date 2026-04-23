@@ -16,7 +16,7 @@ deployments:
   # pjm_load_rt_hourly mart. Provides intra-day freshness; the daily flow
   # later overrides these values with metered/prelim via priority ranking.
 
-  - name: Power - PJM Load RT Intraday
+  - name: PJM Load RT Intraday
     entrypoint: schedulers/prefect/power/pjm/pjm_load_rt_intraday_flows.py:pjm_load_rt_intraday
     work_pool:
       name: default-agent-pool
@@ -24,6 +24,8 @@ deployments:
     tags: [pjm, power, load_rt, intraday]
     schedules:
 
-      # ────── Hourly at the top of the hour ──────
-      - cron: "0 * * * *"
+      # ────── Hourly at :20 ──────
+      # 5-min instantaneous load posts every 5 min; by :20 the prior hour's
+      # final interval has landed. Staggered off tie_flows (:10) and fuel_mix (:15).
+      - cron: "20 * * * *"
         timezone: "America/Denver"

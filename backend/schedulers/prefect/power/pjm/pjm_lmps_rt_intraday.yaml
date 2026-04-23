@@ -16,7 +16,7 @@ deployments:
   # pjm_lmps_hourly mart. Provides intra-day freshness; the daily flow
   # later overrides these values with verified settlements via priority ranking.
 
-  - name: Power - PJM LMPs RT Intraday
+  - name: PJM LMPs RT Intraday
     entrypoint: schedulers/prefect/power/pjm/pjm_lmps_rt_intraday_flows.py:pjm_lmps_rt_intraday
     work_pool:
       name: default-agent-pool
@@ -24,6 +24,8 @@ deployments:
     tags: [pjm, power, lmps_rt, intraday]
     schedules:
 
-      # ────── Hourly at the top of the hour ──────
-      - cron: "0 * * * *"
+      # ────── Hourly at :25 ──────
+      # PJM posts RT unverified hourly LMPs ~:15–:20 past the hour once the
+      # market interval settles; :25 gives a buffer and stays off the other flows.
+      - cron: "25 * * * *"
         timezone: "America/Denver"

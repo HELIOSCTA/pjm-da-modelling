@@ -18,7 +18,7 @@ deployments:
   # gridstatus feed is hourly. We run 10 minutes past the hour —
   # small stagger off tie-flows (:05) and forecasts (:00).
 
-  - name: Power - PJM Fuel Mix Hourly
+  - name: PJM Fuel Mix Hourly
     entrypoint: schedulers/prefect/power/pjm/pjm_fuel_mix_hourly_flows.py:pjm_fuel_mix_hourly
     work_pool:
       name: default-agent-pool

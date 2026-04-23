@@ -17,7 +17,7 @@ deployments:
   # ~05:30 EPT; we run at 06:00 (after both land) and again at 23:00 to
   # catch any late corrections before the next day's intra-day cycle.
 
-  - name: Power - PJM Load RT Daily
+  - name: PJM Load RT Daily
     entrypoint: schedulers/prefect/power/pjm/pjm_load_rt_daily_flows.py:pjm_load_rt_daily
     work_pool:
       name: default-agent-pool
