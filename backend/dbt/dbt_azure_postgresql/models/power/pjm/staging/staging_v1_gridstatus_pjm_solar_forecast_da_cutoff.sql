@@ -13,8 +13,9 @@
 WITH all_forecasts AS (
     SELECT * FROM {{ ref('pjm_gridstatus_solar_forecast_hourly') }}
     WHERE
-        forecast_execution_datetime_local::TIME <= '10:00:00'
-        AND forecast_execution_datetime_local::DATE = (CURRENT_TIMESTAMP AT TIME ZONE 'US/Eastern')::DATE - 1
+        forecast_execution_datetime_local <=
+            (CURRENT_TIMESTAMP AT TIME ZONE 'US/Eastern')::DATE + TIME '10:00:00'
+        AND forecast_date >= (CURRENT_TIMESTAMP AT TIME ZONE 'US/Eastern')::DATE
 ),
 
 -- ────── Latest pre-10 AM EPT revision per forecast_date × hour_ending ──────

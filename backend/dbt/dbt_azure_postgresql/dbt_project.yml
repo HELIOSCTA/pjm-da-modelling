@@ -12,13 +12,39 @@ clean-targets:
 
 models:
   dbt_azure_postgresql:
+    +schema: pjm_da_modelling_cleaned
+    +materialized: ephemeral
+    
     power:
       pjm:
-        +schema: pjm_cleaned_v3_2026_04_22
-        +materialized: ephemeral
         source:
           +materialized: ephemeral
         staging:
           +materialized: ephemeral
         marts:
           +materialized: ephemeral
+
+    meteologica:
+      pjm:
+        source:
+          +materialized: ephemeral
+        staging:
+          +materialized: ephemeral
+        marts:
+          +materialized: ephemeral
+
+    ice_python:
+      source:
+        +materialized: ephemeral
+      staging:
+        +materialized: ephemeral
+      marts:
+        +materialized: ephemeral
+
+    wsi:
+      source:
+        +materialized: ephemeral
+      staging:
+        +materialized: ephemeral
+      marts:
+        +materialized: ephemeral
