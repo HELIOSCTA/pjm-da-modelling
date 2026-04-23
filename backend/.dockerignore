@@ -24,10 +24,6 @@ __pycache__
 *.log
 *.tmp
 
-# Secrets — never bake into images (loaded at runtime via env_file in compose)
-.env
-.env.*
-
 # Local cache — bind-mounted from host at runtime
 cache/
 
