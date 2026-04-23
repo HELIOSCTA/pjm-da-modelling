@@ -1,0 +1,38 @@
+version: 2
+
+sources:
+
+  - name: meteologica_pjm_v1
+    schema: meteologica
+    description: "Meteologica xTraders PJM forecasts (hourly). Raw tables ingested via backend.scrapes.power.meteologica.pjm."
+    tables:
+
+      # Demand -- RTO + 3 macro regions
+      - name: usa_pjm_power_demand_forecast_hourly
+        description: "PJM RTO power demand forecast (hourly, Meteologica)."
+      - name: usa_pjm_midatlantic_power_demand_forecast_hourly
+        description: "PJM MIDATL power demand forecast (hourly, Meteologica)."
+      - name: usa_pjm_south_power_demand_forecast_hourly
+        description: "PJM SOUTH power demand forecast (hourly, Meteologica)."
+      - name: usa_pjm_west_power_demand_forecast_hourly
+        description: "PJM WEST power demand forecast (hourly, Meteologica)."
+
+      # Solar (PV) generation -- RTO + 3 macro regions
+      - name: usa_pjm_pv_power_generation_forecast_hourly
+        description: "PJM RTO solar (PV) power generation forecast (hourly, Meteologica)."
+      - name: usa_pjm_midatlantic_pv_power_generation_forecast_hourly
+        description: "PJM MIDATL solar (PV) power generation forecast (hourly, Meteologica)."
+      - name: usa_pjm_south_pv_power_generation_forecast_hourly
+        description: "PJM SOUTH solar (PV) power generation forecast (hourly, Meteologica)."
+      - name: usa_pjm_west_pv_power_generation_forecast_hourly
+        description: "PJM WEST solar (PV) power generation forecast (hourly, Meteologica)."
+
+      # Wind generation -- RTO + 3 macro regions
+      - name: usa_pjm_wind_power_generation_forecast_hourly
+        description: "PJM RTO wind power generation forecast (hourly, Meteologica)."
+      - name: usa_pjm_midatlantic_wind_power_generation_forecast_hourly
+        description: "PJM MIDATL wind power generation forecast (hourly, Meteologica)."
+      - name: usa_pjm_south_wind_power_generation_forecast_hourly
+        description: "PJM SOUTH wind power generation forecast (hourly, Meteologica)."
+      - name: usa_pjm_west_wind_power_generation_forecast_hourly
+        description: "PJM WEST wind power generation forecast (hourly, Meteologica)."
