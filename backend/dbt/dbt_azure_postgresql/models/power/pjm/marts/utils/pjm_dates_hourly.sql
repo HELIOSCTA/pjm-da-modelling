@@ -16,20 +16,23 @@ SELECT
     ,datetime + INTERVAL '1 hour' AS datetime_ending_local
     ,date
     ,hour_ending
-    ,year
-    ,year_month
+    -- ,year
+    -- ,year_month
     ,summer_winter
     ,summer_winter_yyyy
     ,month
-    ,mm_dd
-    ,mm_dd_cy
-    ,eia_storage_week
-    ,eia_storage_week_number
+    -- ,mm_dd
+    -- ,mm_dd_cy
+    -- ,eia_storage_week
+    -- ,eia_storage_week_number
     ,period
     ,is_offpeak_with_weekends_holidays
-    ,day_of_week
+    -- ,day_of_week
     ,day_of_week_number
     ,is_weekend
     ,is_nerc_holiday
+    ,is_federal_holiday
+    ,is_soft_holiday
+    ,is_bridge_day
 FROM UTILS
 ORDER BY datetime_ending_local DESC
