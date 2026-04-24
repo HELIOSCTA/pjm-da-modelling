@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger().handlers[0].setLevel(logging.DEBUG)
 
 from backend import (
-    secrets,
+    credentials,
 )
 
 """
@@ -33,10 +33,10 @@ def _connect_to_azure_postgressql(
     """
     """
     connection = psycopg2.connect(
-        user=secrets.AZURE_POSTGRESQL_DB_USER,
-        password=secrets.AZURE_POSTGRESQL_DB_PASSWORD,
-        host=secrets.AZURE_POSTGRESQL_DB_HOST,
-        port=secrets.AZURE_POSTGRESQL_DB_PORT,
+        user=credentials.AZURE_POSTGRESQL_DB_USER,
+        password=credentials.AZURE_POSTGRESQL_DB_PASSWORD,
+        host=credentials.AZURE_POSTGRESQL_DB_HOST,
+        port=credentials.AZURE_POSTGRESQL_DB_PORT,
         dbname=database,
     )
     return connection
@@ -342,9 +342,9 @@ def upsert_to_azure_postgresql(
 """
 
 if __name__ == "__main__":
-    print(f"BACKEND_ENV={secrets.BACKEND_ENV}")
-    print(f"HOST={secrets.AZURE_POSTGRESQL_DB_HOST}")
-    print(f"USER={secrets.AZURE_POSTGRESQL_DB_USER}")
+    print(f"BACKEND_ENV={credentials.BACKEND_ENV}")
+    print(f"HOST={credentials.AZURE_POSTGRESQL_DB_HOST}")
+    print(f"USER={credentials.AZURE_POSTGRESQL_DB_USER}")
     print()
     conn = _connect_to_azure_postgressql()
     cur = conn.cursor()

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from backend import secrets
+from backend import credentials
 from backend.orchestration.power.pjm._policies import (
     DataNotYetAvailable,
     api_poll_policy,
@@ -48,7 +48,7 @@ def _build_url(
         f"&datetime_beginning_ept={start_date}%20to%20{end_date}"
         f"&type=hub"
         f"&format=csv"
-        f"&subscription-key={secrets.PJM_API_KEY}"
+        f"&subscription-key={credentials.PJM_API_KEY}"
     )
     logger.info(f"Built URL: {url}")
     return url

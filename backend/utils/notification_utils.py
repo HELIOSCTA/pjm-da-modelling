@@ -4,7 +4,7 @@ import logging
 
 import requests
 
-from backend import secrets
+from backend import credentials
 from backend.utils import azure_postgresql_utils as azure_postgresql
 
 logger = logging.getLogger("utils.notification_utils")
@@ -52,7 +52,7 @@ def send_slack_notification(
         pipeline: Pipeline name shown in the header (optional).
         fields:   Extra key/value pairs rendered as a two-column section.
     """
-    webhook_url = secrets.SLACK_DEFAULT_WEBHOOK_URL
+    webhook_url = credentials.SLACK_DEFAULT_WEBHOOK_URL
     if not webhook_url:
         raise ValueError("SLACK_DEFAULT_WEBHOOK_URL is not set")
 

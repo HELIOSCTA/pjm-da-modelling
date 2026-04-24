@@ -27,7 +27,7 @@ from typing import Literal
 import jwt
 import requests
 
-from backend import secrets
+from backend import credentials
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +38,12 @@ Account = Literal["l48", "iso"]
 # Credentials lookup by account
 _CREDENTIALS: dict[Account, tuple[str, str]] = {
     "l48": (
-        secrets.XTRADERS_API_USERNAME_L48,
-        secrets.XTRADERS_API_PASSWORD_L48,
+        credentials.XTRADERS_API_USERNAME_L48,
+        credentials.XTRADERS_API_PASSWORD_L48,
     ),
     "iso": (
-        secrets.XTRADERS_API_USERNAME_ISO,
-        secrets.XTRADERS_API_PASSWORD_ISO,
+        credentials.XTRADERS_API_USERNAME_ISO,
+        credentials.XTRADERS_API_PASSWORD_ISO,
     ),
 }
 

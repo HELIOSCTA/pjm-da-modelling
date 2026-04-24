@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from backend import secrets
+from backend import credentials
 from backend.utils import (
     azure_postgresql_utils as azure_postgresql,
     logging_utils,

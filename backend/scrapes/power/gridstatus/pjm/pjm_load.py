@@ -11,7 +11,7 @@ from backend.utils import (
     pipeline_run_logger,
 )
 
-from backend import secrets
+from backend import credentials
 
 # SCRAPE
 API_SCRAPE_NAME = "pjm_load"
@@ -97,7 +97,7 @@ def _pull(
         end_date: datetime,
     ):
 
-    iso = gridstatus.PJM(api_key=secrets.PJM_API_KEY)
+    iso = gridstatus.PJM(api_key=credentials.PJM_API_KEY)
     df = iso.get_load(
         date=start_date.strftime("%Y-%m-%d"),
         end=end_date.strftime("%Y-%m-%d"),

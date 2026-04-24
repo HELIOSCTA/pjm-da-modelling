@@ -10,7 +10,7 @@ from backend.utils import (
     pipeline_run_logger,
 )
 
-from backend import secrets
+from backend import credentials
 
 # SCRAPE
 API_SCRAPE_NAME = "pjm_wind_forecast_hourly"
@@ -98,7 +98,7 @@ def _pull(
         date,
     ):
 
-    iso = gridstatus.PJM(api_key=secrets.PJM_API_KEY)
+    iso = gridstatus.PJM(api_key=credentials.PJM_API_KEY)
     df = iso.get_wind_forecast_hourly(date=date)
 
     return df

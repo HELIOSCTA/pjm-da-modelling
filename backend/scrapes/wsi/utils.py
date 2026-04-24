@@ -11,7 +11,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from backend import secrets
+from backend import credentials
 
 CONFIG_DIR = Path(__file__).parent
 
@@ -30,9 +30,9 @@ SENSITIVE_QUERY_KEYS = {"Account", "Profile", "Password"}
 def _get_wsi_trader_credentials() -> dict[str, str]:
 
     return {
-        "Account": secrets.WSI_TRADER_USERNAME,
-        "Profile": secrets.WSI_TRADER_NAME,
-        "Password": secrets.WSI_TRADER_PASSWORD,
+        "Account": credentials.WSI_TRADER_USERNAME,
+        "Profile": credentials.WSI_TRADER_NAME,
+        "Password": credentials.WSI_TRADER_PASSWORD,
     }
 
 

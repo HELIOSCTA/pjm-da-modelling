@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).parent
 
 # Load .env before reading env vars below so settings are populated regardless
-# of whether backend.secrets has been imported yet.
+# of whether backend.credentials has been imported yet.
 _env_file = BASE_DIR / ".env"
 if _env_file.exists():
     load_dotenv(dotenv_path=_env_file, override=False)
