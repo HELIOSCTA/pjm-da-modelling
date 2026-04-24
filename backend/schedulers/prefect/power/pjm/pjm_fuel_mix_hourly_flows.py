@@ -6,8 +6,8 @@ from dbt.cli.main import dbtRunner
 from gridstatus.base import NoDataFoundException
 from prefect import flow, task
 
-from backend.settings import CACHE_DIR, DBT_PROJECT_DIR, DBT_SCHEMA
-from backend.utils import logging_utils, pipeline_run_logger, azure_postgresql_utils
+from backend.settings import DBT_PROJECT_DIR, DBT_SCHEMA
+from backend.utils import logging_utils, pipeline_run_logger, azure_postgresql_utils, model_cache_utils
 
 
 logger = logging.getLogger(__name__)
@@ -98,9 +98,7 @@ def pjm_fuel_mix_hourly():
             df = azure_postgresql_utils.pull_from_db(
                 f"SELECT * FROM {DBT_SCHEMA}.{mart}"
             )
-            cache_file = CACHE_DIR / f"{mart}.parquet"
-            df.to_parquet(cache_file, index=False)
-            logger.info(f"Wrote {len(df):,} rows → {cache_file}")
+            model_cache_utils.write_mart_cache(df, mart=mart, pipeline_name=__name__)
 
         if hard_failures:
             raise RuntimeError(

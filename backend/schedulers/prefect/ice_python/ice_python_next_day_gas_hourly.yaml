@@ -1,0 +1,32 @@
+name: helioscta-ice-python
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── ICE Python Next-Day Gas Hourly ──────
+  # Hourly cache refresh from the dbt hourly mart (10 PJM-relevant hubs).
+  # The ICE scrape runs on the Windows Task Scheduler host; the mart is a
+  # dbt view over the raw table, so this flow only pulls the current view
+  # state to parquet — no scrape, no dbt.
+
+  - name: ICE Python Next-Day Gas Hourly
+    entrypoint: schedulers/prefect/ice_python/ice_python_next_day_gas_hourly_flows.py:ice_python_next_day_gas_hourly
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, ice_python, next_day_gas, hourly]
+    schedules:
+
+      # ────── Every 15 min at :05/:20/:35/:50 MT, 06:05–09:50 weekdays ──────
+      # Trails the Windows Task Scheduler next-day-gas scrape (fires every 15 min
+      # 06:00–09:45 MT) by 5 minutes so each scrape has finished before we cache.
+      - cron: "5,20,35,50 6-9 * * 1-5"
+        timezone: "America/Denver"

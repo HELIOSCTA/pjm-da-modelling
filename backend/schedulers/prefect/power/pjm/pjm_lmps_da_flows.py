@@ -8,9 +8,9 @@ from dbt.cli.main import dbtRunner
 from prefect import flow
 
 
-from backend.settings import CACHE_DIR, DBT_PROJECT_DIR, DBT_SCHEMA
+from backend.settings import DBT_PROJECT_DIR, DBT_SCHEMA
 from backend.schedulers.prefect.power.pjm.pjm_lmps_da_notifications import notify_da_lmps
-from backend.utils import logging_utils, pipeline_run_logger, azure_postgresql_utils
+from backend.utils import logging_utils, pipeline_run_logger, azure_postgresql_utils, model_cache_utils
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,7 @@ def pjm_lmps_da():
 
         # ────── 4. Pull mart from Postgres and export to parquet ──────
         df = azure_postgresql_utils.pull_from_db(f"SELECT * FROM {DBT_SCHEMA}.{MART}")
-        cache_file = CACHE_DIR / f"{MART}.parquet"
-        df.to_parquet(cache_file, index=False)
-        logger.info(f"Wrote {len(df):,} rows → {cache_file}")
+        model_cache_utils.write_mart_cache(df, mart=MART, pipeline_name=__name__)
 
         run.success()
     except Exception as e:

@@ -5,8 +5,8 @@ from pathlib import Path
 from dbt.cli.main import dbtRunner
 from prefect import flow, task
 
-from backend.settings import CACHE_DIR, DBT_PROJECT_DIR, DBT_SCHEMA
-from backend.utils import azure_postgresql_utils, logging_utils, pipeline_run_logger
+from backend.settings import DBT_PROJECT_DIR, DBT_SCHEMA
+from backend.utils import azure_postgresql_utils, logging_utils, pipeline_run_logger, model_cache_utils
 
 
 logger = logging.getLogger(__name__)
@@ -59,9 +59,7 @@ def wsi_hourly_forecast():
 
         # ────── 3. Pull mart from Postgres and export to parquet ──────
         df = azure_postgresql_utils.pull_from_db(f"SELECT * FROM {DBT_SCHEMA}.{MART}")
-        cache_file = CACHE_DIR / f"{MART}.parquet"
-        df.to_parquet(cache_file, index=False)
-        logger.info(f"Wrote {len(df):,} rows → {cache_file}")
+        model_cache_utils.write_mart_cache(df, mart=MART, pipeline_name=__name__)
 
         run.success()
     except Exception as e:
