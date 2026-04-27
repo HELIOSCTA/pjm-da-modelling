@@ -28,8 +28,16 @@ logger = logging.getLogger(__name__)
 _FILTER_COLS = ["day_of_week_number", "dow_group", "is_nerc_holiday"]
 
 
-def _load_daily_aggregates(df_hourly: pd.DataFrame, value_col: str) -> pd.DataFrame:
-    """Compute load-level and ramp features from hourly data for one region."""
+def _load_daily_aggregates(
+    df_hourly: pd.DataFrame,
+    value_col: str,
+    prefix: str = "load",
+) -> pd.DataFrame:
+    """Compute level and ramp features from hourly data for one region.
+
+    The prefix (default ``"load"``) controls output column names so the same
+    aggregator can produce ``load_*`` or ``net_load_*`` daily features.
+    """
     if df_hourly is None or len(df_hourly) == 0:
         return pd.DataFrame(columns=["date"])
 
@@ -47,16 +55,20 @@ def _load_daily_aggregates(df_hourly: pd.DataFrame, value_col: str) -> pd.DataFr
     daily = (
         df.groupby("date")
         .agg(
-            load_daily_avg=(value_col, "mean"),
-            load_daily_peak=(value_col, "max"),
-            load_daily_valley=(value_col, "min"),
+            **{
+                f"{prefix}_daily_avg": (value_col, "mean"),
+                f"{prefix}_daily_peak": (value_col, "max"),
+                f"{prefix}_daily_valley": (value_col, "min"),
+            }
         )
         .reset_index()
     )
 
     df["ramp"] = df.groupby("date")[value_col].diff()
     daily = daily.merge(
-        df.groupby("date", as_index=False)["ramp"].max().rename(columns={"ramp": "load_ramp_max"}),
+        df.groupby("date", as_index=False)["ramp"]
+        .max()
+        .rename(columns={"ramp": f"{prefix}_ramp_max"}),
         on="date",
         how="left",
     )
@@ -70,9 +82,82 @@ def _load_daily_aggregates(df_hourly: pd.DataFrame, value_col: str) -> pd.DataFr
     daily = daily.merge(he8, on="date", how="left")
     daily = daily.merge(he15, on="date", how="left")
     daily = daily.merge(he20, on="date", how="left")
-    daily["load_morning_ramp"] = daily["he8"] - daily["he5"]
-    daily["load_evening_ramp"] = daily["he20"] - daily["he15"]
+    daily[f"{prefix}_morning_ramp"] = daily["he8"] - daily["he5"]
+    daily[f"{prefix}_evening_ramp"] = daily["he20"] - daily["he15"]
     return daily.drop(columns=["he5", "he8", "he15", "he20"])
+
+
+def _build_net_load_features_pool(
+    df_rt_load: pd.DataFrame | None,
+    df_fuel_mix: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Pool-side net-load features from realized RTO load minus realized solar+wind.
+
+    Mirrors the renewables pool pattern: pool uses realized values, query uses
+    forecasts. Output columns: net_load_daily_avg / peak / valley / *_morning_ramp /
+    *_evening_ramp.
+    """
+    if df_rt_load is None or len(df_rt_load) == 0:
+        return pd.DataFrame(columns=["date"])
+    if df_fuel_mix is None or len(df_fuel_mix) == 0:
+        return pd.DataFrame(columns=["date"])
+    if "solar" not in df_fuel_mix.columns or "wind" not in df_fuel_mix.columns:
+        return pd.DataFrame(columns=["date"])
+
+    rt = df_rt_load.copy()
+    if "region" in rt.columns:
+        rt = rt[rt["region"] == configs.LOAD_REGION]
+    if len(rt) == 0 or "rt_load_mw" not in rt.columns:
+        return pd.DataFrame(columns=["date"])
+
+    rt = rt[["date", "hour_ending", "rt_load_mw"]].copy()
+    fm = df_fuel_mix[["date", "hour_ending", "solar", "wind"]].copy()
+
+    rt["date"] = pd.to_datetime(rt["date"]).dt.date
+    fm["date"] = pd.to_datetime(fm["date"]).dt.date
+
+    merged = rt.merge(fm, on=["date", "hour_ending"], how="inner")
+    if len(merged) == 0:
+        return pd.DataFrame(columns=["date"])
+
+    merged["rt_load_mw"] = pd.to_numeric(merged["rt_load_mw"], errors="coerce")
+    merged["solar"] = pd.to_numeric(merged["solar"], errors="coerce").fillna(0.0)
+    merged["wind"] = pd.to_numeric(merged["wind"], errors="coerce").fillna(0.0)
+    merged["net_load"] = merged["rt_load_mw"] - merged["solar"] - merged["wind"]
+    merged = merged.dropna(subset=["net_load"])
+
+    return _load_daily_aggregates(
+        merged[["date", "hour_ending", "net_load"]],
+        value_col="net_load",
+        prefix="net_load",
+    )
+
+
+def _build_net_load_features_query(
+    df_net_load_forecast: pd.DataFrame | None,
+    target_date: date,
+) -> pd.DataFrame:
+    """Query-side net-load features from the forward net-load forecast parquet."""
+    if df_net_load_forecast is None or len(df_net_load_forecast) == 0:
+        return pd.DataFrame(columns=["date"])
+    if "net_load_forecast_mw" not in df_net_load_forecast.columns:
+        return pd.DataFrame(columns=["date"])
+
+    df = df_net_load_forecast.copy()
+    if "region" in df.columns:
+        df = df[df["region"] == configs.LOAD_REGION]
+    if len(df) == 0:
+        return pd.DataFrame(columns=["date"])
+
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df = df[df["date"] == target_date]
+    if len(df) == 0:
+        return pd.DataFrame(columns=["date"])
+
+    sub = df[["date", "hour_ending", "net_load_forecast_mw"]].rename(
+        columns={"net_load_forecast_mw": "net_load"},
+    )
+    return _load_daily_aggregates(sub, value_col="net_load", prefix="net_load")
 
 
 def _build_outage_features_pool(df_outages_actual: pd.DataFrame | None) -> pd.DataFrame:
@@ -357,6 +442,7 @@ def build_pool(
 
     df_outages = _build_outage_features_pool(df_outages_actual)
     df_renewables = _build_renewable_features_pool(df_fuel_mix)
+    df_net_load = _build_net_load_features_pool(df_rt_load, df_fuel_mix)
     df_weather_daily = _build_weather_features(df_weather)
     df_gas_daily = _build_gas_features(df_gas)
 
@@ -378,6 +464,7 @@ def build_pool(
         df_gas_daily,
         df_outages,
         df_renewables,
+        df_net_load,
         df_cal,
     ):
         if part is not None and len(part) > 0:
@@ -399,6 +486,7 @@ def build_query_row(
     include_gas: bool = True,
     include_outages: bool = True,
     include_renewables: bool = True,
+    include_net_load: bool = True,
     cache_dir: Path | None = configs.CACHE_DIR,
     cache_enabled: bool = configs.CACHE_ENABLED,
     cache_ttl_hours: float = configs.CACHE_TTL_HOURS,
@@ -465,8 +553,14 @@ def build_query_row(
         df_wind = _safe_load(loader.load_wind_forecast, cache_dir)
         renewable_vals = _build_renewable_features_query(df_solar, df_wind, target_date)
 
+    # Query net load from forward net-load forecast for target_date.
+    df_net_load_q = pd.DataFrame(columns=["date"])
+    if include_net_load:
+        df_net_load_forecast = _safe_load(loader.load_net_load_forecast, cache_dir)
+        df_net_load_q = _build_net_load_features_query(df_net_load_forecast, target_date)
+
     row_df = pd.DataFrame({"date": [target_date]})
-    for part in (df_load_q, df_weather_q, df_gas_q):
+    for part in (df_load_q, df_weather_q, df_gas_q, df_net_load_q):
         if part is not None and len(part) > 0:
             row_df = row_df.merge(part, on="date", how="left")
 

@@ -95,6 +95,14 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
         "meteologica_pjm_net_load_forecast_hourly",
         "meteologica_net_load_forecast",
     ),
+    # Net-load forecast (RTO-level PJM cutoff first, meteologica regional fallback).
+    "net_load_forecast": (
+        "pjm_net_load_forecast_hourly_da_cutoff",
+        "pjm_net_load_forecast_hourly",
+        "meteologica_pjm_net_load_forecast_hourly_da_cutoff",
+        "meteologica_pjm_net_load_forecast_hourly",
+        "net_load_forecast",
+    ),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
@@ -664,6 +672,7 @@ _NORMALIZERS = {
     "meteologica_solar_forecast": _normalize_meteologica_solar,
     "meteologica_wind_forecast": _normalize_meteologica_wind,
     "meteologica_net_load_forecast": _normalize_meteologica_net_load,
+    "net_load_forecast": _normalize_meteologica_net_load,
 }
 
 
@@ -776,6 +785,15 @@ def load_wind_forecast(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("wind_forecast", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_net_load_forecast(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    return _load_dataset("net_load_forecast", path=path, cache_dir=cache_dir, columns=columns)
 
 
 def load_weather_hourly(

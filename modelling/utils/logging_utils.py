@@ -301,6 +301,42 @@ def get_logger() -> logging.Logger:
     return logging.getLogger()
 
 
+def print_header(title: str, char: str = "=", length: int = 60) -> None:
+    """Standalone colored header banner — same look as PipelineLogger.header()
+    but prints directly to stdout without the log formatter prefix, so it
+    composes cleanly with wide tables. Use for major section breaks."""
+    line = char * length
+    centered = f" {title} ".center(length, char)
+    print()
+    if supports_color():
+        print(f"{Colors.BRIGHT_CYAN}{line}{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.BRIGHT_CYAN}{centered}{Colors.RESET}")
+        print(f"{Colors.BRIGHT_CYAN}{line}{Colors.RESET}")
+    else:
+        print(line)
+        print(centered)
+        print(line)
+
+
+def print_section(title: str, side_len: int = 10) -> None:
+    """Standalone sub-section divider — mirrors PipelineLogger.section()."""
+    side = get_divider_char() * side_len
+    print()
+    if supports_color():
+        print(f"{Colors.BRIGHT_BLUE}{side} {title} {side}{Colors.RESET}")
+    else:
+        print(f"{side} {title} {side}")
+
+
+def print_divider(char: str = "-", length: int = 40, dim: bool = True) -> None:
+    """Standalone divider line — mirrors PipelineLogger.divider()."""
+    line = char * length
+    if dim and supports_color():
+        print(f"{Colors.DIM}{line}{Colors.RESET}")
+    else:
+        print(line)
+
+
 def init_logging(
     name: str = "logger",
     log_dir: Union[str, Path] = "logs",

@@ -74,6 +74,13 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "wind_daily_avg",
         "renewable_daily_avg",
     ],
+    "net_load": [
+        "net_load_daily_avg",
+        "net_load_daily_peak",
+        "net_load_daily_valley",
+        "net_load_morning_ramp",
+        "net_load_evening_ramp",
+    ],
     "calendar_dow": [
         "is_weekend",
         "dow_sin",
@@ -89,6 +96,7 @@ FEATURE_GROUP_WEIGHTS: dict[str, float] = {
     "gas_level": 2.0,
     "outage_level": 2.0,
     "renewable_level": 1.5,
+    "net_load": 2.0,
     "calendar_dow": 1.0,
 }
 
@@ -104,6 +112,7 @@ RECENCY_HALF_LIFE_DAYS: int = 730
 GAS_FEATURE_MAX_HORIZON_DAYS: int = 1
 OUTAGE_FEATURE_MAX_HORIZON_DAYS: int = 7
 RENEWABLE_FEATURE_MAX_HORIZON_DAYS: int = 7
+NET_LOAD_FEATURE_MAX_HORIZON_DAYS: int = 7
 
 # Labels
 LMP_LABEL_COLUMNS: list[str] = [f"lmp_h{h}" for h in HOURS]
@@ -140,6 +149,7 @@ class ForwardOnlyKNNConfig:
     hub: str = HUB
     outage_feature_max_horizon_days: int = OUTAGE_FEATURE_MAX_HORIZON_DAYS
     renewable_feature_max_horizon_days: int = RENEWABLE_FEATURE_MAX_HORIZON_DAYS
+    net_load_feature_max_horizon_days: int = NET_LOAD_FEATURE_MAX_HORIZON_DAYS
 
     def resolved_target_date(self) -> date:
         """Forecast date with tomorrow fallback."""
@@ -156,6 +166,7 @@ class ForwardOnlyKNNConfig:
         include_gas: bool = True,
         include_outages: bool = True,
         include_renewables: bool = True,
+        include_net_load: bool = True,
     ) -> dict[str, float]:
         """Feature-group weights after optional horizon gating."""
         weights = copy.deepcopy(self.feature_group_weights or FEATURE_GROUP_WEIGHTS)
@@ -165,4 +176,6 @@ class ForwardOnlyKNNConfig:
             weights["outage_level"] = 0.0
         if not include_renewables and "renewable_level" in weights:
             weights["renewable_level"] = 0.0
+        if not include_net_load and "net_load" in weights:
+            weights["net_load"] = 0.0
         return weights

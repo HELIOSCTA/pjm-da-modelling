@@ -18,4 +18,4 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["da_models*"]
+include = ["da_models*", "utils*", "html_reports*"]
