@@ -1,13 +1,14 @@
 import logging
+from pathlib import Path
 
 from prefect import flow
 
-from backend.settings import DBT_SCHEMA
 from backend.utils import azure_postgresql_utils, pipeline_run_logger, model_cache_utils
 
 logger = logging.getLogger(__name__)
 
 MART = "ice_python_next_day_gas_hourly"
+QUERY_PATH = Path(__file__).parent / "ice_python_next_day_gas_hourly_pjm.sql"
 
 
 @flow(name="ICE Python Next-Day Gas Hourly")
@@ -24,7 +25,7 @@ def ice_python_next_day_gas_hourly():
     )
     run.start()
     try:
-        df = azure_postgresql_utils.pull_from_db(f"SELECT * FROM {DBT_SCHEMA}.{MART}")
+        df = azure_postgresql_utils.pull_from_db(QUERY_PATH.read_text())
         model_cache_utils.write_mart_cache(df, mart=MART, pipeline_name=__name__)
 
         run.success()

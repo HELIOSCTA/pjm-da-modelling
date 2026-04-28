@@ -7,7 +7,3 @@ sources:
     tables:
       - name: next_day_gas_v1_2025_dec_16
         description: "ICE IFERC next-day cash physical gas prices by hub. One row per trade_date × symbol × data_type."
-      - name: contract_dates
-        description: "ICE contract date metadata (Strip, Start Date, End Date) for each symbol. One row per trade_date × symbol — captured daily via ice.get_quotes(symbols, ['Strip','Startdt','Enddt'])."
-      - name: ticker_data
-        description: "ICE tick-level trade executions via ice.get_timesales(). Long format: one row per exec_time_utc × symbol × field (Price, Quantity, …). Matches the ICE Ticker feed."

@@ -31,6 +31,14 @@ sources:
         description: "Dispatched reserve quantity, requirement, clearing price, and shortage indicator by area and reserve type from PJM Data Miner 2. 5-minute updates, 30-day retention."
       - name: unverified_five_min_lmps
         description: "Unverified 5-minute real-time LMPs by pricing hub from PJM Data Miner 2. Reveals intra-hour spike severity masked by hourly averages."
+      - name: solar_generation_by_area
+        description: "Hourly realized solar generation by PJM area (RTO, MIDATL, WEST, SOUTH, RFC, OTHER) from PJM Data Miner 2. First available 2019-04-02. RFC = MIDATL + WEST; RTO = MIDATL + WEST + SOUTH; OTHER is non-RTO and not summed in. Pads forward-dated and unreported hours with 0 (~2-day publication lag); 5-min companion feed used as fallback in marts."
+      - name: wind_generation_by_area
+        description: "Hourly realized wind generation by PJM area (RTO, MIDATL, WEST, SOUTH, RFC, OTHER) from PJM Data Miner 2. First available 2011-01-01. RFC = MIDATL + WEST; RTO = MIDATL + WEST + SOUTH; OTHER is non-RTO and not summed in. Pads forward-dated and unreported hours with 0 (~2-day publication lag); 5-min companion feed used as fallback in marts."
+      - name: five_min_solar_generation_v1_2026_apr_28
+        description: "Five-minute realized RTO-total solar generation from PJM Data Miner 2. System-wide only (no area column). Used as intra-day fallback for the hourly solar_generation_by_area feed when the latter is still 0-padded; only fills the RTO row of the mart."
+      - name: instantaneous_wind_gen_v1_2026_apr_28
+        description: "15-second realized RTO-total wind generation from PJM Data Miner 2 (PJM names this 'instantaneous'). System-wide only (no area column). Used as intra-day fallback for the hourly wind_generation_by_area feed when the latter is still 0-padded; only fills the RTO row of the mart."
 
   - name: gridstatus_v1
     schema: gridstatus
