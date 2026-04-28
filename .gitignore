@@ -38,3 +38,6 @@ TODO/*
 
 # cache
 backend/cache/
+
+# WIP: PJM Meteologica historical scrape package (still iterating)
+backend/scrapes/meteologica/pjm/historical/
