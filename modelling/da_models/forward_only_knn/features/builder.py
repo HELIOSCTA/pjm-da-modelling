@@ -87,77 +87,178 @@ def _load_daily_aggregates(
     return daily.drop(columns=["he5", "he8", "he15", "he20"])
 
 
-def _build_net_load_features_pool(
-    df_rt_load: pd.DataFrame | None,
-    df_fuel_mix: pd.DataFrame | None,
+def _per_region_daily_aggregates(
+    df_hourly: pd.DataFrame | None,
+    value_col: str,
+    metric_prefix: str,
+    regions: list[str],
 ) -> pd.DataFrame:
-    """Pool-side net-load features from realized RTO load minus realized solar+wind.
+    """Run _load_daily_aggregates per region; suffix output columns with _<region>."""
+    if df_hourly is None or len(df_hourly) == 0 or "region" not in df_hourly.columns:
+        return pd.DataFrame(columns=["date"])
+    if value_col not in df_hourly.columns:
+        return pd.DataFrame(columns=["date"])
 
-    Mirrors the renewables pool pattern: pool uses realized values, query uses
-    forecasts. Output columns: net_load_daily_avg / peak / valley / *_morning_ramp /
-    *_evening_ramp.
+    out: pd.DataFrame | None = None
+    for region in regions:
+        sub = df_hourly[df_hourly["region"].astype(str) == region]
+        if len(sub) == 0:
+            continue
+        daily = _load_daily_aggregates(
+            sub[["date", "hour_ending", value_col]],
+            value_col=value_col,
+            prefix=metric_prefix,
+        )
+        if len(daily) == 0:
+            continue
+        suffix = f"_{region.lower()}"
+        rename_map = {c: f"{c}{suffix}" for c in daily.columns if c != "date"}
+        daily = daily.rename(columns=rename_map)
+        out = daily if out is None else out.merge(daily, on="date", how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date"])
+
+
+def _per_region_daily_avg(
+    df_hourly: pd.DataFrame | None,
+    value_col: str,
+    metric_name: str,
+    regions: list[str],
+) -> pd.DataFrame:
+    """Daily mean of value_col per region; output column metric_name_daily_avg_<region>."""
+    if df_hourly is None or len(df_hourly) == 0 or "region" not in df_hourly.columns:
+        return pd.DataFrame(columns=["date"])
+    if value_col not in df_hourly.columns:
+        return pd.DataFrame(columns=["date"])
+
+    df = df_hourly.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df = df.dropna(subset=[value_col])
+
+    out: pd.DataFrame | None = None
+    for region in regions:
+        sub = df[df["region"].astype(str) == region]
+        if len(sub) == 0:
+            continue
+        daily = (
+            sub.groupby("date", as_index=False)[value_col]
+            .mean()
+            .rename(columns={value_col: f"{metric_name}_daily_avg_{region.lower()}"})
+        )
+        out = daily if out is None else out.merge(daily, on="date", how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date"])
+
+
+def _build_load_features_pool(
+    df_rt_load: pd.DataFrame | None,
+    regions: list[str],
+) -> pd.DataFrame:
+    """Per-region load level + ramp features from PJM RT load actuals."""
+    if df_rt_load is None or len(df_rt_load) == 0 or "region" not in df_rt_load.columns:
+        return pd.DataFrame(columns=["date"])
+    df = df_rt_load.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["rt_load_mw"] = pd.to_numeric(df["rt_load_mw"], errors="coerce")
+    df = df.dropna(subset=["rt_load_mw"])
+    return _per_region_daily_aggregates(df, "rt_load_mw", "load", regions)
+
+
+def _build_net_load_features_pool(
+    df_net_load_actual: pd.DataFrame | None,
+    regions: list[str],
+) -> pd.DataFrame:
+    """Per-region net-load level + ramp features from PJM RT net-load actuals.
+
+    Pre-2019-04-02 rows have NaN net_load_mw because PJM did not publish solar
+    actuals; those dates land as NaN per-region net_load_* features and the
+    NaN-aware distance metric handles them per-feature.
     """
-    if df_rt_load is None or len(df_rt_load) == 0:
+    if df_net_load_actual is None or len(df_net_load_actual) == 0:
         return pd.DataFrame(columns=["date"])
-    if df_fuel_mix is None or len(df_fuel_mix) == 0:
-        return pd.DataFrame(columns=["date"])
-    if "solar" not in df_fuel_mix.columns or "wind" not in df_fuel_mix.columns:
-        return pd.DataFrame(columns=["date"])
+    df = df_net_load_actual.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    if "net_load_mw" in df.columns:
+        df["net_load_mw"] = pd.to_numeric(df["net_load_mw"], errors="coerce")
+        df = df.dropna(subset=["net_load_mw"])
+    return _per_region_daily_aggregates(df, "net_load_mw", "net_load", regions)
 
-    rt = df_rt_load.copy()
-    if "region" in rt.columns:
-        rt = rt[rt["region"] == configs.LOAD_REGION]
-    if len(rt) == 0 or "rt_load_mw" not in rt.columns:
-        return pd.DataFrame(columns=["date"])
 
-    rt = rt[["date", "hour_ending", "rt_load_mw"]].copy()
-    fm = df_fuel_mix[["date", "hour_ending", "solar", "wind"]].copy()
+def _slice_for_region_and_date(
+    df: pd.DataFrame | None,
+    region: str,
+    target_date: date,
+) -> pd.DataFrame | None:
+    """Return df rows matching region (if a region column exists) and target_date."""
+    if df is None or len(df) == 0:
+        return None
+    sub = df.copy()
+    if "region" in sub.columns:
+        sub = sub[sub["region"].astype(str) == region]
+    if "date" in sub.columns:
+        sub["date"] = pd.to_datetime(sub["date"]).dt.date
+        sub = sub[sub["date"] == target_date]
+    return sub if len(sub) > 0 else None
 
-    rt["date"] = pd.to_datetime(rt["date"]).dt.date
-    fm["date"] = pd.to_datetime(fm["date"]).dt.date
 
-    merged = rt.merge(fm, on=["date", "hour_ending"], how="inner")
-    if len(merged) == 0:
-        return pd.DataFrame(columns=["date"])
-
-    merged["rt_load_mw"] = pd.to_numeric(merged["rt_load_mw"], errors="coerce")
-    merged["solar"] = pd.to_numeric(merged["solar"], errors="coerce").fillna(0.0)
-    merged["wind"] = pd.to_numeric(merged["wind"], errors="coerce").fillna(0.0)
-    merged["net_load"] = merged["rt_load_mw"] - merged["solar"] - merged["wind"]
-    merged = merged.dropna(subset=["net_load"])
-
-    return _load_daily_aggregates(
-        merged[["date", "hour_ending", "net_load"]],
-        value_col="net_load",
-        prefix="net_load",
-    )
+def _build_load_features_query(
+    df_pjm_load_forecast: pd.DataFrame | None,
+    df_meteo_load_forecast: pd.DataFrame | None,
+    df_rt_load_fallback: pd.DataFrame | None,
+    target_date: date,
+    regions: list[str],
+) -> pd.DataFrame:
+    """Per-region load features. RTO from PJM forecast, others from Meteologica."""
+    out: pd.DataFrame | None = None
+    for region in regions:
+        primary = df_pjm_load_forecast if region == "RTO" else df_meteo_load_forecast
+        sub = _slice_for_region_and_date(primary, region, target_date)
+        value_col = "forecast_load_mw"
+        if sub is None or value_col not in sub.columns:
+            sub = _slice_for_region_and_date(df_rt_load_fallback, region, target_date)
+            value_col = "rt_load_mw" if sub is not None and "rt_load_mw" in sub.columns else value_col
+        if sub is None or value_col not in sub.columns:
+            continue
+        daily = _load_daily_aggregates(
+            sub[["date", "hour_ending", value_col]],
+            value_col=value_col,
+            prefix="load",
+        )
+        if len(daily) == 0:
+            continue
+        suffix = f"_{region.lower()}"
+        rename_map = {c: f"{c}{suffix}" for c in daily.columns if c != "date"}
+        daily = daily.rename(columns=rename_map)
+        out = daily if out is None else out.merge(daily, on="date", how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date"])
 
 
 def _build_net_load_features_query(
-    df_net_load_forecast: pd.DataFrame | None,
+    df_pjm_net_load_forecast: pd.DataFrame | None,
+    df_meteo_net_load_forecast: pd.DataFrame | None,
     target_date: date,
+    regions: list[str],
 ) -> pd.DataFrame:
-    """Query-side net-load features from the forward net-load forecast parquet."""
-    if df_net_load_forecast is None or len(df_net_load_forecast) == 0:
-        return pd.DataFrame(columns=["date"])
-    if "net_load_forecast_mw" not in df_net_load_forecast.columns:
-        return pd.DataFrame(columns=["date"])
-
-    df = df_net_load_forecast.copy()
-    if "region" in df.columns:
-        df = df[df["region"] == configs.LOAD_REGION]
-    if len(df) == 0:
-        return pd.DataFrame(columns=["date"])
-
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df = df[df["date"] == target_date]
-    if len(df) == 0:
-        return pd.DataFrame(columns=["date"])
-
-    sub = df[["date", "hour_ending", "net_load_forecast_mw"]].rename(
-        columns={"net_load_forecast_mw": "net_load"},
-    )
-    return _load_daily_aggregates(sub, value_col="net_load", prefix="net_load")
+    """Per-region net-load features. RTO from PJM, others from Meteologica."""
+    out: pd.DataFrame | None = None
+    for region in regions:
+        primary = df_pjm_net_load_forecast if region == "RTO" else df_meteo_net_load_forecast
+        sub = _slice_for_region_and_date(primary, region, target_date)
+        if sub is None or "net_load_forecast_mw" not in sub.columns:
+            continue
+        daily = _load_daily_aggregates(
+            sub[["date", "hour_ending", "net_load_forecast_mw"]].rename(
+                columns={"net_load_forecast_mw": "net_load"},
+            ),
+            value_col="net_load",
+            prefix="net_load",
+        )
+        if len(daily) == 0:
+            continue
+        suffix = f"_{region.lower()}"
+        rename_map = {c: f"{c}{suffix}" for c in daily.columns if c != "date"}
+        daily = daily.rename(columns=rename_map)
+        out = daily if out is None else out.merge(daily, on="date", how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date"])
 
 
 def _build_outage_features_pool(df_outages_actual: pd.DataFrame | None) -> pd.DataFrame:
@@ -211,107 +312,95 @@ def _build_outage_features_query(
     return out
 
 
-def _build_renewable_features_pool(df_fuel_mix: pd.DataFrame | None) -> pd.DataFrame:
-    """Daily renewable aggregates from realized fuel-mix hourly data."""
-    if df_fuel_mix is None or len(df_fuel_mix) == 0:
-        return pd.DataFrame(columns=["date"])
-    if "solar" not in df_fuel_mix.columns or "wind" not in df_fuel_mix.columns:
-        return pd.DataFrame(columns=["date"])
+def _build_renewable_features_pool(
+    df_net_load_actual: pd.DataFrame | None,
+    regions: list[str],
+) -> pd.DataFrame:
+    """Per-region solar/wind/renewable daily-avg features from PJM RT net-load actuals.
 
-    df = df_fuel_mix[["date", "hour_ending", "solar", "wind"]].copy()
+    Uses the per-region solar_gen_mw and wind_gen_mw columns. Pre-2019-04-02 hours
+    have NaN solar_gen_mw, which propagates NaN into solar and renewable features
+    for those dates while wind features remain populated.
+    """
+    if df_net_load_actual is None or len(df_net_load_actual) == 0:
+        return pd.DataFrame(columns=["date"])
+    df = df_net_load_actual.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["solar"] = pd.to_numeric(df["solar"], errors="coerce").fillna(0.0)
-    df["wind"] = pd.to_numeric(df["wind"], errors="coerce").fillna(0.0)
-    daily = (
-        df.groupby("date")
-        .agg(solar_daily_avg=("solar", "mean"), wind_daily_avg=("wind", "mean"))
-        .reset_index()
-    )
-    daily["renewable_daily_avg"] = daily["solar_daily_avg"] + daily["wind_daily_avg"]
-    return daily
+    if "solar_gen_mw" in df.columns:
+        df["solar_gen_mw"] = pd.to_numeric(df["solar_gen_mw"], errors="coerce")
+    if "wind_gen_mw" in df.columns:
+        df["wind_gen_mw"] = pd.to_numeric(df["wind_gen_mw"], errors="coerce")
+    if "solar_gen_mw" in df.columns and "wind_gen_mw" in df.columns:
+        df["renewable_mw"] = df["solar_gen_mw"] + df["wind_gen_mw"]
+
+    parts: list[pd.DataFrame] = []
+    if "solar_gen_mw" in df.columns:
+        parts.append(_per_region_daily_avg(df, "solar_gen_mw", "solar", regions))
+    if "wind_gen_mw" in df.columns:
+        parts.append(_per_region_daily_avg(df, "wind_gen_mw", "wind", regions))
+    if "renewable_mw" in df.columns:
+        parts.append(_per_region_daily_avg(df, "renewable_mw", "renewable", regions))
+
+    out: pd.DataFrame | None = None
+    for part in parts:
+        if part is None or len(part) == 0:
+            continue
+        out = part if out is None else out.merge(part, on="date", how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date"])
 
 
 def _build_renewable_features_query(
-    df_solar_forecast: pd.DataFrame | None,
-    df_wind_forecast: pd.DataFrame | None,
+    df_pjm_solar_forecast: pd.DataFrame | None,
+    df_pjm_wind_forecast: pd.DataFrame | None,
+    df_meteo_solar_forecast: pd.DataFrame | None,
+    df_meteo_wind_forecast: pd.DataFrame | None,
     target_date: date,
+    regions: list[str],
 ) -> dict[str, float]:
-    """Daily renewable aggregates from PJM solar/wind forecasts for target_date."""
+    """Per-region solar/wind/renewable daily-avg features.
+
+    RTO uses PJM solar/wind forecasts (system-wide files, no region column);
+    MIDATL/WEST/SOUTH use Meteologica regional forecasts.
+    """
     out: dict[str, float] = {}
 
-    solar_avg = np.nan
-    if df_solar_forecast is not None and len(df_solar_forecast) > 0:
-        sf = df_solar_forecast[df_solar_forecast["date"] == target_date]
-        if len(sf) > 0 and "solar_forecast" in sf.columns:
-            vals = pd.to_numeric(sf["solar_forecast"], errors="coerce").fillna(0.0)
-            if len(vals) > 0:
-                solar_avg = float(vals.mean())
+    def _avg_value(df: pd.DataFrame | None, region: str, value_col: str) -> float:
+        if df is None or len(df) == 0 or value_col not in df.columns:
+            return np.nan
+        sub = df
+        if "region" in sub.columns:
+            sub = sub[sub["region"].astype(str) == region]
+        if "date" in sub.columns:
+            sub_dates = pd.to_datetime(sub["date"]).dt.date
+            sub = sub[sub_dates == target_date]
+        if len(sub) == 0:
+            return np.nan
+        vals = pd.to_numeric(sub[value_col], errors="coerce").dropna()
+        return float(vals.mean()) if len(vals) > 0 else np.nan
 
-    wind_avg = np.nan
-    if df_wind_forecast is not None and len(df_wind_forecast) > 0:
-        wf = df_wind_forecast[df_wind_forecast["date"] == target_date]
-        if len(wf) > 0 and "wind_forecast" in wf.columns:
-            vals = pd.to_numeric(wf["wind_forecast"], errors="coerce").fillna(0.0)
-            if len(vals) > 0:
-                wind_avg = float(vals.mean())
+    for region in regions:
+        if region == "RTO":
+            solar_df = df_pjm_solar_forecast
+            wind_df = df_pjm_wind_forecast
+        else:
+            solar_df = df_meteo_solar_forecast
+            wind_df = df_meteo_wind_forecast
 
-    out["solar_daily_avg"] = solar_avg
-    out["wind_daily_avg"] = wind_avg
-    if pd.notna(solar_avg) and pd.notna(wind_avg):
-        out["renewable_daily_avg"] = float(solar_avg) + float(wind_avg)
-    elif pd.notna(solar_avg):
-        out["renewable_daily_avg"] = float(solar_avg)
-    elif pd.notna(wind_avg):
-        out["renewable_daily_avg"] = float(wind_avg)
-    else:
-        out["renewable_daily_avg"] = np.nan
+        solar_avg = _avg_value(solar_df, region, "solar_forecast")
+        wind_avg = _avg_value(wind_df, region, "wind_forecast")
+        suffix = f"_{region.lower()}"
+
+        out[f"solar_daily_avg{suffix}"] = solar_avg
+        out[f"wind_daily_avg{suffix}"] = wind_avg
+        if pd.notna(solar_avg) and pd.notna(wind_avg):
+            out[f"renewable_daily_avg{suffix}"] = float(solar_avg) + float(wind_avg)
+        elif pd.notna(solar_avg):
+            out[f"renewable_daily_avg{suffix}"] = float(solar_avg)
+        elif pd.notna(wind_avg):
+            out[f"renewable_daily_avg{suffix}"] = float(wind_avg)
+        else:
+            out[f"renewable_daily_avg{suffix}"] = np.nan
     return out
-
-
-def _build_weather_features(
-    df_weather: pd.DataFrame | None,
-    *,
-    hdd_base: float = 65.0,
-    cdd_base: float = 65.0,
-) -> pd.DataFrame:
-    """Build daily weather features used by weather-level groups."""
-    if df_weather is None or len(df_weather) == 0:
-        return pd.DataFrame(columns=["date"])
-    if "temp" not in df_weather.columns:
-        return pd.DataFrame(columns=["date"])
-
-    df = df_weather.copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["hour_ending"] = pd.to_numeric(df["hour_ending"], errors="coerce")
-    df["temp"] = pd.to_numeric(df["temp"], errors="coerce")
-    df = df.dropna(subset=["date", "hour_ending", "temp"])
-    if len(df) == 0:
-        return pd.DataFrame(columns=["date"])
-
-    agg_dict: dict[str, tuple[str, str]] = {
-        "temp_daily_avg": ("temp", "mean"),
-        "temp_daily_max": ("temp", "max"),
-        "temp_daily_min": ("temp", "min"),
-    }
-
-    optional_aggs = (
-        ("feels_like_temp", "feels_like_daily_avg"),
-        ("dew_point_temp", "dew_point_daily_avg"),
-        ("wind_speed_mph", "wind_speed_daily_avg"),
-        ("relative_humidity", "humidity_daily_avg"),
-        ("cloud_cover_pct", "cloud_cover_daily_avg"),
-    )
-    for source_col, target_col in optional_aggs:
-        if source_col in df.columns:
-            agg_dict[target_col] = (source_col, "mean")
-
-    daily = df.groupby("date").agg(**agg_dict).reset_index()
-    daily["temp_intraday_range"] = daily["temp_daily_max"] - daily["temp_daily_min"]
-    daily["hdd"] = np.maximum(0, hdd_base - daily["temp_daily_avg"])
-    daily["cdd"] = np.maximum(0, daily["temp_daily_avg"] - cdd_base)
-    daily["temp_7d_rolling_mean"] = daily["temp_daily_avg"].rolling(7, min_periods=1).mean()
-    daily["temp_daily_change"] = daily["temp_daily_avg"].diff()
-    return daily
 
 
 def _build_gas_features(df_gas_hourly: pd.DataFrame | None) -> pd.DataFrame:
@@ -421,29 +510,16 @@ def build_pool(
 
     df_lmp_da = loader.load_lmps_da(cache_dir=cache_dir)
     df_rt_load = _safe_load(loader.load_load_rt, cache_dir)
-    df_weather = _safe_load(loader.load_weather_observed_hourly, cache_dir)
-    if df_weather is None or len(df_weather) == 0:
-        df_weather = _safe_load(loader.load_weather_hourly, cache_dir)
     df_gas = _safe_load(loader.load_gas_prices_hourly, cache_dir)
     df_outages_actual = _safe_load(loader.load_outages_actual, cache_dir)
-    df_fuel_mix = _safe_load(loader.load_fuel_mix, cache_dir)
+    df_net_load_actual = _safe_load(loader.load_net_load_actuals, cache_dir)
 
-    # Base feature blocks
     df_labels = _build_lmp_labels(df_lmp_da, hub)
 
-    df_load = pd.DataFrame(columns=["date"])
-    if df_rt_load is not None and len(df_rt_load) > 0:
-        rt = df_rt_load.copy()
-        if "region" in rt.columns:
-            rt = rt[rt["region"] == configs.LOAD_REGION]
-        if len(rt) > 0:
-            rt = rt[["date", "hour_ending", "rt_load_mw"]].rename(columns={"rt_load_mw": "value"})
-            df_load = _load_daily_aggregates(rt, value_col="value")
-
+    df_load = _build_load_features_pool(df_rt_load, configs.LOAD_REGIONS)
     df_outages = _build_outage_features_pool(df_outages_actual)
-    df_renewables = _build_renewable_features_pool(df_fuel_mix)
-    df_net_load = _build_net_load_features_pool(df_rt_load, df_fuel_mix)
-    df_weather_daily = _build_weather_features(df_weather)
+    df_renewables = _build_renewable_features_pool(df_net_load_actual, configs.LOAD_REGIONS)
+    df_net_load = _build_net_load_features_pool(df_net_load_actual, configs.LOAD_REGIONS)
     df_gas_daily = _build_gas_features(df_gas)
 
     if len(df_labels) > 0:
@@ -456,11 +532,9 @@ def build_pool(
     else:
         df_cal = pd.DataFrame(columns=["date"])
 
-    # Merge into one pool matrix
     pool = df_labels.copy()
     for part in (
         df_load,
-        df_weather_daily,
         df_gas_daily,
         df_outages,
         df_renewables,
@@ -495,42 +569,21 @@ def build_query_row(
     """Build forward-looking query feature row for one target delivery date."""
     _ = (schema, include_gas, cache_enabled, cache_ttl_hours, force_refresh)
 
-    df_load_forecast = _safe_load(loader.load_load_forecast, cache_dir)
+    df_pjm_load_forecast = _safe_load(loader.load_load_forecast, cache_dir)
+    df_meteo_load_forecast = _safe_load(loader.load_meteologica_load_forecast, cache_dir)
     df_rt_load = _safe_load(loader.load_load_rt, cache_dir)
-    df_weather = _safe_load(loader.load_weather_forecast_hourly, cache_dir)
-    if df_weather is None or len(df_weather) == 0:
-        # Fallback for days where forecast feed is absent but observed cache exists.
-        df_weather = _safe_load(loader.load_weather_observed_hourly, cache_dir)
 
     cal = _calendar_for_date(target_date)
 
-    # Query load from forecast first, fallback to realized if forecast absent.
-    load_query = pd.DataFrame(columns=["date", "hour_ending", "value"])
-    if df_load_forecast is not None and len(df_load_forecast) > 0:
-        lf = df_load_forecast.copy()
-        if "region" in lf.columns:
-            lf = lf[lf["region"] == configs.LOAD_REGION]
-        lf = lf[lf["date"] == target_date]
-        if len(lf) > 0 and "forecast_load_mw" in lf.columns:
-            load_query = lf[["date", "hour_ending", "forecast_load_mw"]].rename(
-                columns={"forecast_load_mw": "value"},
-            )
-
-    if len(load_query) == 0 and df_rt_load is not None and len(df_rt_load) > 0:
-        lf = df_rt_load.copy()
-        if "region" in lf.columns:
-            lf = lf[lf["region"] == configs.LOAD_REGION]
-        lf = lf[lf["date"] == target_date]
-        if len(lf) > 0 and "rt_load_mw" in lf.columns:
-            load_query = lf[["date", "hour_ending", "rt_load_mw"]].rename(columns={"rt_load_mw": "value"})
-
-    df_load_q = _load_daily_aggregates(load_query, value_col="value")
-
-    df_weather_q = pd.DataFrame(columns=["date"])
-    if df_weather is not None and len(df_weather) > 0:
-        wf = df_weather[pd.to_datetime(df_weather["date"]).dt.date == target_date].copy()
-        if len(wf) > 0:
-            df_weather_q = _build_weather_features(wf)
+    # Per-region load forecast: PJM for RTO, Meteologica for MIDATL/WEST/SOUTH;
+    # fall back to realized RT load if the forecast feed is missing for a region.
+    df_load_q = _build_load_features_query(
+        df_pjm_load_forecast,
+        df_meteo_load_forecast,
+        df_rt_load,
+        target_date,
+        configs.LOAD_REGIONS,
+    )
 
     df_gas_q = pd.DataFrame(columns=["date"])
     if include_gas:
@@ -540,27 +593,35 @@ def build_query_row(
             if len(gf) > 0:
                 df_gas_q = _build_gas_features(gf)
 
-    # Query outages from forecast source for target_date.
     outage_vals: dict[str, float] = {}
     if include_outages:
         df_outage_forecast = _safe_load(loader.load_outages_forecast, cache_dir)
         outage_vals = _build_outage_features_query(df_outage_forecast, target_date)
 
-    # Query renewables from PJM solar/wind forecasts for target_date.
+    # Per-region solar/wind/renewable: PJM (system-wide) for RTO, Meteologica for the rest.
     renewable_vals: dict[str, float] = {}
     if include_renewables:
-        df_solar = _safe_load(loader.load_solar_forecast, cache_dir)
-        df_wind = _safe_load(loader.load_wind_forecast, cache_dir)
-        renewable_vals = _build_renewable_features_query(df_solar, df_wind, target_date)
+        df_pjm_solar = _safe_load(loader.load_solar_forecast, cache_dir)
+        df_pjm_wind = _safe_load(loader.load_wind_forecast, cache_dir)
+        df_meteo_solar = _safe_load(loader.load_meteologica_solar_forecast, cache_dir)
+        df_meteo_wind = _safe_load(loader.load_meteologica_wind_forecast, cache_dir)
+        renewable_vals = _build_renewable_features_query(
+            df_pjm_solar, df_pjm_wind, df_meteo_solar, df_meteo_wind,
+            target_date, configs.LOAD_REGIONS,
+        )
 
-    # Query net load from forward net-load forecast for target_date.
+    # Per-region net-load forecast: PJM for RTO, Meteologica for MIDATL/WEST/SOUTH.
     df_net_load_q = pd.DataFrame(columns=["date"])
     if include_net_load:
-        df_net_load_forecast = _safe_load(loader.load_net_load_forecast, cache_dir)
-        df_net_load_q = _build_net_load_features_query(df_net_load_forecast, target_date)
+        df_pjm_net_load = _safe_load(loader.load_net_load_forecast, cache_dir)
+        df_meteo_net_load = _safe_load(loader.load_meteologica_net_load_forecast, cache_dir)
+        df_net_load_q = _build_net_load_features_query(
+            df_pjm_net_load, df_meteo_net_load,
+            target_date, configs.LOAD_REGIONS,
+        )
 
     row_df = pd.DataFrame({"date": [target_date]})
-    for part in (df_load_q, df_weather_q, df_gas_q, df_net_load_q):
+    for part in (df_load_q, df_gas_q, df_net_load_q):
         if part is not None and len(part) > 0:
             row_df = row_df.merge(part, on="date", how="left")
 

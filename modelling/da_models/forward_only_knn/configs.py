@@ -13,6 +13,12 @@ from da_models.common.configs import CACHE_DIR as DEFAULT_SHARED_CACHE_DIR
 SCHEMA: str = "pjm_cleaned"
 HUB: str = "WESTERN HUB"
 LOAD_REGION: str = "RTO"
+LOAD_REGIONS: list[str] = ["RTO", "MIDATL", "WEST", "SOUTH"]
+
+
+def _per_region(*metrics: str) -> list[str]:
+    """Expand metric names to per-region feature columns: metric_<region_lower>."""
+    return [f"{m}_{r.lower()}" for m in metrics for r in LOAD_REGIONS]
 
 # Cache
 _DEFAULT_CACHE_DIR: Path = DEFAULT_SHARED_CACHE_DIR
@@ -37,27 +43,20 @@ DOW_GROUPS: dict[str, list[int]] = {
     "sunday": [0],
 }
 
-# Distance feature groups
+# Distance feature groups. Load / net-load / renewable groups are expanded
+# per region (RTO + MIDATL + WEST + SOUTH); gas, outages and calendar
+# remain system-wide.
 FEATURE_GROUPS: dict[str, list[str]] = {
-    "load_level": [
+    "load_level": _per_region(
         "load_daily_avg",
         "load_daily_peak",
         "load_daily_valley",
-    ],
-    "load_ramps": [
+    ),
+    "load_ramps": _per_region(
         "load_morning_ramp",
         "load_evening_ramp",
         "load_ramp_max",
-    ],
-    "weather_level": [
-        "temp_daily_avg",
-        "temp_daily_max",
-        "temp_daily_min",
-    ],
-    "weather_hdd_cdd": [
-        "hdd",
-        "cdd",
-    ],
+    ),
     "gas_level": [
         "gas_m3_daily_avg",
         "gas_tco_daily_avg",
@@ -69,18 +68,18 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "outage_forced_mw",
         "outage_forced_share",
     ],
-    "renewable_level": [
+    "renewable_level": _per_region(
         "solar_daily_avg",
         "wind_daily_avg",
         "renewable_daily_avg",
-    ],
-    "net_load": [
+    ),
+    "net_load": _per_region(
         "net_load_daily_avg",
         "net_load_daily_peak",
         "net_load_daily_valley",
         "net_load_morning_ramp",
         "net_load_evening_ramp",
-    ],
+    ),
     "calendar_dow": [
         "is_weekend",
         "dow_sin",
@@ -91,8 +90,6 @@ FEATURE_GROUPS: dict[str, list[str]] = {
 FEATURE_GROUP_WEIGHTS: dict[str, float] = {
     "load_level": 3.0,
     "load_ramps": 1.0,
-    "weather_level": 2.0,
-    "weather_hdd_cdd": 2.0,
     "gas_level": 2.0,
     "outage_level": 2.0,
     "renewable_level": 1.5,

@@ -25,13 +25,16 @@ from utils.logging_utils import (
 # Datasets shown in the input-feed provenance block. Each tuple is
 # (label, dataset_key, fallback_dataset_key_or_None, gated_by_flag).
 _FEED_SOURCES: list[tuple[str, str, str | None, str | None]] = [
-    ("Load",       "load_forecast",          "load_rt",         None),
-    ("Weather",    "weather_forecast_hourly", "weather_hourly", None),
-    ("Gas",        "gas_prices_hourly",      None,              "include_gas"),
-    ("Outages",    "outages_forecast",       None,              "include_outages"),
-    ("Solar",      "solar_forecast",         None,              "include_renewables"),
-    ("Wind",       "wind_forecast",          None,              "include_renewables"),
-    ("Net Load",   "net_load_forecast",      None,              "include_net_load"),
+    ("Load RTO",      "load_forecast",                    "load_rt", None),
+    ("Load Meteo",    "meteologica_load_forecast",        None,      None),
+    ("Gas",           "gas_prices_hourly",                None,      "include_gas"),
+    ("Outages",       "outages_forecast",                 None,      "include_outages"),
+    ("Solar RTO",     "solar_forecast",                   None,      "include_renewables"),
+    ("Solar Meteo",   "meteologica_solar_forecast",       None,      "include_renewables"),
+    ("Wind RTO",      "wind_forecast",                    None,      "include_renewables"),
+    ("Wind Meteo",    "meteologica_wind_forecast",        None,      "include_renewables"),
+    ("NetLoad RTO",   "net_load_forecast",                None,      "include_net_load"),
+    ("NetLoad Meteo", "meteologica_net_load_forecast",    None,      "include_net_load"),
 ]
 
 # Hub-column labels for hourly gas prices in the query feature table.
@@ -62,6 +65,19 @@ _ROW_STYLES = {
     "P25": _HL_QUARTILE, "P75": _HL_QUARTILE,
     "P37.5": _HL_INNER, "P62.5": _HL_INNER,
 }
+
+# Per-analog accent colors (cycled through top-5).
+_ANALOG_PALETTE: list[str] = (
+    [
+        Colors.BRIGHT_CYAN,
+        Colors.BRIGHT_YELLOW,
+        Colors.BRIGHT_GREEN,
+        Colors.BRIGHT_MAGENTA,
+        Colors.BRIGHT_BLUE,
+    ]
+    if supports_color()
+    else ["", "", "", "", ""]
+)
 
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
@@ -391,7 +407,31 @@ def _format_query_cell(value: float | None, fmt: str) -> str:
     return str(value)
 
 
+def _format_delta_cell(value: float | None, fmt: str) -> str:
+    """Format one cell of a delta column (signed, same precision as the source)."""
+    if value is None or pd.isna(value):
+        return "-"
+    if fmt == "comma":
+        return f"{float(value):+,.0f}"
+    if fmt == "1f":
+        return f"{float(value):+.1f}"
+    if fmt == "2f":
+        return f"{float(value):+.2f}"
+    if fmt == "3f":
+        return f"{float(value):+.3f}"
+    return str(value)
+
+
+def _safe_delta(a: float | None, b: float | None) -> float | None:
+    """a - b; None if either side is missing."""
+    if a is None or b is None or pd.isna(a) or pd.isna(b):
+        return None
+    return float(a) - float(b)
+
+
 def _hourly_query_row(
+    group: str,
+    source: str,
     feature: str,
     region: str,
     hourly: dict[int, float],
@@ -402,6 +442,8 @@ def _hourly_query_row(
     off_vals = [hourly[h] for h in OFFPEAK_HOURS if h in hourly and pd.notna(hourly[h])]
     flat_vals = [hourly[h] for h in configs.HOURS if h in hourly and pd.notna(hourly[h])]
     return {
+        "group": group,
+        "source": source,
         "feature": feature,
         "region": region,
         "hourly": hourly,
@@ -410,6 +452,25 @@ def _hourly_query_row(
         "flat": float(np.mean(flat_vals)) if flat_vals else None,
         "fmt": fmt,
     }
+
+
+def _source_label_for(cache_dir: Path | None, *dataset_keys: str) -> str:
+    """Short feed label (pjm / meteologica / ice) of the picked parquet."""
+    for key in dataset_keys:
+        path = _resolve_source_path(cache_dir, key)
+        if path is None:
+            continue
+        stem = path.stem.lower()
+        for prefix, label in (
+            ("pjm_", "pjm"),
+            ("meteologica_", "meteologica"),
+            ("ice_python_", "ice"),
+            ("ice_", "ice"),
+        ):
+            if stem.startswith(prefix):
+                return label
+        return stem.split("_")[0]
+    return "—"
 
 
 def _collect_query_rows(
@@ -422,66 +483,81 @@ def _collect_query_rows(
     """Collect per-feed × per-region hourly rows for the query table."""
     rows: list[dict] = []
 
-    # Load forecast (per region; fallback to realized RT load if missing).
-    df_load = _safe_load_for_print(loader.load_load_forecast, cache_dir)
-    used_rt = False
-    if df_load is None or len(df_load) == 0:
-        df_load = _safe_load_for_print(loader.load_load_rt, cache_dir)
-        used_rt = True
-    if df_load is not None and len(df_load) > 0:
-        df_load = df_load.copy()
-        df_load["date"] = pd.to_datetime(df_load["date"]).dt.date
-        df_load = df_load[df_load["date"] == target_date]
-        value_col = "forecast_load_mw" if "forecast_load_mw" in df_load.columns else (
-            "rt_load_mw" if "rt_load_mw" in df_load.columns else None
-        )
-        if value_col and len(df_load) > 0:
-            label = "load_rt_mw" if used_rt else "forecast_load_mw"
-            for region in sorted(df_load["region"].dropna().astype(str).unique()):
-                sub = df_load[df_load["region"].astype(str) == region]
-                hourly = dict(zip(sub["hour_ending"].astype(int), sub[value_col].astype(float)))
-                rows.append(_hourly_query_row(label, region, hourly, "comma"))
+    def _slice(df: pd.DataFrame | None, region: str | None) -> pd.DataFrame | None:
+        if df is None or len(df) == 0:
+            return None
+        out = df.copy()
+        out["date"] = pd.to_datetime(out["date"]).dt.date
+        out = out[out["date"] == target_date]
+        if region is not None and "region" in out.columns:
+            out = out[out["region"].astype(str) == region]
+        return out if len(out) > 0 else None
 
-    # Weather (system-wide; forecast feed first, then observed).
-    df_weather = _safe_load_for_print(loader.load_weather_forecast_hourly, cache_dir)
-    if df_weather is None or len(df_weather) == 0:
-        df_weather = _safe_load_for_print(loader.load_weather_observed_hourly, cache_dir)
-    if df_weather is not None and len(df_weather) > 0 and "temp" in df_weather.columns:
-        df_weather = df_weather.copy()
-        df_weather["date"] = pd.to_datetime(df_weather["date"]).dt.date
-        df_weather = df_weather[df_weather["date"] == target_date]
-        if len(df_weather) > 0:
-            hourly = dict(zip(df_weather["hour_ending"].astype(int), df_weather["temp"].astype(float)))
-            rows.append(_hourly_query_row("temp_F", "PJM", hourly, "1f"))
-
-    # Solar / wind (PJM RTO-system-wide).
-    if include_renewables:
-        for fn, label, value_col in (
-            (loader.load_solar_forecast, "solar_forecast_mw", "solar_forecast"),
-            (loader.load_wind_forecast,  "wind_forecast_mw",  "wind_forecast"),
-        ):
-            df = _safe_load_for_print(fn, cache_dir)
-            if df is None or len(df) == 0 or value_col not in df.columns:
-                continue
-            df = df.copy()
-            df["date"] = pd.to_datetime(df["date"]).dt.date
-            df = df[df["date"] == target_date]
-            if len(df) == 0:
+    def _add_per_region_rows(
+        group: str,
+        feature: str,
+        value_col: str,
+        df_pjm: pd.DataFrame | None,
+        df_meteo: pd.DataFrame | None,
+        pjm_key: str,
+        meteo_key: str,
+        fmt: str,
+        df_pjm_has_no_region: bool = False,
+    ) -> None:
+        for region in configs.LOAD_REGIONS:
+            if region == "RTO":
+                df = _slice(df_pjm, region=None if df_pjm_has_no_region else "RTO")
+                source = _source_label_for(cache_dir, pjm_key)
+            else:
+                df = _slice(df_meteo, region)
+                source = _source_label_for(cache_dir, meteo_key)
+            if df is None or value_col not in df.columns:
                 continue
             hourly = dict(zip(df["hour_ending"].astype(int), df[value_col].astype(float)))
-            rows.append(_hourly_query_row(label, "PJM-RTO", hourly, "comma"))
+            rows.append(_hourly_query_row(group, source, feature, region, hourly, fmt))
 
-    # Net Load forecast (per region).
+    # Load forecast: PJM for RTO, Meteologica for MIDATL/WEST/SOUTH.
+    df_pjm_load = _safe_load_for_print(loader.load_load_forecast, cache_dir)
+    df_meteo_load = _safe_load_for_print(loader.load_meteologica_load_forecast, cache_dir)
+    _add_per_region_rows(
+        "Load", "forecast_load_mw", "forecast_load_mw",
+        df_pjm_load, df_meteo_load,
+        pjm_key="load_forecast", meteo_key="meteologica_load_forecast",
+        fmt="comma",
+    )
+
+    # Solar / wind forecasts: PJM (system-wide, no region col) for RTO; Meteologica for others.
+    if include_renewables:
+        df_pjm_solar = _safe_load_for_print(loader.load_solar_forecast, cache_dir)
+        df_meteo_solar = _safe_load_for_print(loader.load_meteologica_solar_forecast, cache_dir)
+        _add_per_region_rows(
+            "Solar", "solar_forecast_mw", "solar_forecast",
+            df_pjm_solar, df_meteo_solar,
+            pjm_key="solar_forecast", meteo_key="meteologica_solar_forecast",
+            fmt="comma",
+            df_pjm_has_no_region=True,
+        )
+
+        df_pjm_wind = _safe_load_for_print(loader.load_wind_forecast, cache_dir)
+        df_meteo_wind = _safe_load_for_print(loader.load_meteologica_wind_forecast, cache_dir)
+        _add_per_region_rows(
+            "Wind", "wind_forecast_mw", "wind_forecast",
+            df_pjm_wind, df_meteo_wind,
+            pjm_key="wind_forecast", meteo_key="meteologica_wind_forecast",
+            fmt="comma",
+            df_pjm_has_no_region=True,
+        )
+
+    # Net-load forecast: PJM for RTO, Meteologica for MIDATL/WEST/SOUTH.
     if include_net_load:
-        df_net = _safe_load_for_print(loader.load_net_load_forecast, cache_dir)
-        if df_net is not None and len(df_net) > 0 and "net_load_forecast_mw" in df_net.columns:
-            df_net = df_net.copy()
-            df_net["date"] = pd.to_datetime(df_net["date"]).dt.date
-            df_net = df_net[df_net["date"] == target_date]
-            for region in sorted(df_net["region"].dropna().astype(str).unique()):
-                sub = df_net[df_net["region"].astype(str) == region]
-                hourly = dict(zip(sub["hour_ending"].astype(int), sub["net_load_forecast_mw"].astype(float)))
-                rows.append(_hourly_query_row("net_load_forecast_mw", region, hourly, "comma"))
+        df_pjm_nl = _safe_load_for_print(loader.load_net_load_forecast, cache_dir)
+        df_meteo_nl = _safe_load_for_print(loader.load_meteologica_net_load_forecast, cache_dir)
+        _add_per_region_rows(
+            "Net Load", "net_load_forecast_mw", "net_load_forecast_mw",
+            df_pjm_nl, df_meteo_nl,
+            pjm_key="net_load_forecast", meteo_key="meteologica_net_load_forecast",
+            fmt="comma",
+        )
 
     # Gas (per hub).
     if include_gas:
@@ -490,13 +566,287 @@ def _collect_query_rows(
             df_gas = df_gas.copy()
             df_gas["date"] = pd.to_datetime(df_gas["date"]).dt.date
             df_gas = df_gas[df_gas["date"] == target_date]
+            source = _source_label_for(cache_dir, "gas_prices_hourly")
             for hub_col, hub_label in _GAS_HUB_LABELS.items():
                 if hub_col not in df_gas.columns or not df_gas[hub_col].notna().any():
                     continue
                 hourly = dict(zip(df_gas["hour_ending"].astype(int), df_gas[hub_col].astype(float)))
-                rows.append(_hourly_query_row(hub_col, hub_label, hourly, "2f"))
+                rows.append(_hourly_query_row("Gas", source, hub_col, hub_label, hourly, "2f"))
 
     return rows
+
+
+def _collect_analog_hourly_rows(
+    analog_date: date,
+    cache_dir: Path | None,
+    include_gas: bool,
+    include_renewables: bool,
+    include_net_load: bool,
+) -> list[dict]:
+    """Collect realized hourly feature rows for a historical analog date.
+
+    Mirrors the structure of _collect_query_rows but pulls REALIZED actuals
+    (rt_load_mw, net_load_mw, solar_gen_mw, wind_gen_mw, gas hub prices).
+    """
+    rows: list[dict] = []
+
+    def _slice(df: pd.DataFrame | None, region: str | None) -> pd.DataFrame | None:
+        if df is None or len(df) == 0:
+            return None
+        out = df.copy()
+        out["date"] = pd.to_datetime(out["date"]).dt.date
+        out = out[out["date"] == analog_date]
+        if region is not None and "region" in out.columns:
+            out = out[out["region"].astype(str) == region]
+        return out if len(out) > 0 else None
+
+    df_load = _safe_load_for_print(loader.load_load_rt, cache_dir)
+    src_load = _source_label_for(cache_dir, "load_rt")
+    for region in configs.LOAD_REGIONS:
+        sub = _slice(df_load, region)
+        if sub is None or "rt_load_mw" not in sub.columns:
+            continue
+        hourly = dict(zip(sub["hour_ending"].astype(int), sub["rt_load_mw"].astype(float)))
+        rows.append(_hourly_query_row("Load", src_load, "rt_load_mw", region, hourly, "comma"))
+
+    df_nl = _safe_load_for_print(loader.load_net_load_actuals, cache_dir)
+    src_nl = _source_label_for(cache_dir, "net_load_actual")
+
+    if include_renewables:
+        for region in configs.LOAD_REGIONS:
+            sub = _slice(df_nl, region)
+            if sub is None or "solar_gen_mw" not in sub.columns:
+                continue
+            vals = pd.to_numeric(sub["solar_gen_mw"], errors="coerce")
+            if not vals.notna().any():
+                continue
+            hourly = dict(zip(sub["hour_ending"].astype(int), vals.astype(float)))
+            rows.append(_hourly_query_row("Solar", src_nl, "solar_gen_mw", region, hourly, "comma"))
+
+        for region in configs.LOAD_REGIONS:
+            sub = _slice(df_nl, region)
+            if sub is None or "wind_gen_mw" not in sub.columns:
+                continue
+            vals = pd.to_numeric(sub["wind_gen_mw"], errors="coerce")
+            if not vals.notna().any():
+                continue
+            hourly = dict(zip(sub["hour_ending"].astype(int), vals.astype(float)))
+            rows.append(_hourly_query_row("Wind", src_nl, "wind_gen_mw", region, hourly, "comma"))
+
+    if include_net_load:
+        for region in configs.LOAD_REGIONS:
+            sub = _slice(df_nl, region)
+            if sub is None or "net_load_mw" not in sub.columns:
+                continue
+            vals = pd.to_numeric(sub["net_load_mw"], errors="coerce")
+            if not vals.notna().any():
+                continue
+            hourly = dict(zip(sub["hour_ending"].astype(int), vals.astype(float)))
+            rows.append(_hourly_query_row("Net Load", src_nl, "net_load_mw", region, hourly, "comma"))
+
+    if include_gas:
+        df_gas = _safe_load_for_print(loader.load_gas_prices_hourly, cache_dir)
+        src_gas = _source_label_for(cache_dir, "gas_prices_hourly")
+        if df_gas is not None and len(df_gas) > 0:
+            df_gas = df_gas.copy()
+            df_gas["date"] = pd.to_datetime(df_gas["date"]).dt.date
+            df_gas = df_gas[df_gas["date"] == analog_date]
+            for hub_col, hub_label in _GAS_HUB_LABELS.items():
+                if hub_col not in df_gas.columns or not df_gas[hub_col].notna().any():
+                    continue
+                hourly = dict(zip(df_gas["hour_ending"].astype(int), df_gas[hub_col].astype(float)))
+                rows.append(_hourly_query_row("Gas", src_gas, hub_col, hub_label, hourly, "2f"))
+
+    return rows
+
+
+def _print_analog_hourly_block(
+    target_rows: list[dict],
+    analog_rows: list[dict],
+) -> None:
+    """Print one Target/Analog/Delta hourly comparison block.
+
+    Pairs target and analog rows by (group, region). Three rows printed per pair:
+    Target (forecast values), Analog (realized values), Delta (target - analog).
+    Gas rows pair on the hub label (Region/Hub column).
+    """
+    analog_idx: dict[tuple[str, str], dict] = {(r["group"], r["region"]): r for r in analog_rows}
+
+    group_w, region_w, series_w, he_w, sum_w = 10, 12, 8, 7, 9
+    header = (
+        f"{'Group':<{group_w}} {'Region/Hub':<{region_w}} {'Series':<{series_w}}"
+    )
+    for h in configs.HOURS:
+        header += f" {('HE'+str(h)):>{he_w}}"
+    header += f" {'OnPk':>{sum_w}} {'OffPk':>{sum_w}} {'Flat':>{sum_w}}"
+
+    print(header)
+    print("-" * len(header))
+
+    last_group: str | None = None
+    for tr in target_rows:
+        if tr["group"] not in ("Load", "Solar", "Wind", "Net Load", "Gas"):
+            continue
+        ar = analog_idx.get((tr["group"], tr["region"]))
+        if ar is None:
+            continue
+        if last_group is not None and tr["group"] != last_group:
+            print("-" * len(header))
+        group_cell = tr["group"] if tr["group"] != last_group else ""
+        last_group = tr["group"]
+
+        # Target row
+        line = f"{group_cell:<{group_w}} {tr['region']:<{region_w}} {'Target':<{series_w}}"
+        for h in configs.HOURS:
+            line += f" {_format_query_cell(tr['hourly'].get(h), tr['fmt']):>{he_w}}"
+        line += f" {_format_query_cell(tr['on'],   tr['fmt']):>{sum_w}}"
+        line += f" {_format_query_cell(tr['off'],  tr['fmt']):>{sum_w}}"
+        line += f" {_format_query_cell(tr['flat'], tr['fmt']):>{sum_w}}"
+        print(line)
+
+        # Analog row
+        line = f"{'':<{group_w}} {'':<{region_w}} {'Analog':<{series_w}}"
+        for h in configs.HOURS:
+            line += f" {_format_query_cell(ar['hourly'].get(h), ar['fmt']):>{he_w}}"
+        line += f" {_format_query_cell(ar['on'],   ar['fmt']):>{sum_w}}"
+        line += f" {_format_query_cell(ar['off'],  ar['fmt']):>{sum_w}}"
+        line += f" {_format_query_cell(ar['flat'], ar['fmt']):>{sum_w}}"
+        print(line)
+
+        # Delta row
+        line = f"{'':<{group_w}} {'':<{region_w}} {'Delta':<{series_w}}"
+        for h in configs.HOURS:
+            d = _safe_delta(tr["hourly"].get(h), ar["hourly"].get(h))
+            line += f" {_format_delta_cell(d, tr['fmt']):>{he_w}}"
+        line += f" {_format_delta_cell(_safe_delta(tr['on'],   ar['on']),   tr['fmt']):>{sum_w}}"
+        line += f" {_format_delta_cell(_safe_delta(tr['off'],  ar['off']),  tr['fmt']):>{sum_w}}"
+        line += f" {_format_delta_cell(_safe_delta(tr['flat'], ar['flat']), tr['fmt']):>{sum_w}}"
+        print(line)
+
+
+def _region_from_feature_col(col: str) -> str:
+    """Extract region tag from a per-region feature column name (e.g. _rto -> RTO)."""
+    for region in configs.LOAD_REGIONS:
+        if col.endswith(f"_{region.lower()}"):
+            return region
+    return "-"
+
+
+def _print_analog_daily_block(
+    query: pd.Series,
+    pool_row: pd.Series,
+    feature_weights: dict[str, float],
+) -> None:
+    """Print Target/Analog/Delta for the daily features that feed the KNN distance."""
+    g_w, f_w, r_w, val_w, pct_w = 16, 32, 8, 13, 9
+    header = (
+        f"  {'Group':<{g_w}} {'Feature':<{f_w}} {'Region':<{r_w}} "
+        f"{'Target':>{val_w}} {'Analog':>{val_w}} {'Delta':>{val_w}} {'%Chg':>{pct_w}}"
+    )
+    print()
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    last_group: str | None = None
+    for group, cols in configs.FEATURE_GROUPS.items():
+        if group == "calendar_dow":
+            continue
+        if float(feature_weights.get(group, 0.0)) <= 0:
+            continue
+        if last_group is not None and group != last_group:
+            print("  " + "." * (len(header) - 2))
+
+        for col in cols:
+            t = query.get(col) if col in query.index else None
+            a = pool_row.get(col) if col in pool_row.index else None
+            region = _region_from_feature_col(col)
+
+            t_has = t is not None and pd.notna(t)
+            a_has = a is not None and pd.notna(a)
+            t_str = f"{float(t):,.2f}" if t_has else "-"
+            a_str = f"{float(a):,.2f}" if a_has else "-"
+            if t_has and a_has:
+                delta = float(t) - float(a)
+                delta_str = f"{delta:+,.2f}"
+                pct_str = f"{(delta / float(a) * 100):+.2f}%" if float(a) != 0 else "-"
+            else:
+                delta_str = "-"
+                pct_str = "-"
+
+            group_cell = group if group != last_group else ""
+            last_group = group
+            print(
+                f"  {group_cell:<{g_w}} {col:<{f_w}} {region:<{r_w}} "
+                f"{t_str:>{val_w}} {a_str:>{val_w}} {delta_str:>{val_w}} {pct_str:>{pct_w}}"
+            )
+
+
+def _print_top5_analog_comparison(
+    analogs: pd.DataFrame,
+    pool: pd.DataFrame,
+    query: pd.Series,
+    target_date: date,
+    cache_dir: Path | None,
+    feature_weights: dict[str, float],
+    include_gas: bool,
+    include_renewables: bool,
+    include_net_load: bool,
+) -> None:
+    """Print Target/Analog/Delta hourly + daily comparison for top-5 analogs."""
+    if len(analogs) == 0:
+        return
+
+    target_rows = _collect_query_rows(
+        target_date, cache_dir, include_gas, include_renewables, include_net_load,
+    )
+
+    pool_dates = pd.to_datetime(pool["date"]).dt.date
+    pool_by_date = pool.set_index(pool_dates)
+
+    print_header(
+        f"TOP-5 ANALOG COMPARISON  |  Target: {_format_target_label(target_date)}",
+        length=120,
+    )
+
+    top5 = analogs.head(min(5, len(analogs)))
+    n_top = len(top5)
+    for idx, (_, row) in enumerate(top5.iterrows()):
+        rank = int(row.get("rank", 0))
+        analog_date = pd.to_datetime(row["date"]).date()
+        distance = float(row.get("distance", float("nan")))
+        weight = float(row.get("weight", float("nan")))
+
+        accent = _ANALOG_PALETTE[idx % len(_ANALOG_PALETTE)]
+        reset = Colors.RESET if accent else ""
+        bold = Colors.BOLD if supports_color() else ""
+
+        header_line = (
+            f"  --- Analog #{rank}  {_format_target_label(analog_date)}  "
+            f"distance={distance:.4f}  weight={weight:.4%} ---"
+        )
+        print(f"\n{accent}{bold}{header_line}{reset}")
+        print(f"{accent}  {'=' * (len(header_line) - 2)}{reset}")
+
+        analog_rows = _collect_analog_hourly_rows(
+            analog_date, cache_dir, include_gas, include_renewables, include_net_load,
+        )
+        _print_analog_hourly_block(target_rows, analog_rows)
+
+        if analog_date in pool_by_date.index:
+            pool_row = pool_by_date.loc[analog_date]
+            if isinstance(pool_row, pd.DataFrame):
+                pool_row = pool_row.iloc[0]
+            _print_analog_daily_block(query, pool_row, feature_weights)
+        else:
+            logger.warning(
+                "Analog %s not found in pool -- skipping daily comparison", analog_date,
+            )
+
+        # Per-analog divider (blank line + colored separator) between blocks.
+        if idx < n_top - 1:
+            print(f"\n{accent}  {'-' * 116}{reset}")
+
+    print_divider("=", 120, dim=False)
 
 
 def _print_query_features(
@@ -512,8 +862,11 @@ def _print_query_features(
         target_date, cache_dir, include_gas, include_renewables, include_net_load,
     )
 
-    feat_w, region_w, he_w, sum_w = 22, 12, 7, 9
-    header = f"{'Feature':<{feat_w}} {'Region/Hub':<{region_w}}"
+    group_w, src_w, feat_w, region_w, he_w, sum_w = 10, 12, 22, 12, 7, 9
+    header = (
+        f"{'Group':<{group_w}} {'Source':<{src_w}} "
+        f"{'Feature':<{feat_w}} {'Region/Hub':<{region_w}}"
+    )
     for h in configs.HOURS:
         header += f" {('HE'+str(h)):>{he_w}}"
     header += f" {'OnPk':>{sum_w}} {'OffPk':>{sum_w}} {'Flat':>{sum_w}}"
@@ -525,12 +878,20 @@ def _print_query_features(
     print(header)
     print("-" * len(header))
 
-    last_feature: str | None = None
+    last_group: str | None = None
+    last_source: str | None = None
     for r in rows:
-        if last_feature is not None and r["feature"] != last_feature:
+        if last_group is not None and r["group"] != last_group:
             print("-" * len(header))
-        last_feature = r["feature"]
-        line = f"{r['feature']:<{feat_w}} {r['region']:<{region_w}}"
+            last_source = None  # always re-print Source on first row of a new group
+        group_cell = r["group"] if r["group"] != last_group else ""
+        source_cell = r["source"] if r["source"] != last_source else ""
+        last_group = r["group"]
+        last_source = r["source"]
+        line = (
+            f"{group_cell:<{group_w}} {source_cell:<{src_w}} "
+            f"{r['feature']:<{feat_w}} {r['region']:<{region_w}}"
+        )
         for h in configs.HOURS:
             line += f" {_format_query_cell(r['hourly'].get(h), r['fmt']):>{he_w}}"
         line += f" {_format_query_cell(r['on'],   r['fmt']):>{sum_w}}"
@@ -540,8 +901,6 @@ def _print_query_features(
 
     # Daily-only features (no hourly grain) — small footer.
     daily_only: list[tuple[str, str, float | None, str]] = [
-        ("hdd",                 "PJM",                query.get("hdd"),                 "2f"),
-        ("cdd",                 "PJM",                query.get("cdd"),                 "2f"),
         ("outage_total_mw",     configs.LOAD_REGION,  query.get("outage_total_mw"),     "comma"),
         ("outage_forced_mw",    configs.LOAD_REGION,  query.get("outage_forced_mw"),    "comma"),
         ("outage_forced_share", configs.LOAD_REGION,  query.get("outage_forced_share"), "3f"),
@@ -597,7 +956,7 @@ def _print_feature_vector(
             n_groups_active += 1
 
         if last_group is not None and group != last_group:
-            print("  " + "·" * (len(header) - 2))
+            print("  " + "." * (len(header) - 2))
         last_group = group
 
         for col in cols:
@@ -869,6 +1228,17 @@ def run_forecast(
         top5 = float(analogs.head(5)["weight"].sum())
         logger.info("Found %d analogs (top-5 weight sum: %.2f%%)", len(analogs), top5 * 100)
     _print_analogs(analogs, target_date)
+    _print_top5_analog_comparison(
+        analogs=analogs,
+        pool=pool,
+        query=query,
+        target_date=target_date,
+        cache_dir=cache_dir,
+        feature_weights=effective_weights,
+        include_gas=include_gas,
+        include_renewables=include_renewables,
+        include_net_load=include_net_load,
+    )
 
     quantiles = config.resolved_quantiles()
     df_forecast = _hourly_forecast_from_analogs(analogs, quantiles)
