@@ -103,6 +103,12 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
         "meteologica_pjm_net_load_forecast_hourly",
         "net_load_forecast",
     ),
+    "net_load_actual": (
+        "pjm_net_load_rt_hourly",
+        "pjm_net_load_actual_hourly",
+        "net_load_actual",
+        "net_load_rt",
+    ),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
@@ -625,6 +631,49 @@ def _normalize_meteologica_wind(df: pd.DataFrame) -> pd.DataFrame:
     return _normalize_meteologica_regional(df, "wind_forecast")
 
 
+def _normalize_net_load_actual(df: pd.DataFrame) -> pd.DataFrame:
+    """PJM RT net-load actuals: hourly load, solar/wind gen, and net_load_mw per region.
+
+    Pre-2019-04-02 hours have NaN solar_gen_mw and therefore NaN net_load_mw, since
+    PJM did not publish solar generation actuals before that date. Nulls are preserved
+    so consumers can distinguish "PJM didn't report" from "PJM reported zero."
+    """
+    output = df.copy()
+    date_col = _first_present(output.columns, _DATE_CANDIDATES)
+    hour_col = _first_present(output.columns, _HOUR_CANDIDATES)
+    region_col = _first_present(output.columns, _REGION_CANDIDATES)
+    net_load_col = _first_present(output.columns, ("net_load_mw", "net_load"))
+
+    if date_col is None or hour_col is None or region_col is None or net_load_col is None:
+        raise KeyError(
+            "Could not normalize net_load_actual; expected date/hour/region/net_load_mw. "
+            f"Columns: {list(output.columns)}"
+        )
+
+    metric_columns = [
+        column
+        for column in ("rt_load_mw", "solar_gen_mw", "wind_gen_mw", net_load_col)
+        if column in output.columns
+    ]
+    keep = [date_col, hour_col, region_col, *metric_columns]
+    keep = list(dict.fromkeys(keep))
+
+    rename_map = {date_col: "date", hour_col: "hour_ending", region_col: "region"}
+    if net_load_col != "net_load_mw":
+        rename_map[net_load_col] = "net_load_mw"
+
+    normalized = output[keep].rename(columns=rename_map)
+    normalized["date"] = _coerce_date(normalized, "date")
+    normalized["hour_ending"] = _coerce_hour(normalized, "hour_ending")
+    normalized["region"] = normalized["region"].astype(str)
+    for column in ("rt_load_mw", "solar_gen_mw", "wind_gen_mw", "net_load_mw"):
+        if column in normalized.columns:
+            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized = normalized.dropna(subset=["date", "hour_ending"])
+    normalized["hour_ending"] = normalized["hour_ending"].astype(int)
+    return normalized.sort_values(["region", "date", "hour_ending"]).reset_index(drop=True)
+
+
 def _normalize_meteologica_net_load(df: pd.DataFrame) -> pd.DataFrame:
     """Meteologica net_load combines load/solar/wind/net_load per (region, date, he)."""
     output = df.copy()
@@ -673,6 +722,7 @@ _NORMALIZERS = {
     "meteologica_wind_forecast": _normalize_meteologica_wind,
     "meteologica_net_load_forecast": _normalize_meteologica_net_load,
     "net_load_forecast": _normalize_meteologica_net_load,
+    "net_load_actual": _normalize_net_load_actual,
 }
 
 
@@ -794,6 +844,15 @@ def load_net_load_forecast(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("net_load_forecast", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_net_load_actuals(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    return _load_dataset("net_load_actual", path=path, cache_dir=cache_dir, columns=columns)
 
 
 def load_weather_hourly(
