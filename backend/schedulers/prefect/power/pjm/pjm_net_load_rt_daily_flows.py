@@ -20,8 +20,10 @@ DBT_MARTS = [
 EXPORT_MART = "pjm_net_load_rt_hourly"
 
 SCRAPES = [
-    ("backend.scrapes.power.pjm.solar_generation_by_area", "solar_gen_by_area"),
-    ("backend.scrapes.power.pjm.wind_generation_by_area",  "wind_gen_by_area"),
+    ("backend.scrapes.power.pjm.solar_generation_by_area",                   "solar_gen_by_area"),
+    ("backend.scrapes.power.pjm.wind_generation_by_area",                    "wind_gen_by_area"),
+    ("backend.scrapes.power.pjm.five_min_solar_generation_v1_2026_APR_28",   "five_min_solar_gen"),
+    ("backend.scrapes.power.pjm.instantaneous_wind_gen_v1_2026_APR_28",      "instantaneous_wind_gen"),
 ]
 
 
@@ -57,15 +59,21 @@ def run_scrape(module_path: str) -> None:
 def pjm_net_load_rt_daily():
     """Daily realized solar/wind generation + derived net load.
 
-    Pulls PJM solar and wind generation by area, rebuilds the two generation marts
-    plus the net-load mart (load - solar - wind), then exports the net-load mart
-    to the modelling cache. Scheduled after pjm_load_rt_daily so the upstream
-    pjm_load_rt_hourly values driving the net-load join are already fresh.
+    Pulls four PJM feeds — hourly solar/wind by area plus 5-min instantaneous
+    solar and wind — rebuilds the two generation marts (HOURLY > 5-min averaged
+    priority) and the net-load mart (load - solar - wind), then exports the
+    net-load mart to the modelling cache. Scheduled after pjm_load_rt_daily so
+    the upstream pjm_load_rt_hourly values driving the net-load join are fresh.
 
-    Scrapes are loosely coupled: failure in one does not block the other or dbt.
-    The net-load mart is left-joined on solar/wind, so a missing scrape leaves
-    those columns NULL for the affected hours and net_load_mw is NULL for those
-    rows by design.
+    The 5-min feeds backfill the gap above the hourly publication watermark:
+    PJM's hourly solar/wind feeds pad forward-dated and unreported hours with
+    0 (~2-day lag), so without the 5-min fallback the marts would carry that
+    padding for the most recent two days.
+
+    Scrapes are loosely coupled: failure in one does not block the others or
+    dbt. The net-load mart is left-joined on solar/wind, so a missing scrape
+    leaves those columns NULL for the affected hours and net_load_mw is NULL
+    for those rows by design.
     """
     run = pipeline_run_logger.PipelineRunLogger(
         pipeline_name="pjm_net_load_rt_daily", source="power",
@@ -73,7 +81,7 @@ def pjm_net_load_rt_daily():
     run.start()
     scrape_failures: list[str] = []
     try:
-        # ────── 1. Scrape solar + wind generation by area ──────
+        # ────── 1. Scrape hourly + 5-min solar/wind generation by area ──────
         for module_path, label in SCRAPES:
             try:
                 run_scrape(module_path)
