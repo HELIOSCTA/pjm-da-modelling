@@ -216,4 +216,5 @@ def _backfill(
 """
 
 if __name__ == "__main__":
-    df = main()
+    # df = main()
+    _backfill()

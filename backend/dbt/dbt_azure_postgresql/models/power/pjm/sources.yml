@@ -21,6 +21,8 @@ sources:
         description: "Hourly real-time unverified (preliminary) LMPs by pricing node from PJM Data Miner 2. Available same-day."
       - name: seven_day_outage_forecast
         description: "Seven-day generation outage forecast (total, planned, maintenance, forced MW) by region from PJM API."
+      - name: day_gen_capacity
+        description: "Hourly system-wide PJM generation capacity (eco_max, emerg_max, total_committed) from PJM Data Miner 2. Backward-only — today/tomorrow not published. eco_max excludes outages; total_committed is RPM-cleared installed capacity, structural and effectively flat day-to-day."
       - name: five_min_tie_flows
         description: "Five-minute actual and scheduled tie flows by interface from PJM API."
       - name: seven_day_load_forecast_v1_2025_08_13
