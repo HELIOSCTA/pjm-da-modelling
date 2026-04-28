@@ -28,8 +28,8 @@ from html_reports.fragments import outages as outages_fragments  # noqa: E402
 from html_reports.fragments import pjm_rto_forecast_snapshot as pjm_snapshot_fragments  # noqa: E402
 from html_reports.fragments import solar_forecast as solar_forecast_fragments  # noqa: E402
 from html_reports.fragments import wind_forecast as wind_forecast_fragments  # noqa: E402
-from html_reports.html_dashboard import HTMLDashboardBuilder  # noqa: E402
-from html_reports.master_report import build_master  # noqa: E402
+from html_reports.utils.html_dashboard import HTMLDashboardBuilder  # noqa: E402
+from html_reports.utils.master_report import build_master  # noqa: E402
 from utils.logging_utils import init_logging  # noqa: E402
 
 BLOB_PREFIX = "pjm-da/reports"
