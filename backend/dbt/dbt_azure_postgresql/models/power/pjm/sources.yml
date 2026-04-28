@@ -31,6 +31,10 @@ sources:
         description: "Dispatched reserve quantity, requirement, clearing price, and shortage indicator by area and reserve type from PJM Data Miner 2. 5-minute updates, 30-day retention."
       - name: unverified_five_min_lmps
         description: "Unverified 5-minute real-time LMPs by pricing hub from PJM Data Miner 2. Reveals intra-hour spike severity masked by hourly averages."
+      - name: solar_generation_by_area
+        description: "Hourly realized solar generation by PJM area (RTO, MIDATL, WEST, SOUTH, RFC, OTHER) from PJM Data Miner 2. First available 2019-04-02. RFC = MIDATL + WEST; RTO = MIDATL + WEST + SOUTH; OTHER is non-RTO and not summed in."
+      - name: wind_generation_by_area
+        description: "Hourly realized wind generation by PJM area (RTO, MIDATL, WEST, SOUTH, RFC, OTHER) from PJM Data Miner 2. First available 2011-01-01. RFC = MIDATL + WEST; RTO = MIDATL + WEST + SOUTH; OTHER is non-RTO and not summed in."
 
   - name: gridstatus_v1
     schema: gridstatus

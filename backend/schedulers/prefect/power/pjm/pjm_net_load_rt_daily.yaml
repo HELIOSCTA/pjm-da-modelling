@@ -1,0 +1,33 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Net Load RT Daily ──────
+  # Daily scrape of realized solar/wind generation by area + rebuild of
+  # pjm_solar_gen_rt_hourly, pjm_wind_gen_rt_hourly, and pjm_net_load_rt_hourly,
+  # followed by Azure Blob export of each mart.
+  #
+  # Scheduled after pjm_load_rt_daily (06:00, 23:00 Denver) so the upstream
+  # pjm_load_rt_hourly used by the net-load join is already fresh.
+
+  - name: PJM Net Load RT Daily
+    entrypoint: schedulers/prefect/power/pjm/pjm_net_load_rt_daily_flows.py:pjm_net_load_rt_daily
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, net_load, daily]
+    schedules:
+
+      # ────── 06:30 and 23:30 Denver ──────
+      # 30 min after the load-daily flow so pjm_load_rt_hourly is current.
+      - cron: "30 6,23 * * *"
+        timezone: "America/Denver"
