@@ -1019,6 +1019,18 @@ def _print_config(
     print(f"  Same-DOW group    {config.same_dow_group}")
     print(f"  Exclude holidays  {config.exclude_holidays}")
     print(f"  Min pool size     {config.min_pool_size}")
+    day_type = configs._dow_key_for(target_date)
+    profiles = config.resolved_day_type_profiles() if config.use_day_type_profiles else {}
+    profile_keys = sorted((profiles.get(day_type) or {}).keys())
+    profile_label = ",".join(profile_keys) if profile_keys else "-"
+    print(f"  Day-type          {day_type}  (override: {profile_label})")
+    if config.apply_outage_regime_filter:
+        print(
+            f"  Outage filter     z-score within +/-{config.outage_tolerance_std:.1f} std "
+            f"on {config.outage_filter_col}"
+        )
+    else:
+        print("  Outage filter     disabled")
 
     active = {k: v for k, v in sorted(effective_weights.items()) if v > 0}
     print_section("Feature Weights (active)")
@@ -1102,6 +1114,7 @@ def run_forecast(
     cache_enabled: bool = configs.CACHE_ENABLED,
     cache_ttl_hours: float = configs.CACHE_TTL_HOURS,
     force_refresh: bool = configs.FORCE_CACHE_REFRESH,
+    print_analog_comparison: bool = True,
 ) -> dict:
     """Run D+1 forward-only KNN forecast."""
     if config is None:
@@ -1111,6 +1124,9 @@ def run_forecast(
         target_date = config.resolved_target_date()
     else:
         target_date = pd.to_datetime(target_date).date()
+
+    # Apply weekend/weekday profile (no-op for weekday or when disabled).
+    config, day_type = config.with_day_type_overrides(target_date)
 
     horizon_offset = max((target_date - date.today()).days, 1)
     include_gas = horizon_offset <= config.gas_feature_max_horizon_days
@@ -1126,8 +1142,8 @@ def run_forecast(
 
     logger.info("=" * 60)
     logger.info(
-        "Forward-only KNN: target=%s hub=%s n_analogs=%d horizon=D+%d",
-        target_date, config.hub, config.n_analogs, horizon_offset,
+        "Forward-only KNN: target=%s hub=%s n_analogs=%d horizon=D+%d day_type=%s",
+        target_date, config.hub, config.n_analogs, horizon_offset, day_type,
     )
     logger.info(
         "Horizon-conditional features: gas=%s outages=%s renewables=%s net_load=%s",
@@ -1218,6 +1234,9 @@ def run_forecast(
         season_window_days=config.season_window_days,
         recency_half_life_days=config.recency_half_life_days,
         weight_method=config.weight_method,
+        apply_outage_regime_filter=config.apply_outage_regime_filter,
+        outage_tolerance_std=config.outage_tolerance_std,
+        outage_filter_col=config.outage_filter_col,
     )
 
     if len(analogs) == 0:
@@ -1228,17 +1247,18 @@ def run_forecast(
         top5 = float(analogs.head(5)["weight"].sum())
         logger.info("Found %d analogs (top-5 weight sum: %.2f%%)", len(analogs), top5 * 100)
     _print_analogs(analogs, target_date)
-    _print_top5_analog_comparison(
-        analogs=analogs,
-        pool=pool,
-        query=query,
-        target_date=target_date,
-        cache_dir=cache_dir,
-        feature_weights=effective_weights,
-        include_gas=include_gas,
-        include_renewables=include_renewables,
-        include_net_load=include_net_load,
-    )
+    if print_analog_comparison:
+        _print_top5_analog_comparison(
+            analogs=analogs,
+            pool=pool,
+            query=query,
+            target_date=target_date,
+            cache_dir=cache_dir,
+            feature_weights=effective_weights,
+            include_gas=include_gas,
+            include_renewables=include_renewables,
+            include_net_load=include_net_load,
+        )
 
     quantiles = config.resolved_quantiles()
     df_forecast = _hourly_forecast_from_analogs(analogs, quantiles)
@@ -1314,6 +1334,9 @@ if __name__ == "__main__":
     _MODELLING_ROOT = Path(__file__).resolve().parents[3]
     init_logging(name="forward_only_knn_forecast", log_dir=_MODELLING_ROOT / "logs")
 
-    result = run_forecast()
+    # target_date = datetime.now().date()
+    # result = run_forecast(target_date=target_date, print_analog_comparison=False)
+    
+    result = run_forecast(print_analog_comparison=False)
     if "error" in result:
         logger.error(result["error"])

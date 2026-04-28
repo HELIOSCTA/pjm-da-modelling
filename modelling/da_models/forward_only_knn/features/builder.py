@@ -8,6 +8,10 @@ Pool contract:
 Query contract:
   - One row for target delivery date T
   - Same feature namespace as pool (no label columns)
+
+Forward-only by design — see
+modelling/@TODO/pjm-research-for-modelling/backward_vs_forward_looking.md.
+Yesterday's realized conditions are deliberately not features here.
 """
 from __future__ import annotations
 
@@ -457,11 +461,16 @@ def _build_lmp_labels(df_lmp_da: pd.DataFrame, hub: str) -> pd.DataFrame:
 
 
 def _ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    """Ensure all columns exist; create missing with NaN."""
+    """Ensure all columns exist; create missing with NaN. Batched to avoid
+    the per-column DataFrame fragmentation warning."""
     out = df.copy()
-    for col in columns:
-        if col not in out.columns:
-            out[col] = np.nan
+    missing = [c for c in columns if c not in out.columns]
+    if missing:
+        nan_df = pd.DataFrame(
+            {c: np.nan for c in missing},
+            index=out.index,
+        )
+        out = pd.concat([out, nan_df], axis=1)
     return out
 
 
@@ -544,13 +553,19 @@ def build_pool(
         if part is not None and len(part) > 0:
             pool = pool.merge(part, on="date", how="left")
 
-    feature_cols = configs.resolved_feature_columns(configs.FEATURE_GROUP_WEIGHTS)
-    keep_cols = ["date"] + _FILTER_COLS + feature_cols + configs.LMP_LABEL_COLUMNS
+    # Pool always carries the full feature column set so distance computation
+    # can opt into ref_* groups without rebuilding the pool.
+    all_feature_cols: list[str] = []
+    for cols in configs.FEATURE_GROUPS.values():
+        for col in cols:
+            if col not in all_feature_cols:
+                all_feature_cols.append(col)
+    keep_cols = ["date"] + _FILTER_COLS + all_feature_cols + configs.LMP_LABEL_COLUMNS
     pool = _ensure_columns(pool, keep_cols)[keep_cols]
 
     pool["date"] = pd.to_datetime(pool["date"]).dt.date
     pool = pool.sort_values("date").reset_index(drop=True)
-    logger.info("Pool built: %s rows, %s feature columns", len(pool), len(feature_cols))
+    logger.info("Pool built: %s rows, %s feature columns", len(pool), len(all_feature_cols))
     return pool
 
 
@@ -625,14 +640,24 @@ def build_query_row(
         if part is not None and len(part) > 0:
             row_df = row_df.merge(part, on="date", how="left")
 
-    for col, value in {**outage_vals, **renewable_vals}.items():
-        row_df[col] = value
+    # One-shot column concat — pandas' fragmentation warning fires when many
+    # columns are added one-by-one (which `assign` does internally).
+    extras = {**outage_vals, **renewable_vals, **cal}
+    if extras:
+        extras_df = pd.DataFrame([extras])
+        row_df = pd.concat(
+            [row_df.reset_index(drop=True), extras_df.reset_index(drop=True)],
+            axis=1,
+        )
 
-    for col, value in cal.items():
-        row_df[col] = value
-
-    feature_cols = configs.resolved_feature_columns(configs.FEATURE_GROUP_WEIGHTS)
-    keep_cols = ["date"] + _FILTER_COLS + feature_cols
+    # Query carries the full feature column set so the engine can resolve any
+    # active group (ref_* included) without rebuilding the row.
+    all_feature_cols: list[str] = []
+    for cols in configs.FEATURE_GROUPS.values():
+        for col in cols:
+            if col not in all_feature_cols:
+                all_feature_cols.append(col)
+    keep_cols = ["date"] + _FILTER_COLS + all_feature_cols
     row_df = _ensure_columns(row_df, keep_cols)[keep_cols]
     row_df["date"] = pd.to_datetime(row_df["date"]).dt.date
 
@@ -641,7 +666,7 @@ def build_query_row(
         "Query row built for %s (include_gas=%s, non-null features=%s/%s)",
         target_date,
         include_gas,
-        int(pd.Series(query[feature_cols]).notna().sum()),
-        len(feature_cols),
+        int(pd.Series(query[all_feature_cols]).notna().sum()),
+        len(all_feature_cols),
     )
     return query

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -76,3 +78,89 @@ def apply_filter_ladder(
         min_pool_size,
     )
     return base
+
+
+def outage_regime_filter(
+    pool: pd.DataFrame,
+    target_outage: float | None,
+    outage_col: str = "outage_total_mw",
+    tolerance_std: float = 1.5,
+) -> tuple[pd.DataFrame, dict]:
+    """Drop candidates whose outage z-score is too far from the target's.
+
+    A 35 GW outage day is not a good analog for a 65 GW outage day even if
+    load and gas profiles match. This filter mirrors the helioscta-pjm-da
+    `outage_regime_filter`: candidates whose z-score differs from the
+    target's by more than ``tolerance_std`` are excluded.
+
+    Returns the filtered pool and a stats dict with before/after counts and
+    the target's z-score (useful for the diagnostic log line).
+    """
+    stats: dict = {
+        "applied": False,
+        "before": len(pool),
+        "after": len(pool),
+        "target_outage": target_outage,
+        "z_target": None,
+        "tolerance_std": tolerance_std,
+        "skipped_reason": None,
+    }
+
+    if outage_col not in pool.columns:
+        stats["skipped_reason"] = f"column '{outage_col}' missing from pool"
+        return pool, stats
+
+    if target_outage is None or (isinstance(target_outage, float) and np.isnan(target_outage)):
+        stats["skipped_reason"] = "target outage is NaN/None"
+        return pool, stats
+
+    series = pd.to_numeric(pool[outage_col], errors="coerce")
+    valid = series.notna()
+    if valid.sum() < 2:
+        stats["skipped_reason"] = "fewer than 2 valid outage values in pool"
+        return pool, stats
+
+    pool_mean = float(series[valid].mean())
+    pool_std = float(series[valid].std())
+    if pool_std == 0:
+        stats["skipped_reason"] = "pool outage std is zero"
+        return pool, stats
+
+    z_target = (float(target_outage) - pool_mean) / pool_std
+    z_candidates = (series - pool_mean) / pool_std
+    keep = (z_candidates - z_target).abs() <= float(tolerance_std)
+    keep = keep.fillna(False)
+
+    filtered = pool[keep].copy()
+    stats["applied"] = True
+    stats["after"] = len(filtered)
+    stats["z_target"] = z_target
+    return filtered, stats
+
+
+def ensure_minimum_pool(
+    filtered: pd.DataFrame,
+    full: pd.DataFrame,
+    target_date: date,
+    min_size: int,
+) -> pd.DataFrame:
+    """Backfill from the full pool by date proximity if filters cut too aggressively."""
+    if len(filtered) >= min_size:
+        return filtered
+
+    logger.warning(
+        "Pool too small after filters (%s < %s) — relaxing on date proximity",
+        len(filtered), min_size,
+    )
+
+    fallback = full[
+        (full["date"] != target_date) & (full["date"] < target_date)
+    ].copy()
+    if len(fallback) == 0:
+        return filtered
+
+    fallback["_d"] = np.abs(
+        (pd.to_datetime(fallback["date"]) - pd.Timestamp(target_date)).dt.days
+    )
+    fallback = fallback.sort_values("_d").drop(columns=["_d"])
+    return fallback.head(max(min_size, len(filtered)))

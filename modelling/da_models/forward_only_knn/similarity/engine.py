@@ -95,6 +95,9 @@ def find_twins(
     exclude_dates: list[date] | None = None,
     recency_half_life_days: int = configs.RECENCY_HALF_LIFE_DAYS,
     weight_method: str = "inverse_distance",
+    apply_outage_regime_filter: bool = configs.FILTER_OUTAGE_REGIME,
+    outage_tolerance_std: float = configs.FILTER_OUTAGE_TOLERANCE_STD,
+    outage_filter_col: str = configs.FILTER_OUTAGE_COL,
 ) -> pd.DataFrame:
     """Find nearest historical delivery days to query conditions."""
     if feature_weights is None:
@@ -137,6 +140,43 @@ def find_twins(
     )
     if len(filtered) == 0:
         raise ValueError("No candidates after calendar filtering")
+
+    if apply_outage_regime_filter:
+        # Preserve the calendar-filtered pool so the fallback keeps the DOW
+        # match if the outage filter cuts below min_pool_size.
+        pre_outage_pool = filtered.copy()
+        target_outage = query.get(outage_filter_col)
+        try:
+            target_outage_val = (
+                None if target_outage is None or pd.isna(target_outage)
+                else float(target_outage)
+            )
+        except (TypeError, ValueError):
+            target_outage_val = None
+        filtered, og_stats = filtering.outage_regime_filter(
+            pool=filtered,
+            target_outage=target_outage_val,
+            outage_col=outage_filter_col,
+            tolerance_std=outage_tolerance_std,
+        )
+        if og_stats["applied"]:
+            logger.info(
+                "Outage regime filter: %s -> %s (target=%.0f MW, z=%+.2f, tol=%.2f)",
+                og_stats["before"], og_stats["after"],
+                og_stats["target_outage"], og_stats["z_target"],
+                og_stats["tolerance_std"],
+            )
+        else:
+            logger.info(
+                "Outage regime filter skipped: %s",
+                og_stats.get("skipped_reason", "unknown"),
+            )
+        filtered = filtering.ensure_minimum_pool(
+            filtered, pre_outage_pool, target_date, min_size=min_pool_size,
+        )
+
+    if len(filtered) == 0:
+        raise ValueError("No candidates after outage regime filtering")
 
     groups = _resolved_groups(filtered, query, feature_weights)
     if not groups:
@@ -211,4 +251,7 @@ def find_analogs(
         season_window_days=config.season_window_days,
         recency_half_life_days=config.recency_half_life_days,
         weight_method=config.weight_method,
+        apply_outage_regime_filter=config.apply_outage_regime_filter,
+        outage_tolerance_std=config.outage_tolerance_std,
+        outage_filter_col=config.outage_filter_col,
     )

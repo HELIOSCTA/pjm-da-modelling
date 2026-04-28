@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import copy
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from da_models.common.configs import CACHE_DIR as DEFAULT_SHARED_CACHE_DIR
 
@@ -16,9 +17,10 @@ LOAD_REGION: str = "RTO"
 LOAD_REGIONS: list[str] = ["RTO", "MIDATL", "WEST", "SOUTH"]
 
 
-def _per_region(*metrics: str) -> list[str]:
-    """Expand metric names to per-region feature columns: metric_<region_lower>."""
-    return [f"{m}_{r.lower()}" for m in metrics for r in LOAD_REGIONS]
+def _per_region(*metrics: str, prefix: str = "") -> list[str]:
+    """Expand metric names to per-region feature columns: <prefix><metric>_<region_lower>."""
+    return [f"{prefix}{m}_{r.lower()}" for m in metrics for r in LOAD_REGIONS]
+
 
 # Cache
 _DEFAULT_CACHE_DIR: Path = DEFAULT_SHARED_CACHE_DIR
@@ -43,9 +45,13 @@ DOW_GROUPS: dict[str, list[int]] = {
     "sunday": [0],
 }
 
-# Distance feature groups. Load / net-load / renewable groups are expanded
-# per region (RTO + MIDATL + WEST + SOUTH); gas, outages and calendar
-# remain system-wide.
+# Distance feature groups.
+#
+# Forward-only by design: every group describes the TARGET delivery day's
+# conditions (forecasts on the query side, actuals on the analog side).
+# Backward-looking reference-day features are deliberately excluded — see
+# modelling/@TODO/pjm-research-for-modelling/backward_vs_forward_looking.md
+# for why anchoring to yesterday's signals causes regime-change misses.
 FEATURE_GROUPS: dict[str, list[str]] = {
     "load_level": _per_region(
         "load_daily_avg",
@@ -88,19 +94,26 @@ FEATURE_GROUPS: dict[str, list[str]] = {
 }
 
 FEATURE_GROUP_WEIGHTS: dict[str, float] = {
-    "load_level": 3.0,
-    "load_ramps": 1.0,
-    "gas_level": 2.0,
-    "outage_level": 2.0,
+    "load_level":      3.0,
+    "load_ramps":      1.0,
+    "gas_level":       2.0,
+    "outage_level":    2.0,
     "renewable_level": 1.5,
-    "net_load": 2.0,
-    "calendar_dow": 1.0,
+    "net_load":        2.0,
+    "calendar_dow":    1.0,
 }
 
 # Filtering
 FILTER_SAME_DOW_GROUP: bool = True
 FILTER_EXCLUDE_HOLIDAYS: bool = True
 FILTER_SEASON_WINDOW_DAYS: int = 60
+
+# Outage regime filter — drops candidates whose outage_total_mw z-score is
+# more than `tolerance_std` away from the target's z-score. Mirrors the old
+# helioscta-pjm-da `outage_regime_filter`.
+FILTER_OUTAGE_REGIME: bool = True
+FILTER_OUTAGE_TOLERANCE_STD: float = 1.5
+FILTER_OUTAGE_COL: str = "outage_total_mw"
 
 # Recency
 RECENCY_HALF_LIFE_DAYS: int = 730
@@ -115,6 +128,38 @@ NET_LOAD_FEATURE_MAX_HORIZON_DAYS: int = 7
 LMP_LABEL_COLUMNS: list[str] = [f"lmp_h{h}" for h in HOURS]
 
 
+# ── Day-type profiles ──────────────────────────────────────────────────
+# Per-DOW overrides applied via `ForwardOnlyKNNConfig.with_day_type_overrides`.
+# Each profile may override `feature_group_weights` (shallow-merged onto the
+# base weights), `n_analogs`, `season_window_days`, `same_dow_group`,
+# `recency_half_life_days`. Saturday/Sunday tighten on flatter shapes and
+# concentrate analog weight on the smaller candidate pool.
+DAY_TYPE_PROFILES: dict[str, dict[str, Any]] = {
+    "weekday": {},
+    "saturday": {
+        "season_window_days": 45,
+        "n_analogs": 12,
+        "feature_group_weights": {
+            # Flatter shape → ramps less informative.
+            "load_ramps":      0.5,
+            "net_load":        2.5,   # peak net load still drives weekend pricing
+            "renewable_level": 2.0,   # solar share is a bigger fraction on weekends
+            "calendar_dow":    0.25,  # already filtered on DOW group
+        },
+    },
+    "sunday": {
+        "season_window_days": 60,
+        "n_analogs": 10,             # fewer Sundays in pool — concentrate weight
+        "feature_group_weights": {
+            "load_ramps":      0.25,
+            "net_load":        2.5,
+            "renewable_level": 2.5,
+            "calendar_dow":    0.25,
+        },
+    },
+}
+
+
 def resolved_feature_columns(feature_weights: dict[str, float]) -> list[str]:
     """Return unique feature columns with positive weight."""
     cols: list[str] = []
@@ -125,6 +170,16 @@ def resolved_feature_columns(feature_weights: dict[str, float]) -> list[str]:
             if col not in cols:
                 cols.append(col)
     return cols
+
+
+def _dow_key_for(target_date: date) -> str:
+    """Map a date to a DAY_TYPE_PROFILES key (Sun=0..Sat=6)."""
+    dow_num = (target_date.weekday() + 1) % 7
+    if dow_num == 0:
+        return "sunday"
+    if dow_num == 6:
+        return "saturday"
+    return "weekday"
 
 
 @dataclass
@@ -147,6 +202,15 @@ class ForwardOnlyKNNConfig:
     outage_feature_max_horizon_days: int = OUTAGE_FEATURE_MAX_HORIZON_DAYS
     renewable_feature_max_horizon_days: int = RENEWABLE_FEATURE_MAX_HORIZON_DAYS
     net_load_feature_max_horizon_days: int = NET_LOAD_FEATURE_MAX_HORIZON_DAYS
+
+    # Day-type profile overrides
+    use_day_type_profiles: bool = True
+    day_type_profiles: dict[str, dict[str, Any]] | None = None
+
+    # Outage regime filter
+    apply_outage_regime_filter: bool = FILTER_OUTAGE_REGIME
+    outage_tolerance_std: float = FILTER_OUTAGE_TOLERANCE_STD
+    outage_filter_col: str = FILTER_OUTAGE_COL
 
     def resolved_target_date(self) -> date:
         """Forecast date with tomorrow fallback."""
@@ -176,3 +240,44 @@ class ForwardOnlyKNNConfig:
         if not include_net_load and "net_load" in weights:
             weights["net_load"] = 0.0
         return weights
+
+    def resolved_day_type_profiles(self) -> dict[str, dict[str, Any]]:
+        """Return day-type override profiles with module defaults filled in."""
+        base = copy.deepcopy(DAY_TYPE_PROFILES)
+        if not self.day_type_profiles:
+            return base
+        for k, v in self.day_type_profiles.items():
+            if k not in base:
+                base[k] = {}
+            if isinstance(v, dict):
+                base[k].update(copy.deepcopy(v))
+        return base
+
+    def with_day_type_overrides(
+        self, target_date: date,
+    ) -> tuple["ForwardOnlyKNNConfig", str]:
+        """Return (config, day_type) with weekend/weekday profile applied."""
+        day_type = _dow_key_for(target_date)
+        if not self.use_day_type_profiles:
+            return self, day_type
+
+        profile = self.resolved_day_type_profiles().get(day_type, {})
+        if not profile:
+            return self, day_type
+
+        cfg = copy.deepcopy(self)
+        if "feature_group_weights" in profile:
+            base = dict(cfg.feature_group_weights or FEATURE_GROUP_WEIGHTS)
+            base.update(copy.deepcopy(profile["feature_group_weights"]))
+            cfg.feature_group_weights = base
+
+        for key in (
+            "n_analogs",
+            "season_window_days",
+            "same_dow_group",
+            "recency_half_life_days",
+        ):
+            if key in profile:
+                setattr(cfg, key, profile[key])
+
+        return cfg, day_type

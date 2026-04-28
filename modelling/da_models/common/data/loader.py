@@ -109,6 +109,11 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
         "net_load_actual",
         "net_load_rt",
     ),
+    "day_gen_capacity": (
+        "pjm_day_gen_capacity_daily",
+        "day_gen_capacity_daily",
+        "day_gen_capacity",
+    ),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
@@ -704,6 +709,36 @@ def _normalize_meteologica_net_load(df: pd.DataFrame) -> pd.DataFrame:
     return normalized.sort_values(["region", "date", "hour_ending"]).reset_index(drop=True)
 
 
+def _normalize_day_gen_capacity(df: pd.DataFrame) -> pd.DataFrame:
+    """System-wide daily PJM generation capacity. One row per date, no region/hour."""
+    output = df.copy()
+    date_col = _first_present(output.columns, _DATE_CANDIDATES)
+    capacity_columns = [
+        column
+        for column in (
+            "eco_max_daily_avg_mw",
+            "eco_max_daily_min_mw",
+            "eco_max_daily_max_mw",
+            "emerg_max_daily_avg_mw",
+            "total_committed_mw",
+        )
+        if column in output.columns
+    ]
+
+    if date_col is None or not capacity_columns:
+        raise KeyError(
+            "Could not normalize day_gen_capacity; expected date/capacity columns. "
+            f"Columns: {list(output.columns)}"
+        )
+
+    normalized = output[[date_col, *capacity_columns]].rename(columns={date_col: "date"})
+    normalized["date"] = _coerce_date(normalized, "date")
+    for column in capacity_columns:
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized = normalized.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return normalized
+
+
 _NORMALIZERS = {
     "lmps_da": _normalize_lmps_da,
     "load_rt": _normalize_load_rt,
@@ -723,6 +758,7 @@ _NORMALIZERS = {
     "meteologica_net_load_forecast": _normalize_meteologica_net_load,
     "net_load_forecast": _normalize_meteologica_net_load,
     "net_load_actual": _normalize_net_load_actual,
+    "day_gen_capacity": _normalize_day_gen_capacity,
 }
 
 
@@ -853,6 +889,21 @@ def load_net_load_actuals(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("net_load_actual", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_day_gen_capacity(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Daily system-wide PJM generation capacity (eco_max stats, total_committed).
+
+    Backward-only feed: today and forward dates won't have rows. For
+    forward query use, take the most recently published row — total_committed
+    is structural (RPM-cleared, effectively flat day-to-day).
+    """
+    return _load_dataset("day_gen_capacity", path=path, cache_dir=cache_dir, columns=columns)
 
 
 def load_weather_hourly(
