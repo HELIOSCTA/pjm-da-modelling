@@ -41,6 +41,15 @@ models:
       marts:
         +materialized: ephemeral
 
+    energy_aspects:
+      energy_aspects_cleaned:
+        source:
+          +materialized: ephemeral
+        staging:
+          +materialized: ephemeral
+        marts:
+          +materialized: ephemeral
+
     wsi:
       source:
         +materialized: ephemeral

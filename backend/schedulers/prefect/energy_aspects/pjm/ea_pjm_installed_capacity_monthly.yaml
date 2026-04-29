@@ -1,0 +1,33 @@
+name: helioscta-energy-aspects-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── EA PJM Installed Capacity Monthly ──────
+  # Weekly umbrella: scrape Energy Aspects PJM installed-capacity forecast
+  # (fuel-disaggregated nameplate MW, monthly grain through ~2030),
+  # rebuild the dbt mart, then export to parquet for the modelling cache.
+  #
+  # Underlying data is monthly, but EA revises forecasts on their own
+  # cadence (typically alongside monthly research reports). A weekly poll
+  # catches revisions without spamming the API, and is cheap (~228 rows).
+
+  - name: EA PJM Installed Capacity Monthly
+    entrypoint: schedulers/prefect/energy_aspects/pjm/ea_pjm_installed_capacity_monthly_flows.py:ea_pjm_installed_capacity_monthly
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, energy_aspects, installed_capacity_monthly]
+    schedules:
+
+      # ────── Weekly Monday at 06:00 MST ──────
+      - cron: "0 22 * * 1-5"
+        timezone: "America/Denver"

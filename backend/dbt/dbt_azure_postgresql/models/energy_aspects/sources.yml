@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+
+  - name: energy_aspects_v1
+    schema: energy_aspects
+    description: "Energy Aspects raw tables ingested via backend.scrapes.energy_aspects."
+    tables:
+      - name: us_installed_capacity_by_iso_and_fuel_type
+        description: "Monthly installed capacity forecast by ISO and fuel type from Energy Aspects."
