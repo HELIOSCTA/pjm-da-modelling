@@ -1,4 +1,4 @@
-"""Streamlit operator console for the knn_model_only_load model family.
+"""Streamlit operator console for the like_day_model_knn model family.
 
 Run from ``modelling/streamlit_app``::
 

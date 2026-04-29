@@ -15,8 +15,8 @@ for path in (_APP_ROOT, _MODELLING_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from da_models.knn_model_only_load import _shared  # noqa: E402
-from da_models.knn_model_only_load import configs as knn_configs  # noqa: E402
+from da_models.like_day_model_knn import _shared  # noqa: E402
+from da_models.like_day_model_knn import configs as knn_configs  # noqa: E402
 from lib.ui import linked_date_pair, shade_onpeak, styled_summary, wide_summary_row  # noqa: E402
 
 st.title("Inspect Inputs")

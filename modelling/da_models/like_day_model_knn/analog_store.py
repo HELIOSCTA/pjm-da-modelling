@@ -1,4 +1,4 @@
-"""Parquet explainability store for knn_model_only_load backtests."""
+"""Parquet explainability store for like_day_model_knn backtests."""
 from __future__ import annotations
 
 import uuid
@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from da_models.knn_model_only_load import configs
-from da_models.knn_model_only_load.configs import KnnModelConfig, ModelSpec
+from da_models.like_day_model_knn import configs
+from da_models.like_day_model_knn.configs import KnnModelConfig, ModelSpec
 
 HOURS = list(range(1, 25))
 LMP_COLS = [f"lmp_h{h}" for h in HOURS]

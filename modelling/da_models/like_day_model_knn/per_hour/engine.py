@@ -20,8 +20,9 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from da_models.knn_model_only_load import configs
-from da_models.knn_model_only_load.configs import ModelSpec
+from da_models.like_day_model_knn import calendar as _calendar
+from da_models.like_day_model_knn import configs
+from da_models.like_day_model_knn.configs import ModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,27 @@ def _candidate_pool(
     target_date: date,
     season_window_days: int,
     min_pool_size: int,
+    dates_meta: pd.DataFrame | None = None,
+    same_dow_group: bool = False,
+    exclude_holidays: bool = False,
+    exclude_dates: list[str] | None = None,
 ) -> pd.DataFrame:
     work = pool.copy()
     work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
     if len(work) == 0:
         return work
+    if dates_meta is not None and (same_dow_group or exclude_holidays or exclude_dates):
+        work = _calendar.apply_calendar_filter(
+            pool=work,
+            target_date=target_date,
+            dates_meta=dates_meta,
+            same_dow_group=same_dow_group,
+            exclude_holidays=exclude_holidays,
+            exclude_dates=exclude_dates,
+            min_pool_size=min_pool_size,
+        )
+        if len(work) == 0:
+            return work
     if season_window_days > 0:
         target_doy = pd.Timestamp(target_date).dayofyear
         doys = pd.to_datetime(work["date"]).dt.dayofyear.to_numpy(dtype=float)
@@ -76,6 +93,10 @@ def find_twins_per_hour(
     n_analogs: int = configs.DEFAULT_N_ANALOGS,
     season_window_days: int = configs.SEASON_WINDOW_DAYS,
     min_pool_size: int = configs.MIN_POOL_SIZE,
+    dates_meta: pd.DataFrame | None = None,
+    same_dow_group: bool = False,
+    exclude_holidays: bool = False,
+    exclude_dates: list[str] | None = None,
 ) -> pd.DataFrame:
     """Per-hour analog table. Shape: 24 * n_analogs rows.
 
@@ -83,7 +104,13 @@ def find_twins_per_hour(
     """
     out_cols = ["hour_ending", "rank", "date", "distance", "weight", "lmp"]
 
-    work = _candidate_pool(pool, target_date, season_window_days, min_pool_size)
+    work = _candidate_pool(
+        pool, target_date, season_window_days, min_pool_size,
+        dates_meta=dates_meta,
+        same_dow_group=same_dow_group,
+        exclude_holidays=exclude_holidays,
+        exclude_dates=exclude_dates,
+    )
     if len(work) == 0:
         logger.warning(
             "per_hour: pool has no rows before target_date=%s", target_date,

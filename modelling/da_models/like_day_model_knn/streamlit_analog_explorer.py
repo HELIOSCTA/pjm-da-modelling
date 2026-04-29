@@ -1,6 +1,6 @@
-"""Streamlit explorer for the knn_model_only_load analog Parquet store.
+"""Streamlit explorer for the like_day_model_knn analog Parquet store.
 
-Run from ``modelling/da_models/knn_model_only_load``:
+Run from ``modelling/da_models/like_day_model_knn``:
 
     streamlit run .\streamlit_analog_explorer.py
 """

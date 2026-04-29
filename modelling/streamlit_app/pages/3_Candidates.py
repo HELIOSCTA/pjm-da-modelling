@@ -22,8 +22,8 @@ for path in (_APP_ROOT, _MODELLING_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from da_models.knn_model_only_load import _shared  # noqa: E402
-from da_models.knn_model_only_load import configs as knn_configs  # noqa: E402
+from da_models.like_day_model_knn import _shared  # noqa: E402
+from da_models.like_day_model_knn import configs as knn_configs  # noqa: E402
 from lib import config_io  # noqa: E402
 from lib.ui import (  # noqa: E402
     ALL_HOURS,
@@ -64,7 +64,7 @@ def _load_lmps() -> pd.DataFrame:
     return df
 
 
-# TODO: dedupe with da_models.knn_model_only_load._shared once that family-shared
+# TODO: dedupe with da_models.like_day_model_knn._shared once that family-shared
 # helper exists. Identical logic to analog_store._candidate_pool and the three
 # engines' _candidate_pool helpers.
 def _filter_pool(

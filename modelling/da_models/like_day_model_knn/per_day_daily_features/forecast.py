@@ -1,9 +1,4 @@
-"""Hourly forecast aggregation for per_hour - per-hour analogs.
-
-Differs from the per_day_* day-analog aggregation: per_hour's analogs are
-per-(date, hour) tuples, so this module groups by hour_ending and computes
-weighted averages within each hour's own ensemble.
-"""
+"""Hourly forecast aggregation for per_day_daily_features - per-day analogs."""
 from __future__ import annotations
 
 from datetime import date
@@ -11,7 +6,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from da_models.knn_model_only_load import configs
+from da_models.like_day_model_knn import configs
 
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
@@ -23,25 +18,25 @@ def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> floa
     return float(np.interp(q, cdf, v))
 
 
-def hourly_forecast_from_hour_analogs(
+def hourly_forecast_from_day_analogs(
     analogs: pd.DataFrame,
     quantiles: list[float],
 ) -> pd.DataFrame:
-    """Aggregate per-(hour, rank) analog tuples into a 24-hour forecast.
+    """Aggregate top-N day-level analogs into a 24-hour forecast.
 
-    Expects ``analogs`` with columns: hour_ending, weight, lmp.
-    Group by hour_ending and produce a weighted point + quantiles per HE.
+    For each HE, compute the inverse-distance-weighted average and weighted
+    empirical quantiles across the analogs' ``lmp_h{HE}`` columns.
     """
-    if len(analogs) == 0 or not {"hour_ending", "weight", "lmp"}.issubset(analogs.columns):
-        return pd.DataFrame()
-
     rows: list[dict] = []
     for h in configs.HOURS:
-        sub = analogs[analogs["hour_ending"] == h].dropna(subset=["lmp"])
-        if len(sub) == 0:
+        col = f"lmp_h{h}"
+        if col not in analogs.columns:
             continue
-        values = sub["lmp"].to_numpy(dtype=float)
-        w = sub["weight"].to_numpy(dtype=float)
+        hour = analogs[["weight", col]].dropna(subset=[col]).copy()
+        if len(hour) == 0:
+            continue
+        values = hour[col].to_numpy(dtype=float)
+        w = hour["weight"].to_numpy(dtype=float)
         if w.sum() <= 0:
             continue
         w = w / w.sum()

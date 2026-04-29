@@ -1,4 +1,4 @@
-"""Launch single-day backtests for the knn_model_only_load variants."""
+"""Launch single-day backtests for the like_day_model_knn variants."""
 from __future__ import annotations
 
 import traceback
@@ -18,10 +18,10 @@ for path in (_APP_ROOT, _MODELLING_ROOT):
 from lib import config_io, store  # noqa: E402
 from lib.ui import init_target_date_state  # noqa: E402
 
-from da_models.knn_model_only_load import configs as knn_configs  # noqa: E402
-from da_models.knn_model_only_load.per_day_daily_features import single_day as pddf_sd  # noqa: E402
-from da_models.knn_model_only_load.per_day_hourly_features import single_day as pdhf_sd  # noqa: E402
-from da_models.knn_model_only_load.per_hour import single_day as ph_sd  # noqa: E402
+from da_models.like_day_model_knn import configs as knn_configs  # noqa: E402
+from da_models.like_day_model_knn.per_day_daily_features import single_day as pddf_sd  # noqa: E402
+from da_models.like_day_model_knn.per_day_hourly_features import single_day as pdhf_sd  # noqa: E402
+from da_models.like_day_model_knn.per_hour import single_day as ph_sd  # noqa: E402
 
 DEFAULTS_LABEL = "(model defaults)"
 PER_DAY_KEYS = ("n_analogs", "season_window_days", "min_pool_size")

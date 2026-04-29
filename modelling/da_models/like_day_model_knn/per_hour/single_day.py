@@ -2,8 +2,8 @@
 
 Usage::
 
-    python -m da_models.knn_model_only_load.per_hour.single_day --date 2024-08-06
-    python -m da_models.knn_model_only_load.per_hour.single_day --date 2024-08-06 --flt-radius 2
+    python -m da_models.like_day_model_knn.per_hour.single_day --date 2024-08-06
+    python -m da_models.like_day_model_knn.per_hour.single_day --date 2024-08-06 --flt-radius 2
 """
 from __future__ import annotations
 
@@ -19,16 +19,16 @@ _MODELLING_ROOT = Path(__file__).resolve().parents[3]
 if str(_MODELLING_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODELLING_ROOT))
 
-from da_models.knn_model_only_load import _shared, configs, diagnostics_common as dc  # noqa: E402
-from da_models.knn_model_only_load.analog_store import (  # noqa: E402
+from da_models.like_day_model_knn import _shared, configs, diagnostics_common as dc  # noqa: E402
+from da_models.like_day_model_knn.analog_store import (  # noqa: E402
     DEFAULT_STORE_DIR,
     write_analog_explainability,
 )
-from da_models.knn_model_only_load.per_hour.builder import (  # noqa: E402
+from da_models.like_day_model_knn.per_hour.builder import (  # noqa: E402
     build_pool, build_query_row,
 )
-from da_models.knn_model_only_load.per_hour.engine import find_twins_per_hour  # noqa: E402
-from da_models.knn_model_only_load.per_hour.forecast import (  # noqa: E402
+from da_models.like_day_model_knn.per_hour.engine import find_twins_per_hour  # noqa: E402
+from da_models.like_day_model_knn.per_hour.forecast import (  # noqa: E402
     actuals_from_pool, hourly_forecast_from_hour_analogs,
 )
 from html_reports.utils.html_dashboard import HTMLDashboardBuilder  # noqa: E402
@@ -51,7 +51,7 @@ def generate(
     output_dir = output_dir or REPORT_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = configs.KnnModelConfig(
+    base_config = configs.KnnModelConfig(
         forecast_date=str(target_date),
         model_name=configs.PER_HOUR_SPEC.name,
         n_analogs=configs.DEFAULT_N_ANALOGS if n_analogs is None else int(n_analogs),
@@ -63,9 +63,12 @@ def generate(
             configs.MIN_POOL_SIZE if min_pool_size is None else int(min_pool_size)
         ),
     )
+    config, day_type = base_config.with_day_type_overrides(target_date)
     base_spec = config.resolved_spec()
     spec = replace(base_spec, flt_radius=int(flt_radius))
     quantiles = config.resolved_quantiles()
+    if pl:
+        pl.info(f"day_type={day_type} (same_dow_group={config.same_dow_group}, season_window_days={config.season_window_days})")
 
     if pl:
         pl.header(f"per_hour - {target_date}")
@@ -76,11 +79,16 @@ def generate(
         query = build_query_row(
             target_date=target_date, schema=config.schema, cache_dir=configs.CACHE_DIR,
         )
+        dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
         analogs = find_twins_per_hour(
             query=query, pool=pool, target_date=target_date, spec=spec,
             n_analogs=config.n_analogs,
             season_window_days=config.season_window_days,
             min_pool_size=config.min_pool_size,
+            dates_meta=dates_meta,
+            same_dow_group=config.same_dow_group,
+            exclude_holidays=config.exclude_holidays,
+            exclude_dates=config.exclude_dates,
         )
         hourly_rto = _shared.load_hourly_rto(configs.CACHE_DIR)
 

@@ -1,4 +1,4 @@
-"""DuckDB-backed reader for the knn_model_only_load analog Parquet store."""
+"""DuckDB-backed reader for the like_day_model_knn analog Parquet store."""
 from __future__ import annotations
 
 import os
@@ -11,7 +11,7 @@ import streamlit as st
 _DEFAULT_STORE_DIR = (
     Path(__file__).resolve().parents[2]
     / "da_models"
-    / "knn_model_only_load"
+    / "like_day_model_knn"
     / "output"
     / "analog_store"
 )

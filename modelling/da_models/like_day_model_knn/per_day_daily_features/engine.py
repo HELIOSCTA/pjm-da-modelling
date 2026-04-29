@@ -1,9 +1,8 @@
-"""Engine for per_day_hourly_features - hourly bucketed features x day-level matching.
+"""Engine for per_day_daily_features - daily summary features x day-level matching.
 
-Same matching logic as ``per_day_daily_features``'s engine; only the spec
-differs. Pool-fit z-score per group, NaN-aware Euclidean within group,
-weighted average using ``PER_DAY_HOURLY_FEATURES_SPEC.feature_group_weights``
-(peak-block 3.5x, midday/evening 2.0x, morning 1.5x, overnight 1.0x).
+Distance: per-group pool-fit z-score, NaN-aware Euclidean within group,
+weighted average across groups using
+``PER_DAY_DAILY_FEATURES_SPEC.feature_group_weights``.
 Inverse-distance analog weighting.
 """
 from __future__ import annotations
@@ -14,8 +13,9 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from da_models.knn_model_only_load import configs
-from da_models.knn_model_only_load.configs import ModelSpec
+from da_models.like_day_model_knn import calendar as _calendar
+from da_models.like_day_model_knn import configs
+from da_models.like_day_model_knn.configs import ModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +30,27 @@ def _candidate_pool(
     target_date: date,
     season_window_days: int,
     min_pool_size: int,
+    dates_meta: pd.DataFrame | None = None,
+    same_dow_group: bool = False,
+    exclude_holidays: bool = False,
+    exclude_dates: list[str] | None = None,
 ) -> pd.DataFrame:
     work = pool.copy()
     work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
     if len(work) == 0:
         return work
+    if dates_meta is not None and (same_dow_group or exclude_holidays or exclude_dates):
+        work = _calendar.apply_calendar_filter(
+            pool=work,
+            target_date=target_date,
+            dates_meta=dates_meta,
+            same_dow_group=same_dow_group,
+            exclude_holidays=exclude_holidays,
+            exclude_dates=exclude_dates,
+            min_pool_size=min_pool_size,
+        )
+        if len(work) == 0:
+            return work
     if season_window_days > 0:
         target_doy = pd.Timestamp(target_date).dayofyear
         doys = pd.to_datetime(work["date"]).dt.dayofyear.to_numpy(dtype=float)
@@ -43,12 +59,12 @@ def _candidate_pool(
         if len(candidates) >= min_pool_size:
             work = candidates.copy()
             logger.info(
-                "per_day_hourly_features season window +/-%dd kept %d candidates",
+                "per_day_daily_features season window +/-%dd kept %d candidates",
                 season_window_days, len(work),
             )
         else:
             logger.warning(
-                "per_day_hourly_features season window kept only %d candidates "
+                "per_day_daily_features season window kept only %d candidates "
                 "(< min %d) - falling back to full history (%d)",
                 len(candidates), min_pool_size, len(work),
             )
@@ -112,18 +128,28 @@ def find_twins_day(
     query: pd.Series,
     pool: pd.DataFrame,
     target_date: date,
-    spec: ModelSpec = configs.PER_DAY_HOURLY_FEATURES_SPEC,
+    spec: ModelSpec = configs.PER_DAY_DAILY_FEATURES_SPEC,
     n_analogs: int = configs.DEFAULT_N_ANALOGS,
     season_window_days: int = configs.SEASON_WINDOW_DAYS,
     min_pool_size: int = configs.MIN_POOL_SIZE,
+    dates_meta: pd.DataFrame | None = None,
+    same_dow_group: bool = False,
+    exclude_holidays: bool = False,
+    exclude_dates: list[str] | None = None,
 ) -> pd.DataFrame:
     """Top-N analog days. Columns: rank, date, distance, weight, lmp_h1..lmp_h24."""
     out_cols = ["rank", "date", "distance", "weight"] + configs.LMP_LABEL_COLUMNS
 
-    work = _candidate_pool(pool, target_date, season_window_days, min_pool_size)
+    work = _candidate_pool(
+        pool, target_date, season_window_days, min_pool_size,
+        dates_meta=dates_meta,
+        same_dow_group=same_dow_group,
+        exclude_holidays=exclude_holidays,
+        exclude_dates=exclude_dates,
+    )
     if len(work) == 0:
         logger.warning(
-            "per_day_hourly_features: pool has no rows before target_date=%s",
+            "per_day_daily_features: pool has no rows before target_date=%s",
             target_date,
         )
         return pd.DataFrame(columns=out_cols)
@@ -133,7 +159,7 @@ def find_twins_day(
     work = work[np.isfinite(work["distance"])].copy()
     if len(work) == 0:
         logger.warning(
-            "per_day_hourly_features: all pool rows produced infinite/NaN distance",
+            "per_day_daily_features: all pool rows produced infinite/NaN distance",
         )
         return pd.DataFrame(columns=out_cols)
 

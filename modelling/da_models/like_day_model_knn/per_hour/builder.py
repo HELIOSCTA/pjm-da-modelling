@@ -1,11 +1,13 @@
-"""Pool and query builder for per_day_hourly_features.
+"""Pool and query builder for per_hour - per-hour matching with a 3-hour feature window.
 
-Produces 24 raw hourly load forecast cols per delivery date plus 24 LMP labels:
+Like per_day_hourly_features, the pool carries 24 raw hourly load forecast
+cols (fcst_load_h1..h24) plus 24 LMP labels. The engine selects a 3-hour
+subset per target HE at match time using the spec's ``flt_radius``, so the
+builder does not need to specialize columns - it simply produces all 24
+hourly cols.
 
-  fcst_load_h1 .. fcst_load_h24 (raw forecast values from PJM RTO)
-
-The engine groups these into 5 hour-blocks (overnight, morning, midday, peak,
-evening) and weights them by ``PER_DAY_HOURLY_FEATURES_SPEC.feature_group_weights``.
+Lives in its own file (per design) so per_hour has a fully self-contained
+module surface even though the pool schema mirrors per_day_hourly_features.
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from da_models.knn_model_only_load import _shared, configs
+from da_models.like_day_model_knn import _shared, configs
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +48,8 @@ def _hourly_load_features(
 
 
 def _feature_cols() -> list[str]:
-    """The 24 hourly feature columns this model uses (HE1..HE24)."""
-    out: list[str] = []
-    for cols in configs.PER_DAY_HOURLY_FEATURES_SPEC.feature_groups.values():
-        for c in cols:
-            if c not in out:
-                out.append(c)
-    return out
+    """All 24 hourly cols. The engine picks a window subset per target HE."""
+    return [f"fcst_load_h{h}" for h in configs.HOURS]
 
 
 def build_pool(
@@ -81,7 +78,7 @@ def build_pool(
     n_features_filled = int(pool[feature_cols].notna().any(axis=1).sum())
     n_labels_filled = int(pool[configs.LMP_LABEL_COLUMNS].notna().any(axis=1).sum())
     logger.info(
-        "per_day_hourly_features pool: %d rows x %d feature cols (%d w/ features, %d w/ labels)",
+        "per_hour pool: %d rows x %d feature cols (%d w/ features, %d w/ labels)",
         len(pool), len(feature_cols), n_features_filled, n_labels_filled,
     )
     return pool
@@ -103,7 +100,7 @@ def build_query_row(
 
     if len(df_target) == 0:
         logger.warning(
-            "per_day_hourly_features: no load forecast rows for target_date=%s region=%s",
+            "per_hour: no load forecast rows for target_date=%s region=%s",
             target_date, configs.LOAD_REGION,
         )
         empty = {"date": target_date, **{c: np.nan for c in feature_cols}}
@@ -119,7 +116,7 @@ def build_query_row(
     query = row_df.iloc[0].copy()
     n_filled = int(pd.Series(query[feature_cols]).notna().sum())
     logger.info(
-        "per_day_hourly_features query for %s: %d/%d features filled",
+        "per_hour query for %s: %d/%d features filled",
         target_date, n_filled, len(feature_cols),
     )
     return query

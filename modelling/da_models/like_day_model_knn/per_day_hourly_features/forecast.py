@@ -1,4 +1,4 @@
-"""Hourly forecast aggregation for per_day_daily_features - per-day analogs."""
+"""Hourly forecast aggregation for per_day_hourly_features - per-day analogs."""
 from __future__ import annotations
 
 from datetime import date
@@ -6,7 +6,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from da_models.knn_model_only_load import configs
+from da_models.like_day_model_knn import configs
 
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:

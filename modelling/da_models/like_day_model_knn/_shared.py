@@ -14,7 +14,7 @@ import pandas as pd
 
 from da_models.common.data import loader
 from da_models.common.data.loader import _resolve_cache_dir
-from da_models.knn_model_only_load import configs
+from da_models.like_day_model_knn import configs
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,17 @@ def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
         nan_df = pd.DataFrame({c: np.nan for c in missing}, index=out.index)
         out = pd.concat([out, nan_df], axis=1)
     return out
+
+
+def load_dates_daily(cache_dir: Path | None) -> pd.DataFrame:
+    """Calendar metadata frame from ``pjm_dates_daily.parquet``.
+
+    Thin wrapper around ``calendar.load_pjm_dates_daily`` so per-model
+    forecast/single_day modules don't need to import the calendar module
+    directly; they already import ``_shared``.
+    """
+    from da_models.like_day_model_knn import calendar as _calendar
+    return _calendar.load_pjm_dates_daily(cache_dir)
 
 
 def load_hourly_rto(cache_dir: Path | None) -> pd.DataFrame:

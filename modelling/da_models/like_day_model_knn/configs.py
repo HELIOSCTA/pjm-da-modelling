@@ -1,4 +1,4 @@
-"""Shared configuration for knn_model_only_load.
+"""Shared configuration for like_day_model_knn.
 
 Three models live in their own subfolders, each with its own builder, engine,
 forecast, and single_day backtest:
@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from da_models.common.configs import CACHE_DIR as DEFAULT_SHARED_CACHE_DIR
 
@@ -34,12 +35,46 @@ LOAD_FORECAST_PARQUETS: list[str] = [
     "pjm_load_forecast_hourly_da_cutoff_historical.parquet",
 ]
 LMP_DA_PARQUET: str = "pjm_lmps_hourly.parquet"
+PJM_DATES_DAILY_PARQUET: str = "pjm_dates_daily.parquet"
 
 # ── Forecast defaults ──────────────────────────────────────────────────
 DEFAULT_TARGET_DATE: date = date.today() + timedelta(days=1)
 DEFAULT_N_ANALOGS: int = 20
 MIN_POOL_SIZE: int = 100
 SEASON_WINDOW_DAYS: int = 60
+
+# ── Calendar / day-type pre-filtering ──────────────────────────────────
+# Sun=0..Sat=6 numbering matches pjm_dates_daily.day_of_week_number.
+DOW_GROUPS: dict[str, list[int]] = {
+    "weekday": [1, 2, 3, 4, 5],
+    "saturday": [6],
+    "sunday": [0],
+}
+
+DAY_TYPE_WEEKDAY: str = "weekday"
+DAY_TYPE_SATURDAY: str = "saturday"
+DAY_TYPE_SUNDAY: str = "sunday"
+
+FILTER_SAME_DOW_GROUP: bool = True
+FILTER_EXCLUDE_HOLIDAYS: bool = True
+EXCLUDE_DATES: list[str] = []  # add YYYY-MM-DD strings to drop from the pool
+
+# Saturday/Sunday narrow the window and tighten DOW matching.
+# Only knobs that exist on KnnModelConfig are listed here — no feature_group
+# weight overrides, since this load-only package doesn't have non-load groups.
+DAY_TYPE_SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
+    DAY_TYPE_WEEKDAY: {},
+    DAY_TYPE_SATURDAY: {
+        "same_dow_group": True,
+        "season_window_days": 45,
+        "n_analogs": 12,
+    },
+    DAY_TYPE_SUNDAY: {
+        "same_dow_group": True,
+        "season_window_days": 60,
+        "n_analogs": 10,
+    },
+}
 
 # ── Hours / quantiles ──────────────────────────────────────────────────
 HOURS: list[int] = list(range(1, 25))
@@ -131,6 +166,17 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
 DEFAULT_MODEL: str = PER_DAY_DAILY_FEATURES_SPEC.name
 
 
+def _day_type_for(d: date) -> str:
+    """Sun=0..Sat=6 day-type bucket. Inlined here to avoid a circular import
+    between configs.py and calendar.py."""
+    wd = d.weekday()  # Mon=0..Sun=6
+    if wd == 5:
+        return DAY_TYPE_SATURDAY
+    if wd == 6:
+        return DAY_TYPE_SUNDAY
+    return DAY_TYPE_WEEKDAY
+
+
 @dataclass
 class KnnModelConfig:
     """Run-level configuration for any of the three models."""
@@ -143,6 +189,13 @@ class KnnModelConfig:
     min_pool_size: int = MIN_POOL_SIZE
     hub: str = HUB
     schema: str = SCHEMA
+
+    # Calendar / day-type pre-filter knobs
+    same_dow_group: bool = FILTER_SAME_DOW_GROUP
+    exclude_holidays: bool = FILTER_EXCLUDE_HOLIDAYS
+    exclude_dates: list[str] = field(default_factory=lambda: list(EXCLUDE_DATES))
+    use_day_type_profiles: bool = True
+    day_type_profiles: dict[str, dict[str, Any]] | None = None
 
     def resolved_target_date(self) -> date:
         if self.forecast_date:
@@ -159,3 +212,38 @@ class KnnModelConfig:
                 f"Available: {sorted(MODEL_REGISTRY.keys())}"
             )
         return MODEL_REGISTRY[self.model_name]
+
+    def resolved_day_type_profiles(self) -> dict[str, dict[str, Any]]:
+        """Day-type override profiles with package defaults filled in."""
+        base = copy.deepcopy(DAY_TYPE_SCENARIO_PROFILES)
+        if not self.day_type_profiles:
+            return base
+        for k, v in self.day_type_profiles.items():
+            if k not in base:
+                base[k] = {}
+            if isinstance(v, dict):
+                base[k].update(copy.deepcopy(v))
+        return base
+
+    def with_day_type_overrides(
+        self, target_date: date,
+    ) -> tuple["KnnModelConfig", str]:
+        """Return a config copy with the Saturday/Sunday profile applied.
+
+        Only fields that exist on this dataclass are overridden; unknown
+        keys in a profile are silently ignored so profiles can carry
+        forward without breaking.
+        """
+        day_type = _day_type_for(target_date)
+        if not self.use_day_type_profiles:
+            return self, day_type
+
+        profile = self.resolved_day_type_profiles().get(day_type, {})
+        if not profile:
+            return self, day_type
+
+        cfg = copy.deepcopy(self)
+        for key, value in profile.items():
+            if hasattr(cfg, key):
+                setattr(cfg, key, copy.deepcopy(value))
+        return cfg, day_type

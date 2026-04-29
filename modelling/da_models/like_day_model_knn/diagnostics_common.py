@@ -21,7 +21,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from da_models.knn_model_only_load import configs
+from da_models.like_day_model_knn import configs
 
 Section = tuple[str, Any, str | None]
 

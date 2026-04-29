@@ -14,7 +14,7 @@ from lib import store  # noqa: E402
 
 st.title("KNN Load-Only Console")
 st.write(
-    "Operator console for the `knn_model_only_load` model family — "
+    "Operator console for the `like_day_model_knn` model family — "
     "`per_day_daily_features`, `per_day_hourly_features`, `per_hour`."
 )
 
