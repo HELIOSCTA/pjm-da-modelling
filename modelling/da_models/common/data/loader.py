@@ -114,6 +114,11 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
         "day_gen_capacity_daily",
         "day_gen_capacity",
     ),
+    "installed_capacity": (
+        "ea_pjm_installed_capacity_monthly",
+        "installed_capacity_monthly",
+        "installed_capacity",
+    ),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
@@ -709,6 +714,71 @@ def _normalize_meteologica_net_load(df: pd.DataFrame) -> pd.DataFrame:
     return normalized.sort_values(["region", "date", "hour_ending"]).reset_index(drop=True)
 
 
+def _normalize_installed_capacity(df: pd.DataFrame) -> pd.DataFrame:
+    """Energy Aspects monthly PJM installed capacity, fuel-disaggregated.
+
+    Handles both column conventions:
+      - new dbt mart:  natural_gas_mw, coal_mw, nuclear_mw, oil_products_mw,
+                       solar_mw, onshore_wind_mw, offshore_wind_mw, hydro_mw,
+                       battery_mw, total_installed_capacity_mw
+      - legacy view:   ng_capacity_mw, coal_capacity_mw, ..., battery_capacity_mw
+    """
+    output = df.copy()
+    date_col = _first_present(output.columns, _DATE_CANDIDATES)
+    if date_col is None:
+        raise KeyError(
+            "Could not normalize installed_capacity; expected a date column. "
+            f"Columns: {list(output.columns)}"
+        )
+
+    # Map any source naming -> canonical fuel column names.
+    fuel_aliases = {
+        "natural_gas_mw":   ("natural_gas_mw", "ng_mw", "ng_capacity_mw"),
+        "coal_mw":          ("coal_mw", "coal_capacity_mw"),
+        "nuclear_mw":       ("nuclear_mw", "nuclear_capacity_mw"),
+        "oil_products_mw":  ("oil_products_mw", "oil_mw", "oil_capacity_mw"),
+        "solar_mw":         ("solar_mw", "solar_capacity_mw"),
+        "onshore_wind_mw":  ("onshore_wind_mw", "onshore_wind_capacity_mw"),
+        "offshore_wind_mw": ("offshore_wind_mw", "offshore_wind_capacity_mw"),
+        "hydro_mw":         ("hydro_mw", "hydro_capacity_mw"),
+        "battery_mw":       ("battery_mw", "battery_capacity_mw"),
+    }
+
+    rename_map: dict[str, str] = {}
+    for canonical, candidates in fuel_aliases.items():
+        for cand in candidates:
+            if cand in output.columns and cand != canonical:
+                rename_map[cand] = canonical
+                break
+
+    normalized = output.rename(columns={date_col: "date", **rename_map})
+    normalized["date"] = _coerce_date(normalized, "date")
+
+    fuel_columns = [c for c in fuel_aliases if c in normalized.columns]
+    if not fuel_columns:
+        raise KeyError(
+            "Could not normalize installed_capacity; no fuel columns found. "
+            f"Columns: {list(output.columns)}"
+        )
+    for col in fuel_columns:
+        normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
+
+    # Prefer the dbt-computed total if present; otherwise sum the fuel cols.
+    if "total_installed_capacity_mw" in normalized.columns:
+        normalized["total_installed_capacity_mw"] = pd.to_numeric(
+            normalized["total_installed_capacity_mw"], errors="coerce",
+        )
+    else:
+        normalized["total_installed_capacity_mw"] = normalized[fuel_columns].sum(
+            axis=1, min_count=1,
+        )
+
+    keep = ["date", *fuel_columns, "total_installed_capacity_mw"]
+    normalized = normalized[keep].dropna(subset=["date"])
+    normalized = normalized.sort_values("date").reset_index(drop=True)
+    return normalized
+
+
 def _normalize_day_gen_capacity(df: pd.DataFrame) -> pd.DataFrame:
     """System-wide daily PJM generation capacity. One row per date, no region/hour."""
     output = df.copy()
@@ -759,6 +829,7 @@ _NORMALIZERS = {
     "net_load_forecast": _normalize_meteologica_net_load,
     "net_load_actual": _normalize_net_load_actual,
     "day_gen_capacity": _normalize_day_gen_capacity,
+    "installed_capacity": _normalize_installed_capacity,
 }
 
 
@@ -889,6 +960,20 @@ def load_net_load_actuals(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("net_load_actual", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_installed_capacity(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Energy Aspects monthly PJM installed capacity, fuel-disaggregated.
+
+    Forward-projected through ~2030. Returns one row per month with
+    canonical fuel column names plus total_installed_capacity_mw.
+    """
+    return _load_dataset("installed_capacity", path=path, cache_dir=cache_dir, columns=columns)
 
 
 def load_day_gen_capacity(

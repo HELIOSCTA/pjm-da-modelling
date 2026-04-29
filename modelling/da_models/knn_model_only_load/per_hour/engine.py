@@ -1,0 +1,142 @@
+"""Engine for per_hour - 3-hour window features x per-hour matching (AnEn-NWP-style).
+
+Key structural difference vs the per_day_* engines: one match per
+(target_date, target_hour), not per (target_date). For each target HE h,
+the feature vector is the load forecast at hours [h - flt_radius, h + flt_radius]
+(clipped to [1, 24]).
+
+Same-hour-of-day constraint: target HE h is matched only against candidate
+days' HE h. Output is hour-keyed - 24 separate top-N selections produce
+24 * n_analogs rows total.
+
+Pool-fit z-score, NaN-aware Euclidean over the window, inverse-distance
+analog weighting normalized within each hour.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import date
+
+import numpy as np
+import pandas as pd
+
+from da_models.knn_model_only_load import configs
+from da_models.knn_model_only_load.configs import ModelSpec
+
+logger = logging.getLogger(__name__)
+
+
+def _circular_day_distance(day_of_year: np.ndarray, target_doy: int) -> np.ndarray:
+    direct = np.abs(day_of_year - float(target_doy))
+    return np.minimum(direct, 366.0 - direct)
+
+
+def _candidate_pool(
+    pool: pd.DataFrame,
+    target_date: date,
+    season_window_days: int,
+    min_pool_size: int,
+) -> pd.DataFrame:
+    work = pool.copy()
+    work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
+    if len(work) == 0:
+        return work
+    if season_window_days > 0:
+        target_doy = pd.Timestamp(target_date).dayofyear
+        doys = pd.to_datetime(work["date"]).dt.dayofyear.to_numpy(dtype=float)
+        keep = _circular_day_distance(doys, target_doy) <= float(season_window_days)
+        candidates = work[keep]
+        if len(candidates) >= min_pool_size:
+            work = candidates.copy()
+            logger.info(
+                "per_hour season window +/-%dd kept %d candidates",
+                season_window_days, len(work),
+            )
+        else:
+            logger.warning(
+                "per_hour season window kept only %d candidates "
+                "(< min %d) - falling back to full history (%d)",
+                len(candidates), min_pool_size, len(work),
+            )
+    return work
+
+
+def _window_columns(target_hour: int, flt_radius: int) -> list[str]:
+    """Hourly load feature column names for a target hour and +/- flt_radius window."""
+    lo = max(1, target_hour - flt_radius)
+    hi = min(24, target_hour + flt_radius)
+    return [f"fcst_load_h{h}" for h in range(lo, hi + 1)]
+
+
+def find_twins_per_hour(
+    query: pd.Series,
+    pool: pd.DataFrame,
+    target_date: date,
+    spec: ModelSpec = configs.PER_HOUR_SPEC,
+    n_analogs: int = configs.DEFAULT_N_ANALOGS,
+    season_window_days: int = configs.SEASON_WINDOW_DAYS,
+    min_pool_size: int = configs.MIN_POOL_SIZE,
+) -> pd.DataFrame:
+    """Per-hour analog table. Shape: 24 * n_analogs rows.
+
+    Columns: hour_ending, rank, date, distance, weight, lmp.
+    """
+    out_cols = ["hour_ending", "rank", "date", "distance", "weight", "lmp"]
+
+    work = _candidate_pool(pool, target_date, season_window_days, min_pool_size)
+    if len(work) == 0:
+        logger.warning(
+            "per_hour: pool has no rows before target_date=%s", target_date,
+        )
+        return pd.DataFrame(columns=out_cols)
+
+    flt_radius = int(spec.flt_radius)
+    rows: list[dict] = []
+
+    for h in configs.HOURS:
+        cols = _window_columns(h, flt_radius)
+        cols_present = [c for c in cols if c in work.columns and c in query.index]
+        if not cols_present:
+            continue
+
+        pool_vals = work[cols_present].to_numpy(dtype=float)
+        query_vals = query[cols_present].to_numpy(dtype=float)
+
+        means = np.nanmean(pool_vals, axis=0)
+        stds = np.nanstd(pool_vals, axis=0)
+        stds = np.where(stds == 0, 1.0, stds)
+        pool_z = (pool_vals - means) / stds
+        query_z = ((query_vals - means) / stds).reshape(-1)
+
+        diff = query_z - pool_z
+        mask = ~np.isnan(diff)
+        sq = np.where(mask, diff ** 2, 0.0)
+        n_valid = mask.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.inf)
+        d = np.where(np.isfinite(d), d, np.inf)
+
+        order = np.argsort(d)
+        order = order[np.isfinite(d[order])]
+        order = order[:n_analogs]
+        if len(order) == 0:
+            continue
+
+        d_top = d[order]
+        eps = 1e-6
+        inv_dist = 1.0 / (d_top + eps)
+        weights = inv_dist / inv_dist.sum()
+
+        lmp_col = f"lmp_h{h}"
+        for rank, (idx_arr, dist, w) in enumerate(zip(order, d_top, weights), start=1):
+            row = work.iloc[int(idx_arr)]
+            rows.append({
+                "hour_ending": h,
+                "rank": rank,
+                "date": row["date"],
+                "distance": float(dist),
+                "weight": float(w),
+                "lmp": float(row.get(lmp_col, np.nan)) if lmp_col in row.index else float("nan"),
+            })
+
+    return pd.DataFrame(rows, columns=out_cols)
