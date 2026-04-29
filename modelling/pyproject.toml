@@ -16,6 +16,13 @@ dependencies = [
   "psycopg2-binary>=2.9",
 ]
 
+[project.optional-dependencies]
+analog-ui = [
+  "duckdb>=1.0",
+  "plotly>=5.20",
+  "streamlit>=1.35",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["da_models*", "utils*", "html_reports*"]

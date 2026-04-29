@@ -73,7 +73,11 @@ def build_fragments(
             continue
         if recent[col].abs().sum() == 0:
             continue
-        sections.append((label, _profile_and_ramp_fig(recent, col, label), None))
+        sections.append((
+            label,
+            _profile_and_ramp_fig(recent, col, label, PROFILE_LOOKBACK_DAYS),
+            None,
+        ))
 
     return sections
 
@@ -91,8 +95,14 @@ def _empty(text: str) -> str:
     return f"<div style='padding:16px;color:#e74c3c;'>{text}</div>"
 
 
-def _profile_and_ramp_fig(recent: pd.DataFrame, col: str, label: str) -> go.Figure:
+def _profile_and_ramp_fig(
+    recent: pd.DataFrame,
+    col: str,
+    label: str,
+    lookback_days: int = PROFILE_LOOKBACK_DAYS,
+) -> go.Figure:
     """Side-by-side: hourly gen profile (left) + hourly ramp (right)."""
+    window_label = f"{lookback_days}d"
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=(f"{label} — Hourly Profile", f"{label} — Hourly Ramp"),
@@ -114,13 +124,13 @@ def _profile_and_ramp_fig(recent: pd.DataFrame, col: str, label: str) -> go.Figu
 
     fig.add_trace(go.Scatter(
         x=hourly_stats.index, y=hourly_stats["max"],
-        mode="lines", name="30d Max",
+        mode="lines", name=f"{window_label} Max",
         line=dict(color="rgba(99, 110, 250, 0.3)", width=0),
         showlegend=True, legendgroup="envelope",
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=hourly_stats.index, y=hourly_stats["min"],
-        mode="lines", name="30d Min/Max Range",
+        mode="lines", name=f"{window_label} Min/Max Range",
         line=dict(color="rgba(99, 110, 250, 0.3)", width=0),
         fill="tonexty", fillcolor="rgba(99, 110, 250, 0.15)",
         showlegend=True, legendgroup="envelope",
@@ -152,13 +162,13 @@ def _profile_and_ramp_fig(recent: pd.DataFrame, col: str, label: str) -> go.Figu
 
     fig.add_trace(go.Scatter(
         x=ramp_stats.index, y=ramp_stats["max"],
-        mode="lines", name="30d Max",
+        mode="lines", name=f"{window_label} Max",
         line=dict(color="rgba(99, 110, 250, 0.3)", width=0),
         showlegend=False, legendgroup="envelope",
     ), row=1, col=2)
     fig.add_trace(go.Scatter(
         x=ramp_stats.index, y=ramp_stats["min"],
-        mode="lines", name="30d Min/Max Range",
+        mode="lines", name=f"{window_label} Min/Max Range",
         line=dict(color="rgba(99, 110, 250, 0.3)", width=0),
         fill="tonexty", fillcolor="rgba(99, 110, 250, 0.15)",
         showlegend=False, legendgroup="envelope",
@@ -196,7 +206,7 @@ def _profile_and_ramp_fig(recent: pd.DataFrame, col: str, label: str) -> go.Figu
                   line_width=1, row=1, col=2)
 
     fig.update_layout(
-        title=f"{label} — Last {PROFILE_LOOKBACK_DAYS} Days",
+        title=f"{label} — Last {lookback_days} Days",
         height=500,
         template=PLOTLY_TEMPLATE,
         legend=dict(font=dict(size=10)),
