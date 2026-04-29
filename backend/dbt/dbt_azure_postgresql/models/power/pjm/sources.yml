@@ -27,6 +27,8 @@ sources:
         description: "Five-minute actual and scheduled tie flows by interface from PJM API."
       - name: seven_day_load_forecast_v1_2025_08_13
         description: "Seven-day hourly load forecast by forecast area from PJM API. Multiple revisions per day."
+      - name: historical_load_forecasts
+        description: "Historical hourly load forecast (load_frcstd_hist) by forecast area from PJM API. First available 2011-01-01; ~5-6 vintages preserved per delivery hour with irregular spacing. Native granularity is RTO + MIDATL + 9 zones (AEP, APS, ATSI, COMED, DAY, DEOK, DOM, DUQ, EKPC) with no WEST/SOUTH aggregates — the source model standardizes by mapping SOUTH=DOM and WEST=RTO-MIDATL-DOM to match the live seven-day feed. Used for D-1 vintage matching in backtests."
       - name: ancillary_services
         description: "Ancillary services prices (synchronized reserve, non-synchronized reserve, secondary reserve, regulation) from PJM Data Miner 2. Hourly grain."
       - name: dispatched_reserves
