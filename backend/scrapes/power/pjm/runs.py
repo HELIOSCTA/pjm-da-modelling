@@ -21,10 +21,13 @@ from backend.utils.runner_utils import RunnerConfig, runner_main, run_script_mai
 
 
 def discover_scripts() -> list[Path]:
-    """Find all .py scripts in the PJM directory (excluding __init__, run, flows)."""
+    """Find all .py scripts in the PJM directory (excluding __init__, run, flows,
+    and any underscore-prefixed scratch / probe scripts).
+    """
     return sorted(
         p for p in SCRIPT_DIR.glob("*.py")
         if p.name not in ("__init__.py", "run.py", "runs.py", "flows.py")
+        and not p.name.startswith("_")
     )
 
 
