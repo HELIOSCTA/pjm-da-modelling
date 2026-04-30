@@ -23,6 +23,8 @@ models:
           +materialized: ephemeral
         marts:
           +materialized: ephemeral
+        _archive:
+          +enabled: false
 
     meteologica:
       pjm:
