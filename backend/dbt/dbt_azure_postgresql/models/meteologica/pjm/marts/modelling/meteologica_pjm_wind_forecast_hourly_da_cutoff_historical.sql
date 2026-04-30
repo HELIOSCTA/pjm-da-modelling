@@ -1,0 +1,7 @@
+{{
+  config(
+    materialized='table'
+  )
+}}
+
+SELECT * FROM {{ ref('staging_v1_meteo_pjm_wind_forecast_da_cutoff_hist') }}
