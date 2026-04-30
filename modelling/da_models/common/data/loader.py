@@ -10,115 +10,34 @@ import pandas as pd
 from da_models.common.configs import CACHE_DIR
 
 _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
-    "lmps_da": (
-        "pjm_lmps_hourly",
-        "pjm_lmps_da_hourly",
-        "pjm_lmps_da",
-        "lmp_da",
-        "lmps_da",
-        "pjm_lmp_da",
-    ),
-    "load_rt": ("pjm_load_rt_hourly", "load_rt", "pjm_load_rt", "pjm_load_actual"),
-    "load_forecast": (
-        "pjm_load_forecast_hourly_da_cutoff",
-        "pjm_load_forecast_hourly",
-        "load_forecast",
-        "pjm_load_forecast",
-        "seven_day_load_forecast",
-    ),
-    "fuel_mix": ("pjm_fuel_mix_hourly", "fuel_mix", "pjm_fuel_mix"),
-    "outages_actual": ("pjm_outages_actual_daily", "outages_actual", "pjm_outages_actual"),
-    "outages_forecast": (
-        "pjm_outages_forecast_daily",
-        "outages_forecast",
-        "pjm_outages_forecast",
-        "seven_day_outage_forecast",
-    ),
-    "solar_forecast": (
-        "pjm_solar_forecast_hourly_da_cutoff",
-        "pjm_gridstatus_solar_forecast_hourly",
-        "solar_forecast",
-        "pjm_solar_forecast",
-    ),
-    "wind_forecast": (
-        "pjm_wind_forecast_hourly_da_cutoff",
-        "pjm_gridstatus_wind_forecast_hourly",
-        "wind_forecast",
-        "pjm_wind_forecast",
-    ),
-    "weather_observed_hourly": (
-        "wsi_pjm_hourly_observed_temp",
-        "wsi_weather_observed_hourly",
-        "weather_observed_hourly",
-        "wsi_pjm_observed_temp_hourly",
-    ),
-    "weather_forecast_hourly": (
-        "wsi_pjm_hourly_forecast_temp_latest",
-        "wsi_pjm_hourly_forecast_temp",
-        "wsi_weather_forecast_hourly",
-        "weather_forecast_hourly",
-        "wsi_pjm_forecast_temp_hourly",
-    ),
-    # Backward-compatible union loader.
+    "lmps_da":                       ("pjm_lmps_hourly",),
+    "load_rt":                       ("pjm_load_rt_hourly",),
+    "load_forecast":                 ("pjm_load_forecast_hourly_da_cutoff",),
+    "fuel_mix":                      ("pjm_fuel_mix_hourly",),
+    "outages_actual":                ("pjm_outages_actual_daily",),
+    "outages_forecast":              ("pjm_outages_forecast_daily",),
+    "solar_forecast":                ("pjm_solar_forecast_hourly_da_cutoff",),
+    "wind_forecast":                 ("pjm_wind_forecast_hourly_da_cutoff",),
+    "weather_observed_hourly":       ("wsi_pjm_hourly_observed_temp",),
+    "weather_forecast_hourly":       ("wsi_pjm_hourly_forecast_temp_latest",),
+    # Backward-compatible: observed first, latest forecast as fallback.
     "weather_hourly": (
         "wsi_pjm_hourly_observed_temp",
         "wsi_pjm_hourly_forecast_temp_latest",
-        "wsi_pjm_hourly_forecast_temp",
-        "wsi_weather_hourly",
-        "weather_hourly",
     ),
-    "gas_prices_hourly": (
-        "ice_python_next_day_gas_hourly",
-        "ice_next_day_gas_hourly",
-        "ice_gas_prices_hourly",
-        "gas_prices_hourly",
-        "next_day_gas_hourly",
-        "gas_hourly",
-    ),
-    "meteologica_load_forecast": (
-        "meteologica_pjm_load_forecast_hourly_da_cutoff",
-        "meteologica_pjm_load_forecast_hourly",
-        "meteologica_load_forecast",
-    ),
-    "meteologica_solar_forecast": (
-        "meteologica_pjm_solar_forecast_hourly_da_cutoff",
-        "meteologica_pjm_solar_forecast_hourly",
-        "meteologica_solar_forecast",
-    ),
-    "meteologica_wind_forecast": (
-        "meteologica_pjm_wind_forecast_hourly_da_cutoff",
-        "meteologica_pjm_wind_forecast_hourly",
-        "meteologica_wind_forecast",
-    ),
-    "meteologica_net_load_forecast": (
-        "meteologica_pjm_net_load_forecast_hourly_da_cutoff",
-        "meteologica_pjm_net_load_forecast_hourly",
-        "meteologica_net_load_forecast",
-    ),
-    # Net-load forecast (RTO-level PJM cutoff first, meteologica regional fallback).
+    "gas_prices_hourly":             ("ice_python_next_day_gas_hourly",),
+    "meteologica_load_forecast":     ("meteologica_pjm_load_forecast_hourly_da_cutoff",),
+    "meteologica_solar_forecast":    ("meteologica_pjm_solar_forecast_hourly_da_cutoff",),
+    "meteologica_wind_forecast":     ("meteologica_pjm_wind_forecast_hourly_da_cutoff",),
+    "meteologica_net_load_forecast": ("meteologica_pjm_net_load_forecast_hourly_da_cutoff",),
+    # PJM-native preferred; falls back to Meteologica when missing.
     "net_load_forecast": (
         "pjm_net_load_forecast_hourly_da_cutoff",
-        "pjm_net_load_forecast_hourly",
         "meteologica_pjm_net_load_forecast_hourly_da_cutoff",
-        "meteologica_pjm_net_load_forecast_hourly",
-        "net_load_forecast",
     ),
-    "net_load_actual": (
-        "pjm_net_load_rt_hourly",
-        "pjm_net_load_actual_hourly",
-        "net_load_actual",
-        "net_load_rt",
-    ),
-    "day_gen_capacity": (
-        "pjm_day_gen_capacity_daily",
-        "day_gen_capacity_daily",
-        "day_gen_capacity",
-    ),
-    "installed_capacity": (
-        "ea_pjm_installed_capacity_monthly",
-        "installed_capacity_monthly",
-        "installed_capacity",
-    ),
+    "net_load_actual":               ("pjm_net_load_rt_hourly",),
+    "day_gen_capacity":              ("pjm_day_gen_capacity_daily",),
+    "installed_capacity":            ("ea_pjm_installed_capacity_monthly",),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
