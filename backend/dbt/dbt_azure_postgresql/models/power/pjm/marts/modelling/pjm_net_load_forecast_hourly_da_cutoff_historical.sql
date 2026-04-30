@@ -7,24 +7,21 @@
 ---------------------------
 -- PJM Net Load Forecast — DA Cutoff, full captured history (bias-safe for backtests)
 -- net_load = load - solar - wind (utility-scale; no BTM)
--- All three components share the same effective cutoff per delivery date D:
---   LEAST(D 10:00 AM EPT, today 10:00 AM EPT).
--- For D <= today, cutoff = D 10:00 AM EPT (per-day historical view).
--- For D > today, cutoff = today 10:00 AM EPT — matches the live mart exactly.
--- Load historical is filtered to as_of = LEAST(forecast_date, today) so its
--- cutoff lines up with solar/wind historical's per-(D, HE) cap.
--- Grain: 1 row per forecast_date × hour_ending (RTO only — solar/wind are RTO-wide).
--- INNER JOIN: missing solar or wind forecast drops the row rather than imputing zero.
+-- Combines the three component historical marts at the same as_of_date snapshot.
+-- as_of_date is the simulated "today morning" bucket; each component carries
+-- its own forecast_execution_date (the chosen publish's actual date), which
+-- may differ across components for early hours of D when the chosen publish
+-- was issued the prior evening.
+-- Grain: 1 row per as_of_date x forecast_date x hour_ending (RTO only — solar
+-- and wind are RTO-wide).
+-- INNER JOIN on (as_of_date, forecast_date, hour_ending): a missing component
+-- drops the row rather than imputing zero.
 ---------------------------
 
 WITH load AS (
     SELECT *
     FROM {{ ref('pjm_load_forecast_hourly_da_cutoff_historical') }}
     WHERE region = 'RTO'
-      AND forecast_execution_date = LEAST(
-          forecast_date,
-          (CURRENT_TIMESTAMP AT TIME ZONE 'US/Eastern')::DATE
-      )
 ),
 
 solar AS (
@@ -36,7 +33,8 @@ wind AS (
 )
 
 SELECT
-    load.forecast_datetime
+    load.as_of_date
+    ,load.forecast_datetime
     ,load.forecast_date
     ,load.hour_ending
     ,load.region
@@ -49,8 +47,10 @@ SELECT
     ,wind.forecast_execution_datetime_local  AS wind_forecast_execution_datetime_local
 FROM load
 INNER JOIN solar
-    ON load.forecast_date = solar.forecast_date
-    AND load.hour_ending = solar.hour_ending
+    ON load.as_of_date    = solar.as_of_date
+   AND load.forecast_date = solar.forecast_date
+   AND load.hour_ending   = solar.hour_ending
 INNER JOIN wind
-    ON load.forecast_date = wind.forecast_date
-    AND load.hour_ending = wind.hour_ending
+    ON load.as_of_date    = wind.as_of_date
+   AND load.forecast_date = wind.forecast_date
+   AND load.hour_ending   = wind.hour_ending

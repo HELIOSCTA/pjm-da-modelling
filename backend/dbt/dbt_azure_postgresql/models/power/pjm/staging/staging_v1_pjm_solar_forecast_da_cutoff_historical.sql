@@ -5,16 +5,17 @@
 }}
 
 ---------------------------
--- PJM 2-Day Solar Forecast — DA Cutoff, full captured history
--- For each (forecast_date, hour_ending), picks the latest publish at or
--- before LEAST(forecast_date 10:00 AM EPT, today 10:00 AM EPT). The cap on
--- "today 10:00 AM EPT" makes future-delivery rows match the live mart
--- exactly (both use today's cutoff, since you can't see beyond now).
--- Historical past-delivery rows use D 10:00 AM EPT as their cutoff —
--- "what was knowable on D's morning of delivery".
--- Output schema mirrors the live mart exactly so a join on
--- (forecast_execution_date, forecast_date, hour_ending) lines up.
--- Grain: 1 row per forecast_date × hour_ending.
+-- PJM 2-Day Solar Forecast — DA Cutoff, full captured history (bias-safe vintage for backtests)
+-- For each as_of_date D, takes the latest publish in the window
+-- (D 10:00 EPT - 48h, D 10:00 EPT] per (forecast_date x hour_ending)
+-- and emits its full delivery horizon. Mirrors the live solar DA-cutoff mart's
+-- per-(D, HE) latest-pre-10:00 EPT rule, applied across every issue date
+-- preserved in the gridstatus capture.
+-- as_of_date is the simulated "today morning" snapshot bucket;
+-- forecast_execution_date is the chosen publish's actual date (matches live
+-- mart semantics — they DIFFER for early hours of D when the chosen publish
+-- is one issued the prior evening).
+-- Grain: 1 row per as_of_date x forecast_date x hour_ending.
 ---------------------------
 
 WITH source_forecasts AS (
@@ -48,26 +49,52 @@ forecast_rank AS (
     ) sub
 ),
 
--- ────── Latest publish at or before D 10:00 AM EPT per (forecast_date, hour_ending) ──────
+-- ────── Candidate as_of_dates D to produce a vintage for ──────
+
+as_of_dates AS (
+    SELECT DISTINCT forecast_execution_date AS as_of_date
+    FROM source_forecasts
+),
+
+-- ────── Publishes eligible for each as_of_date D ──────
+-- D's 48h pre-10:00 EPT window pairs each publish with up to two consecutive
+-- as_of_dates. forecast_date >= D matches the live mart, which only emits
+-- delivery hours from D forward.
+
+eligible AS (
+    SELECT
+        d.as_of_date
+        ,f.forecast_execution_datetime_utc
+        ,f.timezone
+        ,f.forecast_execution_datetime_local
+        ,f.forecast_execution_date
+        ,f.forecast_date
+        ,f.hour_ending
+        ,f.solar_forecast
+        ,f.solar_forecast_btm
+    FROM source_forecasts f
+    JOIN as_of_dates d
+        ON f.forecast_execution_datetime_local <= (d.as_of_date + TIME '10:00:00')
+       AND f.forecast_execution_datetime_local >  (d.as_of_date + TIME '10:00:00' - INTERVAL '48 hours')
+    WHERE f.forecast_date >= d.as_of_date
+),
+
+-- ────── Latest eligible publish per (as_of_date, forecast_date, hour_ending) ──────
 
 ranked AS (
     SELECT
-        s.*
+        e.*
         ,ROW_NUMBER() OVER (
-            PARTITION BY s.forecast_date, s.hour_ending
-            ORDER BY s.forecast_execution_datetime_local DESC
+            PARTITION BY e.as_of_date, e.forecast_date, e.hour_ending
+            ORDER BY e.forecast_execution_datetime_local DESC
         ) AS rn
-    FROM source_forecasts s
-    WHERE s.forecast_execution_datetime_local
-        <= LEAST(
-            s.forecast_date::TIMESTAMP + TIME '10:00:00',
-            (CURRENT_TIMESTAMP AT TIME ZONE 'US/Eastern')::DATE + TIME '10:00:00'
-        )
+    FROM eligible e
 ),
 
 final AS (
     SELECT
-        r.forecast_execution_datetime_utc
+        r.as_of_date
+        ,r.forecast_execution_datetime_utc
         ,r.timezone
         ,r.forecast_execution_datetime_local
         ,fr.forecast_rank
@@ -83,9 +110,9 @@ final AS (
     FROM ranked r
     LEFT JOIN forecast_rank fr
         ON r.forecast_execution_datetime_local = fr.forecast_execution_datetime_local
-        AND r.forecast_date = fr.forecast_date
+       AND r.forecast_date = fr.forecast_date
     WHERE r.rn = 1
 )
 
 SELECT * FROM final
-ORDER BY forecast_date DESC, hour_ending
+ORDER BY as_of_date DESC, forecast_date, hour_ending
