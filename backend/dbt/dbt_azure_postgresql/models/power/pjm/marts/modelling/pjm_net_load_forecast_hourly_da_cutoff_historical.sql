@@ -1,6 +1,14 @@
 {{
   config(
-    materialized='table'
+    materialized='incremental',
+    unique_key=['as_of_date', 'forecast_date', 'hour_ending'],
+    incremental_strategy='delete+insert',
+    on_schema_change='append_new_columns',
+    indexes=[
+      {'columns': ['as_of_date'], 'type': 'btree'},
+      {'columns': ['forecast_date'], 'type': 'btree'},
+      {'columns': ['as_of_date', 'forecast_date', 'hour_ending'], 'type': 'btree'}
+    ]
   )
 }}
 
@@ -16,20 +24,37 @@
 -- and wind are RTO-wide).
 -- INNER JOIN on (as_of_date, forecast_date, hour_ending): a missing component
 -- drops the row rather than imputing zero.
+--
+-- Incremental: regular runs recompute as_of_dates in a 3-day rolling window
+-- (max as_of_date already loaded, minus 2 days). Use --full-refresh to
+-- rebuild from scratch.
 ---------------------------
+
+{% set as_of_filter %}
+    {% if is_incremental() %}
+    AND as_of_date >= (SELECT MAX(as_of_date) - INTERVAL '2 days' FROM {{ this }})::DATE
+    {% endif %}
+{% endset %}
 
 WITH load AS (
     SELECT *
     FROM {{ ref('pjm_load_forecast_hourly_da_cutoff_historical') }}
     WHERE region = 'RTO'
+    {{ as_of_filter }}
 ),
 
 solar AS (
-    SELECT * FROM {{ ref('pjm_solar_forecast_hourly_da_cutoff_historical') }}
+    SELECT *
+    FROM {{ ref('pjm_solar_forecast_hourly_da_cutoff_historical') }}
+    WHERE 1 = 1
+    {{ as_of_filter }}
 ),
 
 wind AS (
-    SELECT * FROM {{ ref('pjm_wind_forecast_hourly_da_cutoff_historical') }}
+    SELECT *
+    FROM {{ ref('pjm_wind_forecast_hourly_da_cutoff_historical') }}
+    WHERE 1 = 1
+    {{ as_of_filter }}
 )
 
 SELECT
