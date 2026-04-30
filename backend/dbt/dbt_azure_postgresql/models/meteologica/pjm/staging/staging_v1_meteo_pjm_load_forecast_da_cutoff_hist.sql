@@ -32,7 +32,7 @@ WITH source_forecasts AS (
         ,hour_ending
         ,region
         ,forecast_load_mw
-    FROM {{ ref('meteologica_pjm_load_forecast_hourly') }}
+    FROM {{ ref('staging_v1_meteologica_pjm_load_forecast_hourly') }}
 ),
 
 -- ────── Rank ALL execution vintages per (forecast_date, region) (most recent first) ──────
