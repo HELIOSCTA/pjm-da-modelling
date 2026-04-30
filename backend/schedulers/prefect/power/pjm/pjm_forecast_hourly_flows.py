@@ -19,15 +19,15 @@ SCRAPES = [
 ]
 
 MARTS = [
-    "pjm_load_forecast_hourly_da_cutoff",
-    "pjm_solar_forecast_hourly_da_cutoff",
-    "pjm_wind_forecast_hourly_da_cutoff",
-    "pjm_net_load_forecast_hourly_da_cutoff",
+    "pjm_load_forecast_hourly_da_cutoff_historical",
+    "pjm_solar_forecast_hourly_da_cutoff_historical",
+    "pjm_wind_forecast_hourly_da_cutoff_historical",
+    "pjm_net_load_forecast_hourly_da_cutoff_historical",
 ]
 
 
 def run_dbt(select: str) -> None:
-    """Run dbt models by selection syntax (e.g. '+pjm_load_forecast_hourly_da_cutoff')."""
+    """Run dbt models by selection syntax (e.g. '+pjm_load_forecast_hourly_da_cutoff_historical')."""
     dbt_logger = logging_utils.init_logging(
         name="DBT_RUN",
         log_dir=Path(__file__).parent / "logs",
@@ -67,7 +67,12 @@ def run_scrape(module_path: str) -> None:
 
 @flow(name="PJM Forecast Hourly")
 def pjm_forecast_hourly():
-    """Hourly umbrella flow — scrape load/solar/wind forecasts, build dbt marts, export parquet.
+    """Hourly umbrella flow — scrape load/solar/wind forecasts, incrementally
+    rebuild the historical DA-cutoff marts (load, solar, wind, net_load), export parquet.
+
+    The historical marts are the canonical source: they materialize every as_of_date
+    snapshot, with `as_of_date = today (EPT)` matching what the live mart would show.
+    Incremental dbt only recomputes the trailing 3-day window per run.
 
     Scrapes are loosely coupled: a failure in one does not block the others or dbt,
     so the net-load mart still rebuilds from whatever fresh inputs landed.

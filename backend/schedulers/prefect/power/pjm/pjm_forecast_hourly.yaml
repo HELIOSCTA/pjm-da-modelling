@@ -13,8 +13,10 @@ deployments:
 
   # ────── PJM Forecast Hourly ──────
   # Hourly umbrella: scrape PJM load + gridstatus solar/wind forecasts,
-  # rebuild dbt forecast marts (load, solar, wind, net_load — DA cutoff),
-  # then export each mart to parquet for downstream consumers.
+  # incrementally rebuild the historical DA-cutoff marts (load, solar, wind,
+  # net_load — full as_of_date history, only the trailing 3-day window
+  # recomputed per run), then export each mart to parquet for downstream
+  # consumers. Filter `as_of_date = today (EPT)` for the live snapshot.
 
   - name: PJM Forecast Hourly
     entrypoint: schedulers/prefect/power/pjm/pjm_forecast_hourly_flows.py:pjm_forecast_hourly
