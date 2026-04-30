@@ -32,10 +32,10 @@ SCRAPES = [
 ]
 
 MARTS = [
-    "meteologica_pjm_load_forecast_hourly_da_cutoff",
-    "meteologica_pjm_solar_forecast_hourly_da_cutoff",
-    "meteologica_pjm_wind_forecast_hourly_da_cutoff",
-    "meteologica_pjm_net_load_forecast_hourly_da_cutoff",
+    "meteologica_pjm_load_forecast_hourly_da_cutoff_historical",
+    "meteologica_pjm_solar_forecast_hourly_da_cutoff_historical",
+    "meteologica_pjm_wind_forecast_hourly_da_cutoff_historical",
+    "meteologica_pjm_net_load_forecast_hourly_da_cutoff_historical",
 ]
 
 
