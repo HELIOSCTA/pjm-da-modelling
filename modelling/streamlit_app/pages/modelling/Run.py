@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import streamlit as st
 
-_APP_ROOT = Path(__file__).resolve().parents[1]
+_APP_ROOT = Path(__file__).resolve().parents[2]
 _MODELLING_ROOT = _APP_ROOT.parent
 for path in (_APP_ROOT, _MODELLING_ROOT):
     if str(path) not in sys.path:
@@ -159,4 +159,4 @@ if st.session_state.last_run_results:
         st.code("\n".join(new_ids))
         if st.button("Open in Compare →", type="primary"):
             st.session_state["preselect_run_ids"] = new_ids
-            st.switch_page("pages/5_Compare.py")
+            st.switch_page("pages/modelling/Compare.py")

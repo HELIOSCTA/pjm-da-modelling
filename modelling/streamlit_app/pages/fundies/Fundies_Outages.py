@@ -7,7 +7,7 @@ import sys
 import pandas as pd
 import streamlit as st
 
-_APP_ROOT = Path(__file__).resolve().parents[1]
+_APP_ROOT = Path(__file__).resolve().parents[2]
 _MODELLING_ROOT = _APP_ROOT.parent
 for path in (_APP_ROOT, _MODELLING_ROOT):
     if str(path) not in sys.path:

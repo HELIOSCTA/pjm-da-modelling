@@ -27,23 +27,31 @@ st.set_page_config(
 _PAGES_DIR = _APP_ROOT / "pages"
 
 home = st.Page(
-    _PAGES_DIR / "0_Home.py",
+    _PAGES_DIR / "Home.py",
     title="Home",
     icon=":material/home:",
     default=True,
 )
 
+_MODELLING_PAGES = _PAGES_DIR / "modelling"
+_FUNDIES_PAGES = _PAGES_DIR / "fundies"
+
 model_pages = [
-    st.Page(_PAGES_DIR / "1_Data.py",       title="Data",       icon=":material/database:"),
-    st.Page(_PAGES_DIR / "2_Configs.py",    title="Configs",    icon=":material/tune:"),
-    st.Page(_PAGES_DIR / "3_Candidates.py", title="Candidates", icon=":material/search:"),
-    st.Page(_PAGES_DIR / "4_Run.py",        title="Run",        icon=":material/play_arrow:"),
-    st.Page(_PAGES_DIR / "5_Compare.py",    title="Compare",    icon=":material/compare:"),
+    st.Page(_MODELLING_PAGES / "Data.py",            title="Data",            icon=":material/database:"),
+    st.Page(_MODELLING_PAGES / "Verify_Loaders.py",  title="Verify Loaders",  icon=":material/fact_check:"),
+    st.Page(_MODELLING_PAGES / "Configs.py",         title="Configs",         icon=":material/tune:"),
+    st.Page(_MODELLING_PAGES / "Candidates.py",      title="Candidates",      icon=":material/search:"),
+    st.Page(_MODELLING_PAGES / "Run.py",             title="Run",             icon=":material/play_arrow:"),
+    st.Page(_MODELLING_PAGES / "Compare.py",         title="Compare",         icon=":material/compare:"),
 ]
 
 fundies_pages = [
-    st.Page(_PAGES_DIR / "6_Fundies_Outages.py",  title="Outages",  icon=":material/build:"),
-    st.Page(_PAGES_DIR / "7_Fundies_Fuel_Mix.py", title="Fuel Mix", icon=":material/bolt:"),
+    # Disabled — re-enable by uncommenting.
+    # st.Page(_FUNDIES_PAGES / "Fundies_DA_RT_Settles.py",        title="DA vs RT LMP",        icon=":material/show_chart:"),
+    st.Page(_FUNDIES_PAGES / "Fundies_Outages.py",              title="Outages",             icon=":material/build:"),
+    st.Page(_FUNDIES_PAGES / "Fundies_Fuel_Mix.py",             title="Fuel Mix",            icon=":material/bolt:"),
+    st.Page(_FUNDIES_PAGES / "Fundies_Meteologica.py",          title="Meteologica",         icon=":material/cloud:"),
+    st.Page(_FUNDIES_PAGES / "Fundies_Meteologica_Compare.py",  title="Compare Two Days",    icon=":material/compare_arrows:"),
 ]
 
 pg = st.navigation(

@@ -11,6 +11,7 @@ from da_models.common.configs import CACHE_DIR
 
 _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
     "lmps_da":                       ("pjm_lmps_hourly",),
+    "lmps_rt":                       ("pjm_lmps_hourly",),
     "load_rt":                       ("pjm_load_rt_hourly",),
     "load_forecast":                 ("pjm_load_forecast_hourly_da_cutoff",),
     "fuel_mix":                      ("pjm_fuel_mix_hourly",),
@@ -141,6 +142,56 @@ def _normalize_lmps_da(df: pd.DataFrame) -> pd.DataFrame:
     normalized = normalized.dropna(subset=["date", "hour_ending", "lmp"])
     normalized["hour_ending"] = normalized["hour_ending"].astype(int)
     return normalized
+
+
+def _normalize_lmps_rt(df: pd.DataFrame) -> pd.DataFrame:
+    output = df.copy()
+    if "market" in output.columns:
+        output = output[output["market"].astype(str).str.lower() == "rt"].copy()
+
+    date_col = _first_present(output.columns, _DATE_CANDIDATES)
+    hour_col = _first_present(output.columns, _HOUR_CANDIDATES)
+    region_col = _first_present(output.columns, _REGION_CANDIDATES)
+    price_col = _first_present(
+        output.columns,
+        ("lmp", "lmp_total", "rt_lmp_total", "rt_lmp"),
+    )
+
+    required = {
+        "date": date_col,
+        "hour_ending": hour_col,
+        "region": region_col,
+        "lmp": price_col,
+    }
+    missing = [name for name, column in required.items() if column is None]
+    if missing:
+        raise KeyError(
+            f"Could not normalize lmps_rt; missing fields: {missing}. "
+            f"Columns: {list(output.columns)}"
+        )
+
+    keep = [required["date"], required["hour_ending"], required["region"], required["lmp"]]
+    if "rt_source" in output.columns:
+        keep.append("rt_source")
+    normalized = output[keep].rename(columns={v: k for k, v in required.items()})
+    normalized["date"] = _coerce_date(normalized, "date")
+    normalized["hour_ending"] = _coerce_hour(normalized, "hour_ending")
+    normalized["lmp"] = pd.to_numeric(normalized["lmp"], errors="coerce")
+    normalized["region"] = normalized["region"].astype(str)
+    normalized = normalized.dropna(subset=["date", "hour_ending", "lmp"])
+    normalized["hour_ending"] = normalized["hour_ending"].astype(int)
+
+    # Prefer verified rows when verified+unverified overlap on the same key.
+    if "rt_source" in normalized.columns:
+        normalized["_verified_rank"] = (
+            normalized["rt_source"].astype(str).str.lower() == "verified"
+        ).astype(int)
+        normalized = (
+            normalized.sort_values("_verified_rank", ascending=False)
+            .drop_duplicates(subset=["region", "date", "hour_ending"], keep="first")
+            .drop(columns=["_verified_rank", "rt_source"])
+        )
+    return normalized.sort_values(["region", "date", "hour_ending"]).reset_index(drop=True)
 
 
 def _normalize_load_rt(df: pd.DataFrame) -> pd.DataFrame:
@@ -520,6 +571,8 @@ def _normalize_meteologica_regional(df: pd.DataFrame, value_col: str) -> pd.Data
         )
 
     keep = [date_col, hour_col, region_col, value_col]
+    if "as_of_date" in output.columns:
+        keep.append("as_of_date")
     if "forecast_rank" in output.columns:
         keep.append("forecast_rank")
     if "forecast_execution_datetime_local" in output.columns:
@@ -534,9 +587,12 @@ def _normalize_meteologica_regional(df: pd.DataFrame, value_col: str) -> pd.Data
     normalized[value_col] = pd.to_numeric(normalized[value_col], errors="coerce")
     normalized = normalized.dropna(subset=["date", "hour_ending", value_col])
     normalized["hour_ending"] = normalized["hour_ending"].astype(int)
+    if "as_of_date" in normalized.columns:
+        normalized["as_of_date"] = _coerce_date(normalized, "as_of_date")
 
-    # Keep only the highest forecast_rank per (region, date, hour_ending)
-    if "forecast_rank" in normalized.columns:
+    # Historical parquets carry one row per (as_of_date, region, date, he); the
+    # live mart has no as_of_date and uses forecast_rank to pick the latest.
+    if "forecast_rank" in normalized.columns and "as_of_date" not in normalized.columns:
         normalized["forecast_rank"] = pd.to_numeric(
             normalized["forecast_rank"], errors="coerce"
         )
@@ -545,7 +601,10 @@ def _normalize_meteologica_regional(df: pd.DataFrame, value_col: str) -> pd.Data
             subset=["region", "date", "hour_ending"], keep="first"
         )
 
-    return normalized.sort_values(["region", "date", "hour_ending"]).reset_index(drop=True)
+    sort_cols = ["region", "date", "hour_ending"]
+    if "as_of_date" in normalized.columns:
+        sort_cols = ["as_of_date", *sort_cols]
+    return normalized.sort_values(sort_cols).reset_index(drop=True)
 
 
 def _normalize_meteologica_load(df: pd.DataFrame) -> pd.DataFrame:
@@ -620,6 +679,8 @@ def _normalize_meteologica_net_load(df: pd.DataFrame) -> pd.DataFrame:
             f"columns: {list(output.columns)}"
         )
     keep = [date_col, hour_col, region_col, *value_cols]
+    if "as_of_date" in output.columns:
+        keep.append("as_of_date")
     normalized = output[keep].rename(
         columns={date_col: "date", hour_col: "hour_ending", region_col: "region"}
     )
@@ -630,7 +691,12 @@ def _normalize_meteologica_net_load(df: pd.DataFrame) -> pd.DataFrame:
         normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
     normalized = normalized.dropna(subset=["date", "hour_ending"])
     normalized["hour_ending"] = normalized["hour_ending"].astype(int)
-    return normalized.sort_values(["region", "date", "hour_ending"]).reset_index(drop=True)
+    if "as_of_date" in normalized.columns:
+        normalized["as_of_date"] = _coerce_date(normalized, "as_of_date")
+    sort_cols = ["region", "date", "hour_ending"]
+    if "as_of_date" in normalized.columns:
+        sort_cols = ["as_of_date", *sort_cols]
+    return normalized.sort_values(sort_cols).reset_index(drop=True)
 
 
 def _normalize_installed_capacity(df: pd.DataFrame) -> pd.DataFrame:
@@ -730,6 +796,7 @@ def _normalize_day_gen_capacity(df: pd.DataFrame) -> pd.DataFrame:
 
 _NORMALIZERS = {
     "lmps_da": _normalize_lmps_da,
+    "lmps_rt": _normalize_lmps_rt,
     "load_rt": _normalize_load_rt,
     "load_forecast": _normalize_load_forecast,
     "fuel_mix": _normalize_fuel_mix,
@@ -798,6 +865,16 @@ def load_lmps_da(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("lmps_da", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_lmps_rt(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """PJM RT (settled) hourly LMPs. Verified rows preferred over unverified."""
+    return _load_dataset("lmps_rt", path=path, cache_dir=cache_dir, columns=columns)
 
 
 def load_load_rt(

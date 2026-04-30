@@ -82,6 +82,7 @@ def _build_for_region(region_key: str, region_label: str, *, cache_dir: Path) ->
     net_df = _maybe_load(load_meteologica_net_load_forecast, cache_dir, "Meteologica net_load")
     if not net_df.empty:
         region_df = prep_hours(net_df[net_df["region"] == region_key].copy())
+        region_df = _pin_latest_as_of(region_df)
         if region_df.empty:
             return [(f"Meteologica {region_label} — No Data",
                      empty_html(f"No net_load rows for {region_label}."), None)]
@@ -136,7 +137,16 @@ def _maybe_regional(loader_fn, cache_dir: Path, region_key: str, label: str) -> 
     df = _maybe_load(loader_fn, cache_dir, f"Meteologica {label}")
     if df.empty:
         return df
-    return prep_hours(df[df["region"] == region_key].copy())
+    return _pin_latest_as_of(prep_hours(df[df["region"] == region_key].copy()))
+
+
+def _pin_latest_as_of(df: pd.DataFrame) -> pd.DataFrame:
+    """Historical parquets carry every as_of_date snapshot; pin to the newest
+    so the snapshot fragment shows one consistent vintage."""
+    if df.empty or "as_of_date" not in df.columns:
+        return df
+    latest = df["as_of_date"].max()
+    return df[df["as_of_date"] == latest].copy()
 
 
 # ══════════════════════════════════════════════════════════════════════
