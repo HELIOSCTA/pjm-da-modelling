@@ -85,6 +85,8 @@ def generate(
             same_dow_group=config.same_dow_group,
             exclude_holidays=config.exclude_holidays,
             exclude_dates=config.exclude_dates,
+            max_age_years=config.max_age_years,
+            recency_half_life_years=config.recency_half_life_years,
         )
         hourly_rto = _shared.load_hourly_rto(configs.CACHE_DIR)
 

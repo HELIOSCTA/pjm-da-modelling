@@ -560,14 +560,14 @@ def _build_feature_price_correlations(
 
 def _correlation_feature_groups(spec: ModelSpec) -> dict[str, list[str]]:
     if spec.match_unit == "hour":
-        return {"load_hour": [f"fcst_load_h{h}" for h in HOURS]}
+        return {"load_hour": [f"load_h{h}" for h in HOURS]}
     return spec.feature_groups
 
 
 def _window_columns(target_hour: int, flt_radius: int) -> list[str]:
     lo = max(1, target_hour - flt_radius)
     hi = min(24, target_hour + flt_radius)
-    return [f"fcst_load_h{h}" for h in range(lo, hi + 1)]
+    return [f"load_h{h}" for h in range(lo, hi + 1)]
 
 
 def _zscore_fit(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

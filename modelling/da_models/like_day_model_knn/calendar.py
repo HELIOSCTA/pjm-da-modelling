@@ -142,15 +142,17 @@ def apply_calendar_filter(
     same_dow_group: bool = configs.FILTER_SAME_DOW_GROUP,
     exclude_holidays: bool = configs.FILTER_EXCLUDE_HOLIDAYS,
     exclude_dates: list[str] | None = None,
+    max_age_years: int | None = None,
     min_pool_size: int = configs.MIN_POOL_SIZE,
 ) -> pd.DataFrame:
     """Restrict the candidate pool to dates with compatible calendar metadata.
 
     Filters applied (in order):
       1. drop any date listed in ``exclude_dates``
-      2. drop NERC holidays when the target date is non-holiday and
+      2. drop candidates older than ``target_date - max_age_years`` when set
+      3. drop NERC holidays when the target date is non-holiday and
          ``exclude_holidays`` is True
-      3. keep only dates in the same DOW group as the target when
+      4. keep only dates in the same DOW group as the target when
          ``same_dow_group`` is True
 
     Each filter is reverted (its candidates re-included) when applying it
@@ -178,6 +180,24 @@ def apply_calendar_filter(
             logger.info(
                 "calendar filter: excluded %d explicit date(s), %d candidates remain",
                 before - len(work), len(work),
+            )
+
+    # 2. max-age cap. Drop anything older than target_date - max_age_years.
+    if max_age_years is not None and max_age_years > 0:
+        cutoff = pd.Timestamp(target_date) - pd.DateOffset(years=int(max_age_years))
+        cutoff_date = cutoff.date()
+        before = len(work)
+        candidates = work[work["date"] >= cutoff_date]
+        if len(candidates) >= min_pool_size:
+            work = candidates
+            logger.info(
+                "calendar filter: max_age_years=%d cutoff=%s dropped %d, %d remain",
+                int(max_age_years), cutoff_date, before - len(work), len(work),
+            )
+        else:
+            logger.warning(
+                "calendar filter: max_age_years=%d would leave only %d (< min %d) - relaxing",
+                int(max_age_years), len(candidates), min_pool_size,
             )
 
     if dates_meta is None or len(dates_meta) == 0:
@@ -251,8 +271,39 @@ def filtered_pool_for_target(
         same_dow_group=bool(getattr(cfg, "same_dow_group", configs.FILTER_SAME_DOW_GROUP)),
         exclude_holidays=bool(getattr(cfg, "exclude_holidays", configs.FILTER_EXCLUDE_HOLIDAYS)),
         exclude_dates=list(getattr(cfg, "exclude_dates", []) or []),
+        max_age_years=getattr(cfg, "max_age_years", None),
         min_pool_size=int(getattr(cfg, "min_pool_size", configs.MIN_POOL_SIZE)),
     )
+
+
+# ── Recency weighting ──────────────────────────────────────────────────
+
+def age_years(
+    candidate_dates: pd.Series | np.ndarray | list,
+    target_date: date,
+) -> np.ndarray:
+    """Years between each candidate date and the target date (365.25-day years)."""
+    target_ts = pd.Timestamp(target_date)
+    dates = pd.to_datetime(pd.Series(list(candidate_dates)))
+    return ((target_ts - dates).dt.days / 365.25).to_numpy(dtype=float)
+
+
+def age_decay_weights(
+    candidate_dates: pd.Series | np.ndarray | list,
+    target_date: date,
+    half_life_years: float | None,
+) -> np.ndarray:
+    """Exponential decay multiplier for analog weights based on candidate age.
+
+    With ``half_life_years=2.0``, a 4-year-old candidate is multiplied by 0.25
+    relative to a same-day candidate. Returns all-ones when ``half_life_years``
+    is None or non-positive — caller can multiply unconditionally.
+    """
+    n = len(list(candidate_dates))
+    if half_life_years is None or float(half_life_years) <= 0:
+        return np.ones(n, dtype=float)
+    ages = age_years(candidate_dates, target_date)
+    return 0.5 ** (ages / float(half_life_years))
 
 
 # ── Light-weight smoke test ────────────────────────────────────────────
@@ -266,7 +317,7 @@ def _self_check() -> None:  # pragma: no cover - run via __main__
 
     pool = pd.DataFrame({
         "date": pd.date_range("2024-07-01", "2024-09-15", freq="D").date,
-        "fcst_load_h1": np.arange(77, dtype=float),
+        "load_h1": np.arange(77, dtype=float),
     })
     out = apply_calendar_filter(
         pool=pool, target_date=target, dates_meta=df,

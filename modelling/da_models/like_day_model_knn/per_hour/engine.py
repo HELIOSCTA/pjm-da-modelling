@@ -41,12 +41,15 @@ def _candidate_pool(
     same_dow_group: bool = False,
     exclude_holidays: bool = False,
     exclude_dates: list[str] | None = None,
+    max_age_years: int | None = None,
 ) -> pd.DataFrame:
     work = pool.copy()
     work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
     if len(work) == 0:
         return work
-    if dates_meta is not None and (same_dow_group or exclude_holidays or exclude_dates):
+    if (
+        same_dow_group or exclude_holidays or exclude_dates or max_age_years
+    ) and (dates_meta is not None or max_age_years):
         work = _calendar.apply_calendar_filter(
             pool=work,
             target_date=target_date,
@@ -54,6 +57,7 @@ def _candidate_pool(
             same_dow_group=same_dow_group,
             exclude_holidays=exclude_holidays,
             exclude_dates=exclude_dates,
+            max_age_years=max_age_years,
             min_pool_size=min_pool_size,
         )
         if len(work) == 0:
@@ -82,7 +86,56 @@ def _window_columns(target_hour: int, flt_radius: int) -> list[str]:
     """Hourly load feature column names for a target hour and +/- flt_radius window."""
     lo = max(1, target_hour - flt_radius)
     hi = min(24, target_hour + flt_radius)
-    return [f"fcst_load_h{h}" for h in range(lo, hi + 1)]
+    return [f"load_h{h}" for h in range(lo, hi + 1)]
+
+
+def _combined_non_load_distance(
+    spec: ModelSpec, pool: pd.DataFrame, query: pd.Series,
+) -> tuple[np.ndarray | None, float]:
+    """Weighted-average per-group RMS-z distance over non-load groups.
+
+    Non-load group features are constant across target hours (broadcast),
+    so the combined non-load distance is computed once per pool row and
+    reused for all 24 target hours. Returns ``(distance_array, total_weight)``;
+    ``distance_array`` is ``None`` when the spec has no non-load groups.
+    """
+    non_load_groups = [
+        (g, float(spec.feature_group_weights.get(g, 0.0)))
+        for g in spec.feature_groups
+        if not g.startswith("load_") and float(spec.feature_group_weights.get(g, 0.0)) > 0
+    ]
+    if not non_load_groups:
+        return None, 0.0
+
+    n = len(pool)
+    weighted_sum = np.zeros(n, dtype=float)
+    weight_sum = np.zeros(n, dtype=float)
+    for group, weight in non_load_groups:
+        cols = spec.feature_groups[group]
+        cols_present = [c for c in cols if c in pool.columns and c in query.index]
+        if not cols_present:
+            continue
+        pool_vals = pool[cols_present].to_numpy(dtype=float)
+        query_vals = query[cols_present].to_numpy(dtype=float)
+        means = np.nanmean(pool_vals, axis=0)
+        stds = np.nanstd(pool_vals, axis=0)
+        stds = np.where(stds == 0, 1.0, stds)
+        pool_z = (pool_vals - means) / stds
+        query_z = (query_vals - means) / stds
+        diff = query_z - pool_z
+        mask = ~np.isnan(diff)
+        sq = np.where(mask, diff ** 2, 0.0)
+        n_valid = mask.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.nan)
+        valid = ~np.isnan(d)
+        weighted_sum[valid] += weight * d[valid]
+        weight_sum[valid] += weight
+
+    distance = np.full(n, np.nan, dtype=float)
+    valid = weight_sum > 0
+    distance[valid] = weighted_sum[valid] / weight_sum[valid]
+    return distance, sum(w for _, w in non_load_groups)
 
 
 def find_twins_per_hour(
@@ -97,6 +150,8 @@ def find_twins_per_hour(
     same_dow_group: bool = False,
     exclude_holidays: bool = False,
     exclude_dates: list[str] | None = None,
+    max_age_years: int | None = None,
+    recency_half_life_years: float | None = None,
 ) -> pd.DataFrame:
     """Per-hour analog table. Shape: 24 * n_analogs rows.
 
@@ -110,6 +165,7 @@ def find_twins_per_hour(
         same_dow_group=same_dow_group,
         exclude_holidays=exclude_holidays,
         exclude_dates=exclude_dates,
+        max_age_years=max_age_years,
     )
     if len(work) == 0:
         logger.warning(
@@ -119,6 +175,16 @@ def find_twins_per_hour(
 
     flt_radius = int(spec.flt_radius)
     rows: list[dict] = []
+
+    # Pre-compute non-load groups' combined distance (constant across hours).
+    non_load_dist, non_load_weight = _combined_non_load_distance(spec, work, query)
+    load_weight = sum(
+        float(w) for g, w in spec.feature_group_weights.items() if g.startswith("load_")
+    )
+    if load_weight <= 0:
+        # No load groups in the spec; treat the dynamic window as the full
+        # remaining weight so distances stay finite.
+        load_weight = max(0.0, 1.0 - non_load_weight)
 
     for h in configs.HOURS:
         cols = _window_columns(h, flt_radius)
@@ -143,6 +209,20 @@ def find_twins_per_hour(
             d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.inf)
         d = np.where(np.isfinite(d), d, np.inf)
 
+        if non_load_dist is not None:
+            total_w = load_weight + non_load_weight
+            valid_load = np.isfinite(d)
+            valid_nl = ~np.isnan(non_load_dist)
+            both = valid_load & valid_nl
+            combined = np.full_like(d, np.inf)
+            combined[both] = (
+                load_weight * d[both] + non_load_weight * non_load_dist[both]
+            ) / total_w
+            # Fall back to load-only when non-load is missing for a row.
+            load_only = valid_load & ~valid_nl
+            combined[load_only] = d[load_only]
+            d = combined
+
         order = np.argsort(d)
         order = order[np.isfinite(d[order])]
         order = order[:n_analogs]
@@ -152,7 +232,13 @@ def find_twins_per_hour(
         d_top = d[order]
         eps = 1e-6
         inv_dist = 1.0 / (d_top + eps)
-        weights = inv_dist / inv_dist.sum()
+        top_dates = work.iloc[[int(i) for i in order]]["date"].to_list()
+        decay = _calendar.age_decay_weights(top_dates, target_date, recency_half_life_years)
+        raw = inv_dist * decay
+        if raw.sum() <= 0:
+            weights = np.full(len(d_top), 1.0 / max(1, len(d_top)))
+        else:
+            weights = raw / raw.sum()
 
         lmp_col = f"lmp_h{h}"
         for rank, (idx_arr, dist, w) in enumerate(zip(order, d_top, weights), start=1):

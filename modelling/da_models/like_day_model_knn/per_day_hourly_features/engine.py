@@ -35,12 +35,15 @@ def _candidate_pool(
     same_dow_group: bool = False,
     exclude_holidays: bool = False,
     exclude_dates: list[str] | None = None,
+    max_age_years: int | None = None,
 ) -> pd.DataFrame:
     work = pool.copy()
     work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
     if len(work) == 0:
         return work
-    if dates_meta is not None and (same_dow_group or exclude_holidays or exclude_dates):
+    if (
+        same_dow_group or exclude_holidays or exclude_dates or max_age_years
+    ) and (dates_meta is not None or max_age_years):
         work = _calendar.apply_calendar_filter(
             pool=work,
             target_date=target_date,
@@ -48,6 +51,7 @@ def _candidate_pool(
             same_dow_group=same_dow_group,
             exclude_holidays=exclude_holidays,
             exclude_dates=exclude_dates,
+            max_age_years=max_age_years,
             min_pool_size=min_pool_size,
         )
         if len(work) == 0:
@@ -137,6 +141,8 @@ def find_twins_day(
     same_dow_group: bool = False,
     exclude_holidays: bool = False,
     exclude_dates: list[str] | None = None,
+    max_age_years: int | None = None,
+    recency_half_life_years: float | None = None,
 ) -> pd.DataFrame:
     """Top-N analog days. Columns: rank, date, distance, weight, lmp_h1..lmp_h24."""
     out_cols = ["rank", "date", "distance", "weight"] + configs.LMP_LABEL_COLUMNS
@@ -147,6 +153,7 @@ def find_twins_day(
         same_dow_group=same_dow_group,
         exclude_holidays=exclude_holidays,
         exclude_dates=exclude_dates,
+        max_age_years=max_age_years,
     )
     if len(work) == 0:
         logger.warning(
@@ -169,6 +176,11 @@ def find_twins_day(
 
     eps = 1e-6
     inv_dist = 1.0 / (top["distance"].to_numpy(dtype=float) + eps)
-    weights = inv_dist / inv_dist.sum()
+    decay = _calendar.age_decay_weights(top["date"], target_date, recency_half_life_years)
+    raw = inv_dist * decay
+    if raw.sum() <= 0:
+        weights = np.full(len(top), 1.0 / max(1, len(top)))
+    else:
+        weights = raw / raw.sum()
     top = top.assign(weight=weights, rank=range(1, len(top) + 1))
     return top[out_cols]

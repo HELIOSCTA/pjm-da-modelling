@@ -31,11 +31,9 @@ LOAD_REGION: str = "RTO"
 CACHE_DIR: Path = Path(os.getenv("DA_MODELS_CACHE_DIR", str(DEFAULT_SHARED_CACHE_DIR)))
 
 # ── Data source parquets ───────────────────────────────────────────────
-LOAD_FORECAST_PARQUETS: list[str] = [
-    "pjm_load_forecast_hourly_da_cutoff_historical.parquet",
-]
-LMP_DA_PARQUET: str = "pjm_lmps_hourly.parquet"
 PJM_DATES_DAILY_PARQUET: str = "pjm_dates_daily.parquet"
+LMP_DA_PARQUET: str = "pjm_lmps_hourly.parquet"
+LOAD_FORECAST_PARQUETS: list[str] = ["pjm_load_forecast_hourly_da_cutoff.parquet"]
 
 # ── Forecast defaults ──────────────────────────────────────────────────
 DEFAULT_TARGET_DATE: date = date.today() + timedelta(days=1)
@@ -58,6 +56,17 @@ DAY_TYPE_SUNDAY: str = "sunday"
 FILTER_SAME_DOW_GROUP: bool = True
 FILTER_EXCLUDE_HOLIDAYS: bool = True
 EXCLUDE_DATES: list[str] = []  # add YYYY-MM-DD strings to drop from the pool
+
+# Recency controls. Both default to None (no recency adjustment) so that
+# behavior is unchanged unless a config explicitly opts in.
+#   - MAX_AGE_YEARS: hard cap on candidate age. Drops candidates older than
+#     ``target_date - N years``. Use as a structural-break ablation; below
+#     ~3 years the pool starves on weekends.
+#   - RECENCY_HALF_LIFE_YEARS: soft exponential decay on the analog weight
+#     post-selection. ``weight *= 0.5 ** (age_years / half_life)``.
+#     Doesn't change pool composition; only how analogs blend in the forecast.
+MAX_AGE_YEARS: int | None = None
+RECENCY_HALF_LIFE_YEARS: float | None = None
 
 # Saturday/Sunday narrow the window and tighten DOW matching.
 # Only knobs that exist on KnnModelConfig are listed here — no feature_group
@@ -86,74 +95,74 @@ LMP_LABEL_COLUMNS: list[str] = [f"lmp_h{h}" for h in HOURS]
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """Per-model feature/weight/matching definition.
+    """Per-model definition. Composes one or more registered FeatureDomains.
 
-    For ``match_unit == "day"``: ``feature_groups`` is a static dict from
-    group name to column list, exactly like ``forward_knn_load_forecast``.
-
-    For ``match_unit == "hour"``: ``feature_groups`` is empty - the engine
-    builds per-target-hour groups dynamically using ``flt_radius``.
+    ``feature_groups`` and ``feature_group_weights`` are DERIVED from the
+    enabled domains; weights are renormalized to sum to 1.0. ``per_hour``
+    additionally uses ``flt_radius`` for the dynamic load window.
     """
     name: str
     description: str
     match_unit: str  # "day" | "hour"
-    feature_groups: dict[str, list[str]] = field(default_factory=dict)
-    feature_group_weights: dict[str, float] = field(default_factory=dict)
-    flt_radius: int = 0  # only used when match_unit == "hour"
+    domains: tuple[str, ...]
+    flt_radius: int = 0
+
+    @property
+    def feature_groups(self) -> dict[str, list[str]]:
+        from da_models.like_day_model_knn.domains import resolved_feature_groups
+        return resolved_feature_groups(self.domains)
+
+    @property
+    def feature_group_weights(self) -> dict[str, float]:
+        from da_models.like_day_model_knn.domains import resolved_feature_group_weights
+        return resolved_feature_group_weights(self.domains)
 
 
-# Daily summary features, day-level matching (baseline)
+# ── Baseline (load-only) specs ─────────────────────────────────────────
+
 PER_DAY_DAILY_FEATURES_SPEC = ModelSpec(
     name="per_day_daily_features",
-    description="Daily summary features (6) x day-level matching",
+    description="RTO load daily summaries x day-level matching",
     match_unit="day",
-    feature_groups={
-        "load_level": [
-            "fcst_load_daily_avg",
-            "fcst_load_daily_peak",
-            "fcst_load_daily_valley",
-        ],
-        "load_ramps": [
-            "fcst_load_morning_ramp",
-            "fcst_load_evening_ramp",
-            "fcst_load_ramp_max",
-        ],
-    },
-    feature_group_weights={
-        "load_level": 3.0,
-        "load_ramps": 1.0,
-    },
+    domains=("rto_load_summary",),
 )
 
-# Hourly bucketed features, day-level matching
 PER_DAY_HOURLY_FEATURES_SPEC = ModelSpec(
     name="per_day_hourly_features",
-    description="Hourly bucketed features (24 in 5 blocks) x day-level matching",
+    description="RTO load 24-hour profile (5 zones) x day-level matching",
     match_unit="day",
-    feature_groups={
-        "load_overnight": [f"fcst_load_h{h}" for h in range(1, 7)],   # HE1-6
-        "load_morning":   [f"fcst_load_h{h}" for h in range(7, 12)],  # HE7-11
-        "load_midday":    [f"fcst_load_h{h}" for h in range(12, 17)], # HE12-16
-        "load_peak":      [f"fcst_load_h{h}" for h in range(17, 21)], # HE17-20
-        "load_evening":   [f"fcst_load_h{h}" for h in range(21, 25)], # HE21-24
-    },
-    feature_group_weights={
-        "load_overnight": 1.0,
-        "load_morning":   1.5,
-        "load_midday":    2.0,
-        "load_peak":      3.5,
-        "load_evening":   2.0,
-    },
+    domains=("rto_load_profile",),
 )
 
-# 3-hour window, per-hour matching. The engine builds the window cols
-# dynamically per target HE; feature_groups stays empty here.
 PER_HOUR_SPEC = ModelSpec(
     name="per_hour",
-    description="3-hour window features x per-hour matching (24 matches per day)",
+    description="RTO load 3-hour window x per-hour matching (24 matches/day)",
     match_unit="hour",
-    feature_groups={},
-    feature_group_weights={},
+    domains=("rto_load_profile",),
+    flt_radius=1,
+)
+
+# ── All-domains-on specs (RTO load + renewables + outages + gas) ──────
+
+PER_DAY_DAILY_FEATURES_ALL_SPEC = ModelSpec(
+    name="per_day_daily_features__all",
+    description="Daily summaries + renewables + outages + gas x day matching",
+    match_unit="day",
+    domains=("rto_load_summary", "renewables", "outages", "gas"),
+)
+
+PER_DAY_HOURLY_FEATURES_ALL_SPEC = ModelSpec(
+    name="per_day_hourly_features__all",
+    description="Hourly profile + renewables + outages + gas x day matching",
+    match_unit="day",
+    domains=("rto_load_profile", "renewables", "outages", "gas"),
+)
+
+PER_HOUR_ALL_SPEC = ModelSpec(
+    name="per_hour__all",
+    description="Load window + renewables + outages + gas x per-hour matching",
+    match_unit="hour",
+    domains=("rto_load_profile", "renewables", "outages", "gas"),
     flt_radius=1,
 )
 
@@ -161,6 +170,9 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     PER_DAY_DAILY_FEATURES_SPEC.name: PER_DAY_DAILY_FEATURES_SPEC,
     PER_DAY_HOURLY_FEATURES_SPEC.name: PER_DAY_HOURLY_FEATURES_SPEC,
     PER_HOUR_SPEC.name: PER_HOUR_SPEC,
+    PER_DAY_DAILY_FEATURES_ALL_SPEC.name: PER_DAY_DAILY_FEATURES_ALL_SPEC,
+    PER_DAY_HOURLY_FEATURES_ALL_SPEC.name: PER_DAY_HOURLY_FEATURES_ALL_SPEC,
+    PER_HOUR_ALL_SPEC.name: PER_HOUR_ALL_SPEC,
 }
 
 DEFAULT_MODEL: str = PER_DAY_DAILY_FEATURES_SPEC.name
@@ -196,6 +208,10 @@ class KnnModelConfig:
     exclude_dates: list[str] = field(default_factory=lambda: list(EXCLUDE_DATES))
     use_day_type_profiles: bool = True
     day_type_profiles: dict[str, dict[str, Any]] | None = None
+
+    # Recency knobs (default None = unchanged behavior)
+    max_age_years: int | None = MAX_AGE_YEARS
+    recency_half_life_years: float | None = RECENCY_HALF_LIFE_YEARS
 
     def resolved_target_date(self) -> date:
         if self.forecast_date:
