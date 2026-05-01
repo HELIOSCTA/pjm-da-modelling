@@ -44,6 +44,10 @@ TODO/*
 # cache
 backend/cache/
 
+# MCP briefings — local-only operational output (keep README tracked)
+backend/mcp_server/briefings/*
+!backend/mcp_server/briefings/README.md
+
 # WIP: PJM Meteologica historical scrape package (still iterating)
 backend/scrapes/meteologica/pjm/historical/
 
