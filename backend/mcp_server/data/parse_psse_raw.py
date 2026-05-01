@@ -125,6 +125,7 @@ def _parse_branches(lines: list[str], start: int, end: int) -> pd.DataFrame:
             rows.append({
                 "from_bus": abs(int(fields[0].strip())),
                 "to_bus": abs(int(fields[1].strip())),
+                "third_bus": 0,
                 "ckt_id": fields[2].strip(),
                 "rating_mva": float(fields[6]),
                 "equipment_type": "LINE",
@@ -135,24 +136,33 @@ def _parse_branches(lines: list[str], start: int, end: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ── Transformers (2-winding only) ────────────────────────────────────────────
+# ── Transformers (2-winding + 3-winding) ─────────────────────────────────────
 
 
 def _parse_transformers(lines: list[str], start: int, end: int) -> pd.DataFrame:
-    """2-winding transformer records: 4 lines each.
+    """Transformer records.
 
-      L1 (header):     I, J, K, CKT, CW, CZ, CM, MAG1, MAG2, NMETR, NAME, STAT, ...
-      L2 (impedance):  R1-2, X1-2, SBASE1-2
-      L3 (winding 1):  WINDV1, NOMV1, ANG1, RATA1, RATB1, RATC1, ...
-      L4 (winding 2):  WINDV2, NOMV2
+      Header (L1): I, J, K, CKT, CW, CZ, CM, MAG1, MAG2, NMETR, NAME, STAT, ...
+        K = 0  → 2-winding (4 lines total)
+        K != 0 → 3-winding (5 lines total)
 
-    K=0 → 2-winding (4 lines).  K!=0 → 3-winding (5 lines, skipped for v1).
+      2-winding layout:
+        L1 header  | L2 impedance (R1-2, X1-2, SBASE1-2)
+        L3 winding 1 (WINDV1, NOMV1, ANG1, RATA1, ...)
+        L4 winding 2 (WINDV2, NOMV2)
 
-    From the header we take I, J, CKT, NAME.
-    From line 3 we take NOMV1 (kV) and RATA1 (MVA).
+      3-winding layout:
+        L1 header  | L2 impedances + VMSTAR/ANSTAR (11 fields)
+        L3 winding 1   L4 winding 2   L5 winding 3 (16 fields each)
+
+    For both we emit one row per device, indexed by the high-voltage winding's
+    bus + voltage + rating. For 3-winding we use winding 1 (high side) as the
+    primary view; the third (tertiary) winding is captured in ``third_bus``
+    so neighbor traversal can still see it as connected to ``from_bus``.
     """
     rows: list[dict] = []
-    skipped_3wind = 0
+    parsed_2wind = 0
+    parsed_3wind = 0
     i = start
     while i < end:
         try:
@@ -162,37 +172,51 @@ def _parse_transformers(lines: list[str], start: int, end: int) -> pd.DataFrame:
                 continue
             from_bus = abs(int(header[0].strip()))
             to_bus = abs(int(header[1].strip()))
-            third = int(header[2].strip())
+            third = abs(int(header[2].strip()))
             ckt = header[3].strip()
             name = header[10].strip() if len(header) > 10 else ""
 
-            if third != 0:
-                # 3-winding: skip 5 lines
-                skipped_3wind += 1
+            if third == 0:
+                # 2-winding: 4 lines total — winding 1 is at i + 2
+                winding1 = _split_record(lines[i + 2])
+                nomv1 = float(winding1[1])
+                rata1 = float(winding1[3])
+                rows.append({
+                    "from_bus": from_bus,
+                    "to_bus": to_bus,
+                    "third_bus": 0,
+                    "ckt_id": ckt,
+                    "rating_mva": rata1,
+                    "voltage_kv_native": nomv1,
+                    "equipment_type": "XFMR",
+                    "name": name,
+                })
+                parsed_2wind += 1
+                i += 4
+            else:
+                # 3-winding: 5 lines total — winding 1 at i + 2
+                winding1 = _split_record(lines[i + 2])
+                nomv1 = float(winding1[1])
+                rata1 = float(winding1[3])
+                rows.append({
+                    "from_bus": from_bus,
+                    "to_bus": to_bus,
+                    "third_bus": third,
+                    "ckt_id": ckt,
+                    "rating_mva": rata1,
+                    "voltage_kv_native": nomv1,
+                    "equipment_type": "XFMR",
+                    "name": name,
+                })
+                parsed_3wind += 1
                 i += 5
-                continue
-
-            # 2-winding: 4 lines total
-            winding1 = _split_record(lines[i + 2])
-            nomv1 = float(winding1[1])
-            rata1 = float(winding1[3])
-
-            rows.append({
-                "from_bus": from_bus,
-                "to_bus": to_bus,
-                "ckt_id": ckt,
-                "rating_mva": rata1,
-                "voltage_kv_native": nomv1,  # primary-side nominal kV from xfmr record
-                "equipment_type": "XFMR",
-                "name": name,
-            })
-            i += 4
         except (ValueError, IndexError) as e:
             logger.warning(f"transformer parse error at line {i}: {e!r} — skipping 4 lines")
             i += 4
 
-    if skipped_3wind:
-        logger.info(f"skipped {skipped_3wind} three-winding transformers (v1 handles 2-winding only)")
+    logger.info(
+        f"parsed {parsed_2wind:,} two-winding + {parsed_3wind:,} three-winding transformers"
+    )
     return pd.DataFrame(rows)
 
 
@@ -245,7 +269,7 @@ def parse(raw_file: Path = RAW_FILE) -> tuple[pd.DataFrame, pd.DataFrame]:
     xfmrs_df = xfmrs_df.drop(columns=["voltage_kv_native"])
 
     cols = [
-        "from_bus", "to_bus", "from_bus_name", "to_bus_name",
+        "from_bus", "to_bus", "third_bus", "from_bus_name", "to_bus_name",
         "voltage_kv", "equipment_type", "rating_mva", "ckt_id", "name",
     ]
     branches = pd.concat(

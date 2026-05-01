@@ -110,6 +110,46 @@ def _normalize_station(name: str | None) -> str | None:
     return s.split(maxsplit=1)[0].upper()
 
 
+# Transformer label patterns. PJM and PSS/E both use varied conventions —
+# ``TRAN 1``, ``TX5``, ``TR4``, ``XF1``, ``T2``, ``500-3T``, ``BK 7``,
+# ``1 BANK``, ``230-1``, ``#1``. Patterns try most-specific first.
+_XFMR_LABEL_PATTERNS = [
+    re.compile(r"\bTRAN\s*0*(\d+)", re.IGNORECASE),         # TRAN 1, TRAN  3
+    re.compile(r"\bTX\s*0*(\d+)", re.IGNORECASE),           # TX1, TX 5
+    re.compile(r"\bXF\s*0*(\d+)", re.IGNORECASE),           # XF1, XF12
+    re.compile(r"(?<![A-Z])TR\s*0*(\d+)(?![A-Z])"),         # TR4 (not TRAN)
+    re.compile(r"(?<![A-Z\d])T\s*0*(\d+)(?![A-Z])"),        # bare T2, T11
+    re.compile(r"\bBK\s*0*(\d+)", re.IGNORECASE),           # BK 7
+    re.compile(r"(\d+)\s+BANK\b", re.IGNORECASE),           # 1 BANK
+    re.compile(r"#\s*0*(\d+)"),                             # #1
+    re.compile(r"\d+\s*-\s*0*(\d+)\b"),                     # 500-3, 230-1, 220-5
+    re.compile(r"\b0*(\d+)\s*T\b", re.IGNORECASE),          # 8T, 4T (trailing T)
+]
+
+
+def _extract_xfmr_ckt_id(text: str | None) -> str | None:
+    """Pull the transformer index out of a free-form label.
+
+    Works on both PJM facility descriptions (``"BEDINGTO TRAN 1"``) and PSS/E
+    name fields (``"BEDINGTO500 KV  TRAN  1"``). We avoid catching the voltage
+    digits in PSS/E names like ``"500 KV"`` by anchoring patterns to specific
+    label prefixes (TX/TR/TRAN/XF/T/BK) or to suffix tokens (Nth/N-N/#N).
+
+    Returns the leading-zero-stripped digits as a string, or None.
+    """
+    if not text:
+        return None
+    # Strip the voltage marker so "500 KV" / "230 KV" don't pollute later digit
+    # patterns. After "KV" comes the actual transformer label in PSS/E names.
+    after_kv = re.split(r"\bKV\b", str(text), maxsplit=1)
+    rest = after_kv[1] if len(after_kv) > 1 else str(text)
+    for pat in _XFMR_LABEL_PATTERNS:
+        m = pat.search(rest)
+        if m:
+            return str(int(m.group(1)))
+    return None
+
+
 # ─── Indexes ─────────────────────────────────────────────────────────────────
 
 
@@ -130,7 +170,11 @@ def _build_indexes(branches: pd.DataFrame) -> tuple[dict, dict]:
             key = (frozenset((f_norm, t_norm)), kv)
             line_index.setdefault(key, []).append(i)
         elif row["equipment_type"] == "XFMR":
-            for endpoint in (f_norm, t_norm):
+            # Set-deduplicates: many transformers connect two buses at the same
+            # substation (e.g. BEDINGTO 500↔138), so f_norm == t_norm — without
+            # the set we'd index the same branch twice and break ckt-id
+            # disambiguation later (one PSS/E branch would look like 2 hits).
+            for endpoint in {f_norm, t_norm}:
                 if endpoint:
                     xfmr_index.setdefault((endpoint, kv), []).append(i)
     return line_index, xfmr_index
@@ -195,6 +239,21 @@ def match_outages_to_branches(
             # "XFMR FENTRES4 500 KV FENFRES4 TX5")
             if not hits and l_norm and l_norm != s_norm:
                 hits = xfmr_idx.get((l_norm, kv), [])
+
+        # XFMR / PS disambiguation: when multiple PSS/E transformers share the
+        # same (station, kV), match the PJM TX/TRAN/XF/etc. number against the
+        # same label parsed from the PSS/E ``name`` field. PSS/E ``ckt_id`` is
+        # unrelated — at BEDINGTO, PJM "TRAN 1" maps to PSS/E ckt_id=4, but
+        # PSS/E name="BEDINGTO500 KV  TRAN  1" lines up with PJM "TRAN 1".
+        if hits and len(hits) > 1 and equip in ("XFMR", "PS"):
+            target_label = _extract_xfmr_ckt_id(facility)
+            if target_label:
+                label_matches = [
+                    h for h in hits
+                    if _extract_xfmr_ckt_id(branches_df.loc[h, "name"]) == target_label
+                ]
+                if len(label_matches) == 1:
+                    hits = label_matches  # promote to single-matched
 
         if hits:
             br = branches_df.loc[hits[0]]
