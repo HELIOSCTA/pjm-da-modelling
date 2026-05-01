@@ -350,3 +350,206 @@ def _format_neighbors(neighbors: list[dict]) -> str:
             label = f"XFMR@{nb['from_name']}"
         parts.append(f"{label} ({int(nb['voltage_kv'])}kV)")
     return "; ".join(parts)
+
+
+# ─── Binding constraints — DA forward + RT/DART backward ─────────────────────
+
+
+def _constraint_route(rec: dict) -> str:
+    """Compose 'FROM→TO' or single-station from a constraint record."""
+    f, t = rec.get("parsed_from_station"), rec.get("parsed_to_station")
+    if f and t:
+        return f"{f}→{t}"
+    s = rec.get("parsed_single_station")
+    if s:
+        return s
+    return "-"
+
+
+def _bus_pair(rec: dict) -> str:
+    fb, tb = rec.get("from_bus_psse"), rec.get("to_bus_psse")
+    if fb is None or tb is None:
+        return "-"
+    return f"{fb}↔{tb}"
+
+
+def _money(val) -> str:
+    if val is None:
+        return "-"
+    return f"${val:,.0f}"
+
+
+def format_constraints_da_network(vm: dict) -> str:
+    """Markdown for ``GET /views/constraints_da_network``."""
+    parts: list[str] = []
+    parts.append(f"# DA Constraints — Network-Enriched — {vm.get('target_date', '?')}")
+
+    cov = vm.get("match_coverage", {})
+    parts.append(
+        f"\n**Match coverage**: {cov.get('matched', 0) + cov.get('ambiguous', 0)} / "
+        f"{cov.get('total', 0) - cov.get('interface', 0)} branch-class "
+        f"({cov.get('match_rate_pct', 0)}%) — "
+        f"{cov.get('matched', 0)} unique, "
+        f"{cov.get('ambiguous', 0)} multi-match, "
+        f"{cov.get('unmatched', 0)} unmatched, "
+        f"{cov.get('interface', 0)} interface (no branch)"
+    )
+
+    matched = vm.get("matched_constraints", [])
+    if matched:
+        parts.append(f"\n## Matched ({len(matched)}) — sorted by total price")
+        parts.append(_constraint_da_table(matched, with_neighbors=True))
+
+    ambiguous = vm.get("ambiguous_constraints", [])
+    if ambiguous:
+        parts.append(
+            f"\n## Ambiguous ({len(ambiguous)}) — first PSS/E candidate shown"
+        )
+        parts.append(_constraint_da_table(ambiguous, with_neighbors=True))
+
+    unmatched = vm.get("unmatched_constraints", [])
+    if unmatched:
+        parts.append(
+            f"\n## Unmatched ({len(unmatched)}) — facility not found in PSS/E"
+        )
+        parts.append(_constraint_unmatched_table(unmatched, market="da"))
+
+    interface = vm.get("interface_constraints", [])
+    if interface:
+        parts.append(
+            f"\n## Interface / Zone ({len(interface)}) — no branch match attempted"
+        )
+        parts.append(_constraint_unmatched_table(interface, market="da"))
+
+    return "\n".join(parts)
+
+
+def format_constraints_rt_dart_network(vm: dict) -> str:
+    """Markdown for ``GET /views/constraints_rt_dart_network``."""
+    parts: list[str] = []
+    parts.append(
+        f"# RT + DART Constraints — Network-Enriched — "
+        f"{vm.get('start_date', '?')} → {vm.get('end_date', '?')}"
+    )
+
+    cov = vm.get("match_coverage", {})
+    parts.append(
+        f"\n**Match coverage**: {cov.get('matched', 0) + cov.get('ambiguous', 0)} / "
+        f"{cov.get('total', 0) - cov.get('interface', 0)} branch-class "
+        f"({cov.get('match_rate_pct', 0)}%) — "
+        f"{cov.get('matched', 0)} unique, "
+        f"{cov.get('ambiguous', 0)} multi-match, "
+        f"{cov.get('unmatched', 0)} unmatched, "
+        f"{cov.get('interface', 0)} interface — "
+        f"sorted by `|DART total|` desc"
+    )
+
+    matched = vm.get("matched_constraints", [])
+    if matched:
+        parts.append(f"\n## Matched ({len(matched)})")
+        parts.append(_constraint_rt_dart_table(matched, with_neighbors=True))
+
+    ambiguous = vm.get("ambiguous_constraints", [])
+    if ambiguous:
+        parts.append(
+            f"\n## Ambiguous ({len(ambiguous)}) — first PSS/E candidate shown"
+        )
+        parts.append(_constraint_rt_dart_table(ambiguous, with_neighbors=True))
+
+    unmatched = vm.get("unmatched_constraints", [])
+    if unmatched:
+        parts.append(f"\n## Unmatched ({len(unmatched)})")
+        parts.append(_constraint_unmatched_table(unmatched, market="rt_dart"))
+
+    interface = vm.get("interface_constraints", [])
+    if interface:
+        parts.append(f"\n## Interface / Zone ({len(interface)})")
+        parts.append(_constraint_unmatched_table(interface, market="rt_dart"))
+
+    return "\n".join(parts)
+
+
+def _constraint_da_table(rows: list[dict], *, with_neighbors: bool) -> str:
+    headers = [
+        "Constraint", "Contingency", "kV", "Route", "Buses",
+        "Total $", "Hrs", "OnPk $", "OffPk $", "MVA",
+    ]
+    if with_neighbors:
+        headers.append("Top Neighbors")
+    out = []
+    for r in rows:
+        row = [
+            (r.get("constraint_name") or "-")[:30],
+            (r.get("contingency") or "-")[:30],
+            r.get("parsed_voltage_kv") or "-",
+            _constraint_route(r),
+            _bus_pair(r),
+            _money(r.get("da_total_price")),
+            r.get("da_total_hours") or "-",
+            _money(r.get("da_onpeak_price")),
+            _money(r.get("da_offpeak_price")),
+            f"{r['rating_mva']:,.0f}" if r.get("rating_mva") else "-",
+        ]
+        if with_neighbors:
+            row.append(_format_neighbors(r.get("neighbors", [])))
+        out.append(row)
+    return _table(headers, out)
+
+
+def _constraint_rt_dart_table(rows: list[dict], *, with_neighbors: bool) -> str:
+    headers = [
+        "Date", "Constraint", "Contingency", "kV", "Route", "Buses",
+        "RT $", "RT Hrs", "DART $", "DART Hrs", "MVA",
+    ]
+    if with_neighbors:
+        headers.append("Top Neighbors")
+    out = []
+    for r in rows:
+        row = [
+            r.get("date") or "-",
+            (r.get("constraint_name") or "-")[:28],
+            (r.get("contingency") or "-")[:28],
+            r.get("parsed_voltage_kv") or "-",
+            _constraint_route(r),
+            _bus_pair(r),
+            _money(r.get("rt_total_price")),
+            r.get("rt_total_hours") or "-",
+            _money(r.get("dart_total_price")),
+            r.get("dart_total_hours") or "-",
+            f"{r['rating_mva']:,.0f}" if r.get("rating_mva") else "-",
+        ]
+        if with_neighbors:
+            row.append(_format_neighbors(r.get("neighbors", [])))
+        out.append(row)
+    return _table(headers, out)
+
+
+def _constraint_unmatched_table(rows: list[dict], *, market: str) -> str:
+    """Compact table for unmatched / interface rows. ``market`` controls
+    whether DA or RT+DART metrics are shown."""
+    if market == "da":
+        headers = ["Constraint", "Contingency", "kV", "Total $", "Hrs", "Dialect"]
+    else:
+        headers = ["Date", "Constraint", "Contingency", "kV", "RT $", "DART $", "Dialect"]
+    out = []
+    for r in rows:
+        if market == "da":
+            out.append([
+                (r.get("constraint_name") or "-")[:35],
+                (r.get("contingency") or "-")[:30],
+                r.get("parsed_voltage_kv") or "-",
+                _money(r.get("da_total_price")),
+                r.get("da_total_hours") or "-",
+                r.get("parser_dialect") or "?",
+            ])
+        else:
+            out.append([
+                r.get("date") or "-",
+                (r.get("constraint_name") or "-")[:32],
+                (r.get("contingency") or "-")[:28],
+                r.get("parsed_voltage_kv") or "-",
+                _money(r.get("rt_total_price")),
+                _money(r.get("dart_total_price")),
+                r.get("parser_dialect") or "?",
+            ])
+    return _table(headers, out)

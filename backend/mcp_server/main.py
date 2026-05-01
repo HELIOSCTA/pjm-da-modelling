@@ -21,6 +21,7 @@ Endpoint → mart mapping:
     /views/transmission_outages_network               → active mart + PSS/E network model
 """
 import logging
+from datetime import date, timedelta
 from enum import Enum
 
 import backend.settings  # noqa: F401 — load env vars
@@ -31,12 +32,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi_mcp import FastApiMCP
 
-from backend.mcp_server.data import transmission_outages
+from backend.mcp_server.data import constraints, transmission_outages
+from backend.mcp_server.data.constraint_network_match import (
+    match_constraints_to_branches,
+)
 from backend.mcp_server.data.network_match import (
     load_network,
     match_outages_to_branches,
 )
+from backend.mcp_server.views.constraints import (
+    build_da_network_view_model,
+    build_rt_dart_network_view_model,
+)
 from backend.mcp_server.views.markdown_formatters import (
+    format_constraints_da_network,
+    format_constraints_rt_dart_network,
     format_transmission_outages_active,
     format_transmission_outages_changes_24h_simple,
     format_transmission_outages_changes_24h_snapshot,
@@ -219,6 +229,95 @@ def get_transmission_outages_network(
         return vm
     return PlainTextResponse(
         content=format_transmission_outages_network(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── Binding constraints — DA forward view ───────────────────────────────────
+
+
+@app.get("/views/constraints_da_network")
+def get_constraints_da_network(
+    target_date: date | None = Query(
+        None, description="DA target date (default: tomorrow)",
+    ),
+    top_n: int = Query(
+        20, ge=1, le=200, description="Top-N constraints by total_price",
+    ),
+    max_neighbors: int = Query(
+        10, ge=0, le=30, description="2-hop ≥230kV neighbors per matched constraint",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """DA binding constraints for a target date, cross-referenced with PSS/E.
+
+    Forward-looking: defaults to tomorrow's DA results (use after the DA
+    market clears, ~13:30 EPT). Each constraint's ``monitored_facility`` is
+    parsed (DA-coded / RT-EMS / prose-l/o / interface) and matched to a
+    PSS/E branch by station + voltage. Neighbors are 2-hop, ≥230 kV
+    (parallel-path topology around the seed branch). Sections:
+    matched / ambiguous / unmatched / interface.
+    """
+    if target_date is None:
+        target_date = date.today() + timedelta(days=1)
+
+    buses_df, branches_df = _get_network()
+    df = constraints.pull_constraints_da(target_date)
+    enriched = match_constraints_to_branches(df, branches_df, buses_df)
+    vm = build_da_network_view_model(
+        enriched, branches_df, target_date,
+        top_n=top_n, max_neighbors=max_neighbors,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_constraints_da_network(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── Binding constraints — RT + DART backward view ───────────────────────────
+
+
+@app.get("/views/constraints_rt_dart_network")
+def get_constraints_rt_dart_network(
+    start_date: date | None = Query(
+        None, description="Window start (default: T-7)",
+    ),
+    end_date: date | None = Query(
+        None, description="Window end (default: T-1)",
+    ),
+    top_n: int = Query(
+        30, ge=1, le=300, description="Top-N (date, constraint) pairs by |DART|",
+    ),
+    max_neighbors: int = Query(
+        10, ge=0, le=30, description="2-hop ≥230kV neighbors per matched constraint",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """RT and DART binding constraints over a window, pivoted side-by-side.
+
+    Backward-looking: each row is one ``(date, constraint, contingency)``
+    pair carrying both ``rt_*`` and ``dart_*`` totals. DART rows only exist
+    when the same constraint bound in BOTH DA and RT that day. Sorted by
+    ``|dart_total_price|`` desc so the largest DA→RT spreads surface first.
+    """
+    if end_date is None:
+        end_date = date.today() - timedelta(days=1)
+    if start_date is None:
+        start_date = end_date - timedelta(days=6)
+
+    buses_df, branches_df = _get_network()
+    df = constraints.pull_constraints_rt_dart(start_date, end_date)
+    enriched = match_constraints_to_branches(df, branches_df, buses_df)
+    vm = build_rt_dart_network_view_model(
+        enriched, branches_df, start_date, end_date,
+        top_n=top_n, max_neighbors=max_neighbors,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_constraints_rt_dart_network(vm),
         media_type="text/markdown",
     )
 

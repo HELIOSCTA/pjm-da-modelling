@@ -316,3 +316,110 @@ def list_neighbors(
         "voltage_kv", "equipment_type", "rating_mva", "ckt_id",
     ]
     return sel.nlargest(max_n, "rating_mva")[cols].to_dict(orient="records")
+
+
+def k_hop_neighbors(
+    from_bus: int,
+    to_bus: int,
+    branches_df: pd.DataFrame,
+    *,
+    k: int = 2,
+    min_voltage_kv: float | None = 230,
+    max_n: int = 10,
+) -> list[dict]:
+    """Return up to ``max_n`` neighbor branches reachable within k hops.
+
+    BFS over the bus graph (undirected, including ``third_bus`` for any
+    3-winding xfmrs). When ``min_voltage_kv`` is set, both traversal AND
+    the result are restricted to branches at or above that voltage —
+    otherwise low-voltage radial taps dominate the result for HV seeds.
+
+    Empirical default (k=2, min_voltage_kv=230, max_n=10) was chosen from
+    a 25-branch sample: k=1 is too narrow to surface parallel paths, k=3
+    explodes (median 98 / p90 212), and the ≥230 kV filter at k=2 lands at
+    median 26 / p90 60 — small enough for a brief, large enough to show
+    real adjacency. See scratch/k_hop_test.py for the calibration.
+    """
+    if k <= 0 or from_bus is None or to_bus is None:
+        return []
+
+    if min_voltage_kv is not None:
+        graph_df = branches_df[
+            pd.to_numeric(branches_df["voltage_kv"], errors="coerce") >= min_voltage_kv
+        ]
+    else:
+        graph_df = branches_df
+
+    has_third = "third_bus" in graph_df.columns
+
+    visited_buses: set[int] = {from_bus, to_bus}
+    frontier: set[int] = {from_bus, to_bus}
+    visited_branch_idx: set = set()
+
+    for _ in range(k):
+        if not frontier:
+            break
+        touches = (
+            graph_df["from_bus"].isin(frontier) | graph_df["to_bus"].isin(frontier)
+        )
+        if has_third:
+            touches = touches | graph_df["third_bus"].isin(frontier)
+        new_idx = set(graph_df.index[touches]) - visited_branch_idx
+        if not new_idx:
+            break
+        visited_branch_idx.update(new_idx)
+
+        new_rows = graph_df.loc[list(new_idx)]
+        new_buses = set(new_rows["from_bus"]) | set(new_rows["to_bus"])
+        if has_third:
+            new_buses |= set(new_rows["third_bus"])
+        new_buses.discard(0)  # third_bus is 0 for non-3-winding
+        frontier = new_buses - visited_buses
+        visited_buses |= new_buses
+
+    if not visited_branch_idx:
+        return []
+
+    candidates = graph_df.loc[list(visited_branch_idx)]
+    is_self_orig = (candidates["from_bus"] == from_bus) & (candidates["to_bus"] == to_bus)
+    is_self_rev = (candidates["from_bus"] == to_bus) & (candidates["to_bus"] == from_bus)
+    candidates = candidates[~(is_self_orig | is_self_rev)]
+
+    cols = [
+        "from_bus", "to_bus", "from_name", "to_name",
+        "voltage_kv", "equipment_type", "rating_mva", "ckt_id",
+    ]
+    return candidates.nlargest(max_n, "rating_mva")[cols].to_dict(orient="records")
+
+
+def find_outages_on_branches(
+    outages_df: pd.DataFrame,
+    branch_keys: list[tuple[int, int]],
+) -> pd.DataFrame:
+    """Filter ``outages_df`` to rows whose ``(from_bus_psse, to_bus_psse)`` pair
+    appears in ``branch_keys``, direction-agnostic.
+
+    Used to cross-reference top constraint branches (and their k-hop
+    neighbors) against active / upcoming transmission outages. The outages
+    frame must already carry ``from_bus_psse`` / ``to_bus_psse`` from
+    ``match_outages_to_branches``.
+    """
+    if outages_df is None or len(outages_df) == 0 or not branch_keys:
+        cols = list(outages_df.columns) if outages_df is not None else []
+        return pd.DataFrame(columns=cols)
+
+    key_set: set[frozenset] = {
+        frozenset((int(a), int(b))) for a, b in branch_keys if a is not None and b is not None
+    }
+    if not key_set:
+        return outages_df.iloc[0:0]
+
+    def _in_set(row) -> bool:
+        fb = row.get("from_bus_psse")
+        tb = row.get("to_bus_psse")
+        if pd.isna(fb) or pd.isna(tb):
+            return False
+        return frozenset((int(fb), int(tb))) in key_set
+
+    mask = outages_df.apply(_in_set, axis=1)
+    return outages_df[mask]

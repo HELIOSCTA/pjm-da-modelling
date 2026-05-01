@@ -27,15 +27,18 @@ briefs (which combine multiple endpoints) sit at the top level.
 | `transmission_outages_changes_24h_simple/` | `GET /views/transmission_outages_changes_24h_simple` |
 | `transmission_outages_changes_24h_snapshot/` | `GET /views/transmission_outages_changes_24h_snapshot` *(503-disabled until SCD2 ages)* |
 | `transmission_outages_network/` | `GET /views/transmission_outages_network` |
+| `constraints_da_network/` | `GET /views/constraints_da_network` |
+| `constraints_rt_dart_network/` | `GET /views/constraints_rt_dart_network` |
 
-Add a new subfolder when you wire up a new endpoint (e.g.,
-`da_transmission_constraints/`, `fuel_mix_hourly/`).
+Add a new subfolder when you wire up a new endpoint (e.g., `lmps_da_summary/`,
+`fuel_mix_hourly/`).
 
 ## Top-level synthesis files
 
 | Pattern | Generator | What |
 |---|---|---|
 | `transmission_outages_<YYYY-MM-DD>.md` | `/pjm-transmission-outages-brief` | Network-context-first brief: hotspots → Active → Starting → Ending |
+| `da_constraints_<YYYY-MM-DD>.md` | `/pjm-da-constraints-brief` | DA-released brief: tomorrow's binding constraints → outage intersection → trading lens |
 
 ## Generating a brief
 
