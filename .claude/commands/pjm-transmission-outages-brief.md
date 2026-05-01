@@ -27,7 +27,8 @@ back to running the same data path directly via Python:
 
 ```bash
 cd C:/Users/AidanKeaveny/Documents/github/helioscta-pjm-da-data-scrapes && python << 'EOF'
-import json
+import json, os
+from datetime import date
 from backend.mcp_server.data import transmission_outages
 from backend.mcp_server.data.network_match import load_network, match_outages_to_branches
 from backend.mcp_server.views.transmission_outages import (
@@ -35,28 +36,46 @@ from backend.mcp_server.views.transmission_outages import (
     build_changes_24h_simple_view_model, build_network_view_model,
 )
 
+today = date.today().isoformat()
+base = 'backend/mcp_server/briefings'
+
 active_df = transmission_outages.pull_active()
 window_df = transmission_outages.pull_window_7d()
 changes_df = transmission_outages.pull_changes_24h_simple()
 buses, branches = load_network()
 enriched = match_outages_to_branches(active_df, branches, buses)
 
-import os
-os.makedirs('backend/mcp_server/briefings', exist_ok=True)
-with open('backend/mcp_server/briefings/active.json', 'w') as f:
-    json.dump(build_active_view_model(active_df), f, default=str)
-with open('backend/mcp_server/briefings/window.json', 'w') as f:
-    json.dump(build_window_7d_view_model(window_df), f, default=str)
-with open('backend/mcp_server/briefings/changes.json', 'w') as f:
-    json.dump(build_changes_24h_simple_view_model(changes_df), f, default=str)
-with open('backend/mcp_server/briefings/network_full.json', 'w') as f:
-    json.dump(build_network_view_model(enriched, branches, max_neighbors=5), f, default=str)
+# One subfolder per MCP view endpoint; dated JSON snapshot inside.
+def save(subdir: str, data: dict) -> None:
+    path = f'{base}/{subdir}'
+    os.makedirs(path, exist_ok=True)
+    with open(f'{path}/{today}.json', 'w') as f:
+        json.dump(data, f, default=str)
+
+save('transmission_outages_active', build_active_view_model(active_df))
+save('transmission_outages_window_7d', build_window_7d_view_model(window_df))
+save('transmission_outages_changes_24h_simple', build_changes_24h_simple_view_model(changes_df))
+save('transmission_outages_network', build_network_view_model(enriched, branches, max_neighbors=5))
 print('ok')
 EOF
 ```
 
-Either path saves four JSON files at `backend/mcp_server/briefings/*.json` for
-synthesis. The path is gitignored.
+Either path drops dated JSON snapshots into per-view subfolders under
+`backend/mcp_server/briefings/`:
+
+```
+backend/mcp_server/briefings/
+├── transmission_outages_active/
+│   └── 2026-05-01.json
+├── transmission_outages_window_7d/
+│   └── 2026-05-01.json
+├── transmission_outages_changes_24h_simple/
+│   └── 2026-05-01.json
+└── transmission_outages_network/
+    └── 2026-05-01.json
+```
+
+All gitignored except the README.
 
 ## Brief structure (output format)
 
@@ -145,10 +164,10 @@ substation).
   only — not in code-output capture, which can hit cp1252 issues on
   Windows).
 - Include reference_date at top.
-- After the brief, save the markdown to
+- Save the synthesized markdown to
   `backend/mcp_server/briefings/transmission_outages_<YYYY-MM-DD>.md`
-  (gitignored; one file per generation date — overwrite if regenerated
-  the same day). Also offer to:
+  (top level, gitignored; one file per generation date — overwrite if
+  regenerated the same day). Also offer to:
   - Prepend to `fundies/research/PJM-Transmission-Outages.md`
     (newest-first)
   - Or append a section to today's `PJM-Morning-Fundies.md` entry
