@@ -31,6 +31,8 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
     "meteologica_solar_forecast":    ("meteologica_pjm_solar_forecast_hourly_da_cutoff",),
     "meteologica_wind_forecast":     ("meteologica_pjm_wind_forecast_hourly_da_cutoff",),
     "meteologica_net_load_forecast": ("meteologica_pjm_net_load_forecast_hourly_da_cutoff",),
+    # PJM-native net-load forecast only (no Meteologica fallback).
+    "pjm_net_load_forecast":         ("pjm_net_load_forecast_hourly_da_cutoff",),
     # PJM-native preferred; falls back to Meteologica when missing.
     "net_load_forecast": (
         "pjm_net_load_forecast_hourly_da_cutoff",
@@ -245,20 +247,24 @@ def _normalize_load_forecast(df: pd.DataFrame) -> pd.DataFrame:
             f"Columns: {list(output.columns)}"
         )
 
-    normalized = output[
-        [
-            required["date"],
-            required["hour_ending"],
-            required["region"],
-            required["forecast_load_mw"],
-        ]
-    ].rename(columns={v: k for k, v in required.items()})
+    keep = [
+        required["date"],
+        required["hour_ending"],
+        required["region"],
+        required["forecast_load_mw"],
+    ]
+    if "as_of_date" in output.columns:
+        keep.append("as_of_date")
+
+    normalized = output[keep].rename(columns={v: k for k, v in required.items()})
     normalized["date"] = _coerce_date(normalized, "date")
     normalized["hour_ending"] = _coerce_hour(normalized, "hour_ending")
     normalized["forecast_load_mw"] = pd.to_numeric(normalized["forecast_load_mw"], errors="coerce")
     normalized["region"] = normalized["region"].astype(str)
     normalized = normalized.dropna(subset=["date", "hour_ending", "forecast_load_mw"])
     normalized["hour_ending"] = normalized["hour_ending"].astype(int)
+    if "as_of_date" in normalized.columns:
+        normalized["as_of_date"] = _coerce_date(normalized, "as_of_date")
     return normalized
 
 
@@ -812,6 +818,7 @@ _NORMALIZERS = {
     "meteologica_solar_forecast": _normalize_meteologica_solar,
     "meteologica_wind_forecast": _normalize_meteologica_wind,
     "meteologica_net_load_forecast": _normalize_meteologica_net_load,
+    "pjm_net_load_forecast": _normalize_meteologica_net_load,
     "net_load_forecast": _normalize_meteologica_net_load,
     "net_load_actual": _normalize_net_load_actual,
     "day_gen_capacity": _normalize_day_gen_capacity,
@@ -891,8 +898,25 @@ def load_load_forecast(
     path: str | Path | None = None,
     cache_dir: str | Path | None = None,
     columns: Iterable[str] | None = None,
+    lead_days: int | None = 1,
 ) -> pd.DataFrame:
-    return _load_dataset("load_forecast", path=path, cache_dir=cache_dir, columns=columns)
+    """PJM DA-cutoff load forecast.
+
+    The historical mart carries seven vintages per (region, date, hour_ending) — one
+    per as_of_date from forecast_date - 6 through forecast_date itself. Default
+    lead_days=1 returns the day-ahead vintage (the forecast on file at the DA cutoff
+    for the operating day, i.e. as_of_date == forecast_date - 1). Pass lead_days=None
+    to return all vintages, or another int (0-6) for a different lead. The filter is
+    a no-op on parquets without an as_of_date column (e.g. the live mart).
+    """
+    df = _load_dataset("load_forecast", path=path, cache_dir=cache_dir, columns=None)
+    if lead_days is not None and "as_of_date" in df.columns:
+        delta = (
+            pd.to_datetime(df["date"], errors="coerce")
+            - pd.to_datetime(df["as_of_date"], errors="coerce")
+        ).dt.days
+        df = df[delta == lead_days].copy()
+    return _apply_column_filter(df, columns)
 
 
 def load_fuel_mix(
@@ -947,6 +971,22 @@ def load_net_load_forecast(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("net_load_forecast", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_pjm_net_load_forecast(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """PJM-native net-load forecast (no Meteologica fallback).
+
+    Returns load/solar/wind/net_load_forecast_mw per (region, date, hour_ending),
+    with as_of_date when present in the historical mart.
+    """
+    return _load_dataset(
+        "pjm_net_load_forecast", path=path, cache_dir=cache_dir, columns=columns,
+    )
 
 
 def load_net_load_actuals(
