@@ -1,0 +1,36 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM DMD Bids DA ──────
+  # Daily flow: pull DA hourly demand bids (hrl_dmd_bids feed) using the
+  # poll-and-land orchestration wrapper, then rebuild the pjm_load_da_hourly
+  # view mart (which derives SOUTH = RTO - MIDATL - WEST).
+  #
+  # Upstream cadence: PJM publishes hrl_dmd_bids in a 12:00-14:00 EPT window
+  # (10:00 AM - 12:00 PM MST). For now all three DA flows fire at 11:00 MST;
+  # this one polls at 60s cadence (vs 10s for DA LMPs) since the publication
+  # window is wider and downstream is tolerant of minute-scale lag. The
+  # orchestration wrapper has a 2-hour poll ceiling and exits as soon as
+  # data lands.
+
+  - name: PJM DMD Bids DA
+    entrypoint: schedulers/prefect/power/pjm/pjm_dmd_bids_da_flows.py:pjm_dmd_bids_da
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, dmd_bids_da]
+    schedules:
+
+      # ────── Daily run at 11:00 MST (13:00 EPT), polls every 60s until data lands ──────
+      - cron: "0 11 * * *"
+        timezone: "America/Denver"

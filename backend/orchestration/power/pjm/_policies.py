@@ -27,8 +27,14 @@ API_TRANSIENT = (
 )
 
 
-def api_poll_policy(max_seconds: int = 7_200):
-    """Poll-until-available with exponential jitter. Default 2h ceiling.
+def api_poll_policy(max_seconds: int = 7_200, wait_seconds: int = 10):
+    """Poll-until-available with fixed wait between attempts.
+
+    Default 2h ceiling, 10s between polls — appropriate for DA LMPs which
+    is the time-critical feed (downstream consumers wait on it). Less
+    time-critical feeds (DMD bids, constraints) should pass a larger
+    wait_seconds (e.g. 30 or 60) so they don't compete for HTTP / agent
+    capacity with the LMPs poll.
 
     PJM DA LMPs are posted daily between 12:00–01:30 PM EPT
     (10:00–11:30 AM MST). Script starts at 11:00 AM MST so data
@@ -37,7 +43,7 @@ def api_poll_policy(max_seconds: int = 7_200):
     """
     return retry(
         stop=stop_after_delay(max_seconds),
-        wait=wait_fixed(10),
+        wait=wait_fixed(wait_seconds),
         retry=retry_if_exception_type(API_TRANSIENT),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,

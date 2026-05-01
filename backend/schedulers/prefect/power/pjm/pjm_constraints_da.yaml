@@ -1,0 +1,36 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Constraints DA ──────
+  # Daily flow: pull DA binding-constraint feeds (da_transmission_constraints,
+  # da_marginal_value) using the poll-and-land orchestration wrappers, then
+  # rebuild the unified DA/RT/DART pivot mart pjm_constraints_hourly_pivot.
+  #
+  # Upstream cadence: PJM publishes DA constraints + marginal_value after the
+  # DA market clears (~13:00-13:30 EPT) — typically the latest of the DA
+  # outputs. For now all three DA flows fire at 11:00 MST; this one polls at
+  # 60s cadence (vs 10s for DA LMPs) so it doesn't compete with the more
+  # time-critical LMPs poll. The orchestration wrapper has a 2-hour poll
+  # ceiling and exits as soon as data lands.
+
+  - name: PJM Constraints DA
+    entrypoint: schedulers/prefect/power/pjm/pjm_constraints_da_flows.py:pjm_constraints_da
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, constraints_da]
+    schedules:
+
+      # ────── Daily run at 11:00 MST (13:00 EPT), polls every 60s until data lands ──────
+      - cron: "0 11 * * *"
+        timezone: "America/Denver"

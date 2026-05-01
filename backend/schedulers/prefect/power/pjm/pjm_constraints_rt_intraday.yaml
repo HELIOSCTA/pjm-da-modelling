@@ -1,0 +1,39 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Constraints RT Intraday ──────
+  # Hourly flow: pull RT binding-constraint shadow prices (rt_marginal_value)
+  # and the two override reference tables (rt_default_mv_override,
+  # rt_short_term_mv_override), then rebuild the unified DA/RT/DART pivot
+  # mart pjm_constraints_hourly_pivot.
+  #
+  # Cadence rationale: PJM publishes RT marginal values continuously through
+  # the day. Hourly cadence provides intra-day freshness for spread analysis
+  # without hammering the API. The DA flow runs the same dbt selection at
+  # clearing time; both sides converge on the same pivot view.
+  # Fires at :25 to stay clear of the LMPs RT intraday flow at :25 — the two
+  # share the same minute slot but tag-separate via Prefect.
+
+  - name: PJM Constraints RT Intraday
+    entrypoint: schedulers/prefect/power/pjm/pjm_constraints_rt_intraday_flows.py:pjm_constraints_rt_intraday
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, constraints_rt, intraday]
+    schedules:
+
+      # ────── Hourly at :25 ──────
+      # PJM posts RT marginal values shortly after each settlement interval;
+      # :25 gives a buffer past the top of the hour for late publication.
+      - cron: "25 * * * *"
+        timezone: "America/Denver"
