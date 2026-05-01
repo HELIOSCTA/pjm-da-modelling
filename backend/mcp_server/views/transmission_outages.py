@@ -1,14 +1,16 @@
-"""View model: Active transmission outages — congestion risk context.
+"""View-model builders for the transmission-outage MCP endpoints.
 
-Produces two sections:
-  1. Regional summary — one row per region with outage counts by voltage tier,
-     risk-flagged count, and chronic outage indicator.
-  2. Notable outages — individual rows for outages that are high-risk, high-voltage,
-     recently started, or returning soon. Each tagged with why it's notable.
+One builder per dbt mart. Each returns a dict consumed by the markdown
+formatter in `views/markdown_formatters.py`.
 
-Consumed by:
-  - API endpoints (JSON / markdown)
-  - Agent (cross-reference with LMP congestion spikes)
+Mart → builder → endpoint mapping (see backend/mcp_server/main.py):
+
+    pjm_transmission_outages_active               → build_active_view_model
+    pjm_transmission_outages_window_7d            → build_window_7d_view_model
+    pjm_transmission_outages_changes_24h_simple   → build_changes_24h_simple_view_model
+    pjm_transmission_outages_changes_24h_snapshot → build_changes_24h_snapshot_view_model
+
+Filter logic (Active/Approved, ≥230 kV, etc.) lives in dbt, not here.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-# Zone -> region mapping (matches PJM pricing/congestion regions)
+# ─── Zone → region mapping (matches PJM pricing / congestion regions) ────────
 _ZONE_MAP = {
     "AEP": "AEP / West",
     "COMED": "ComEd / West", "AMIL": "ComEd / West", "CWLP": "ComEd / West",
@@ -71,11 +73,11 @@ def _map_zone_to_region(zone: str) -> str:
     return zone  # unmapped zones keep their raw name
 
 
-# Equipment type -> congestion-impact category
+# Equipment type → congestion-impact category
 _EQUIP_CATEGORY = {
     "LINE": "path",      # removes a flow corridor between two substations
     "XFMR": "capacity",  # removes local transformation capacity at a substation
-    "PS": "capacity",     # removes phase-shifting capability at a substation
+    "PS": "capacity",    # removes phase-shifting capability at a substation
 }
 
 
@@ -91,76 +93,151 @@ def _parse_facility(facility: str, equip_type: str) -> dict:
     if not facility:
         return result
 
-    # Extract the description after "{kV} KV"
     match = re.search(r"\d+\s+KV\s+(.+)", facility)
     if not match:
         return result
     desc = match.group(1).strip()
 
     if equip_type == "LINE":
-        # Lines: description contains "FROM-TO" route (hyphen-separated)
         parts = re.split(r"\s*-\s*", desc, maxsplit=1)
         if len(parts) == 2:
             result["from_station"] = re.sub(r"\s+", " ", parts[0]).strip()
             result["to_station"] = re.sub(r"\s+", " ", parts[1]).strip()
     else:
-        # XFMR, PS: first token in description is the substation name
         result["station"] = desc.split()[0] if desc else None
 
     return result
 
 
-def build_view_model(df: pd.DataFrame, reference_date: date | None = None) -> dict:
-    """Build the transmission outages view model.
+# ─── Shared normalization ────────────────────────────────────────────────────
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Output of ``transmission_outages.pull()`` — active/approved >=230 kV outages.
-    reference_date : date, optional
-        Defaults to today.
+
+def _normalize(df: pd.DataFrame, reference_date: date) -> pd.DataFrame:
+    """Type-coerce the mart frame and add derived columns shared by all builders.
+
+    Adds:
+      - region          : zone mapped via _map_zone_to_region
+      - risk_flag       : risk == 'Yes'
+      - equip_category  : path / capacity / other
+      - days_out        : (reference_date - start_datetime).days  (negative if future)
+      - days_to_return  : (end_datetime - reference_date).days    (NaN if past)
     """
-    if df is None or df.empty:
-        return {"error": "No transmission outage data available."}
-
-    if reference_date is None:
-        reference_date = date.today()
-
     df = df.copy()
-    df["region"] = df["zone"].fillna("").apply(_map_zone_to_region)
+    df["zone"] = df["zone"].fillna("").astype(str)
+    df["region"] = df["zone"].apply(_map_zone_to_region)
     df["voltage_kv"] = pd.to_numeric(df["voltage_kv"], errors="coerce").fillna(0).astype(int)
-    df["days_out"] = pd.to_numeric(df["days_out"], errors="coerce")
-    df["days_to_return"] = pd.to_numeric(df["days_to_return"], errors="coerce")
     df["start_datetime"] = pd.to_datetime(df["start_datetime"], errors="coerce")
     df["end_datetime"] = pd.to_datetime(df["end_datetime"], errors="coerce")
     df["last_revised"] = pd.to_datetime(df["last_revised"], errors="coerce")
-    df["risk_flag"] = df["risk"].fillna("").str.strip().str.lower() == "yes"
+    df["risk_flag"] = df["risk"].fillna("").astype(str).str.strip().str.lower() == "yes"
     df["equip_category"] = df["equipment_type"].map(_EQUIP_CATEGORY).fillna("other")
 
-    # Split active vs cancelled
-    df_active = df[df["outage_state"].isin(["Active", "Approved"])].copy()
-    df_cancelled = df[df["outage_state"] == "Cancelle"].copy()
+    ref_ts = pd.Timestamp(reference_date)
+    df["days_out"] = (ref_ts - df["start_datetime"]).dt.days
+    days_to_ret = (df["end_datetime"] - ref_ts).dt.days
+    df["days_to_return"] = days_to_ret.where(df["end_datetime"] >= ref_ts)
 
-    regional = _build_regional_summary(df_active)
-    notable = _build_notable_outages(df_active, reference_date)
-    recently_cancelled = _build_recently_cancelled(df_cancelled)
+    return df
 
-    return {
-        "reference_date": str(reference_date),
-        "total_active": len(df_active),
-        "regional_summary": regional,
-        "notable_outages": notable,
-        "recently_cancelled": recently_cancelled,
+
+def _outage_dict(row: pd.Series, *, include_diff: bool = False) -> dict:
+    """Build one outage's record from a normalized row."""
+    equip_type = row.get("equipment_type", "")
+    parsed = _parse_facility(row.get("facility_name", ""), equip_type)
+    cause_raw = row.get("cause", "") or ""
+    cause_primary = cause_raw.split(";")[0].strip() if cause_raw else ""
+
+    rec = {
+        "ticket_id": _si(row.get("ticket_id")),
+        "region": row.get("region"),
+        "zone": row.get("zone"),
+        "facility": row.get("facility_name", ""),
+        "equip": equip_type,
+        "equip_category": _EQUIP_CATEGORY.get(equip_type, "other"),
+        "kv": int(row["voltage_kv"]) if pd.notna(row["voltage_kv"]) else None,
+        "from_station": parsed["from_station"],
+        "to_station": parsed["to_station"],
+        "station": parsed["station"],
+        "started": str(row["start_datetime"].date()) if pd.notna(row["start_datetime"]) else None,
+        "est_return": str(row["end_datetime"].date()) if pd.notna(row["end_datetime"]) else None,
+        "days_out": _si(row.get("days_out")),
+        "days_to_return": _si(row.get("days_to_return")),
+        "outage_state": row.get("outage_state"),
+        "risk_flag": bool(row.get("risk_flag", False)),
+        "cause": cause_primary,
     }
+    if include_diff:
+        rec["prev_outage_state"] = _clean_str(row.get("prev_outage_state"))
+        prev_start = pd.to_datetime(row.get("prev_start_datetime"), errors="coerce")
+        prev_end = pd.to_datetime(row.get("prev_end_datetime"), errors="coerce")
+        rec["prev_start"] = str(prev_start.date()) if pd.notna(prev_start) else None
+        rec["prev_end"] = str(prev_end.date()) if pd.notna(prev_end) else None
+        rec["prev_risk"] = _clean_str(row.get("prev_risk"))
+        rec["diff_text"] = _build_diff_text(row)
+    return rec
+
+
+def _clean_str(val) -> str | None:
+    """Return a clean string, or None for NaN / pd.NaT / empty."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
+def _build_diff_text(row: pd.Series) -> str:
+    """Compose 'end: 5/12 → 5/19, state: Approved → Active' from prev_* vs current."""
+    parts = []
+
+    prev_state = row.get("prev_outage_state")
+    cur_state = row.get("outage_state")
+    if prev_state and prev_state != cur_state:
+        parts.append(f"state: {prev_state} → {cur_state}")
+
+    prev_start = pd.to_datetime(row.get("prev_start_datetime"), errors="coerce")
+    cur_start = row.get("start_datetime")
+    if pd.notna(prev_start) and pd.notna(cur_start) and prev_start != cur_start:
+        parts.append(f"start: {prev_start.date()} → {cur_start.date()}")
+
+    prev_end = pd.to_datetime(row.get("prev_end_datetime"), errors="coerce")
+    cur_end = row.get("end_datetime")
+    if pd.notna(prev_end) and pd.notna(cur_end) and prev_end != cur_end:
+        parts.append(f"end: {prev_end.date()} → {cur_end.date()}")
+
+    prev_risk = row.get("prev_risk")
+    cur_risk = row.get("risk")
+    if prev_risk and prev_risk != cur_risk:
+        parts.append(f"risk: {prev_risk} → {cur_risk}")
+
+    return ", ".join(parts) if parts else "(no tracked field changed)"
+
+
+def _si(val) -> int | None:
+    """Safe int — return None for NaN/None."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return None if np.isnan(f) else int(f)
+    except (TypeError, ValueError):
+        return None
+
+
+# ─── Region- and notable-summary helpers (shared) ────────────────────────────
 
 
 def _build_regional_summary(df: pd.DataFrame) -> list[dict]:
     """One row per region: outage counts by voltage tier, risk count, chronic indicator."""
-    rows = []
-    for region in REGION_ORDER:
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    for region in REGION_ORDER + sorted(set(df["region"]) - set(REGION_ORDER)):
+        if region in seen:
+            continue
         rdf = df[df["region"] == region]
         if rdf.empty:
             continue
+        seen.add(region)
 
         rows.append({
             "region": region,
@@ -175,33 +252,13 @@ def _build_regional_summary(df: pd.DataFrame) -> list[dict]:
             "longest_out_days": _si(rdf["days_out"].max()),
             "soonest_return_days": _si(rdf.loc[rdf["days_to_return"].notna(), "days_to_return"].min()),
         })
-
-    # Add any unmapped regions at the end
-    mapped = {r["region"] for r in rows}
-    for region in sorted(df["region"].unique()):
-        if region not in mapped:
-            rdf = df[df["region"] == region]
-            rows.append({
-                "region": region,
-                "total": len(rdf),
-                "path_count": int((rdf["equip_category"] == "path").sum()),
-                "capacity_count": int((rdf["equip_category"] == "capacity").sum()),
-                "count_765kv": int((rdf["voltage_kv"] == 765).sum()),
-                "count_500kv": int((rdf["voltage_kv"] == 500).sum()),
-                "count_345kv": int((rdf["voltage_kv"] == 345).sum()),
-                "count_230kv": int((rdf["voltage_kv"] == 230).sum()),
-                "risk_flagged": int(rdf["risk_flag"].sum()),
-                "longest_out_days": _si(rdf["days_out"].max()),
-                "soonest_return_days": _si(rdf.loc[rdf["days_to_return"].notna(), "days_to_return"].min()),
-            })
-
     return rows
 
 
 def _build_notable_outages(df: pd.DataFrame, reference_date: date) -> list[dict]:
     """Individual outages tagged with why they're notable."""
-    notable_rows = []
-    seen_tickets = set()
+    notable: list[dict] = []
+    seen_tickets: set = set()
 
     for _, row in df.iterrows():
         tags = []
@@ -209,11 +266,11 @@ def _build_notable_outages(df: pd.DataFrame, reference_date: date) -> list[dict]
             tags.append("high-risk")
         if row["voltage_kv"] >= 500:
             tags.append("500kv+")
-        if (row["start_datetime"] is not pd.NaT
+        if (pd.notna(row["start_datetime"])
                 and (reference_date - row["start_datetime"].date()).days <= 3):
             tags.append("new")
         if (row["days_to_return"] is not None
-                and not np.isnan(row["days_to_return"])
+                and not (isinstance(row["days_to_return"], float) and np.isnan(row["days_to_return"]))
                 and row["days_to_return"] <= 7):
             tags.append("returning")
 
@@ -226,84 +283,227 @@ def _build_notable_outages(df: pd.DataFrame, reference_date: date) -> list[dict]
         if tid:
             seen_tickets.add(tid)
 
-        cause_raw = row.get("cause", "") or ""
-        cause_primary = cause_raw.split(";")[0].strip() if cause_raw else ""
-
-        equip_type = row.get("equipment_type", "")
-        parsed = _parse_facility(row.get("facility_name", ""), equip_type)
-
-        notable_rows.append({
-            "tags": tags,
-            "region": row["region"],
-            "zone": row["zone"],
-            "facility": row.get("facility_name", ""),
-            "equip": equip_type,
-            "equip_category": _EQUIP_CATEGORY.get(equip_type, "other"),
-            "kv": row["voltage_kv"],
-            "from_station": parsed["from_station"],
-            "to_station": parsed["to_station"],
-            "station": parsed["station"],
-            "started": str(row["start_datetime"].date()) if row["start_datetime"] is not pd.NaT else None,
-            "est_return": str(row["end_datetime"].date()) if row["end_datetime"] is not pd.NaT else None,
-            "days_out": _si(row["days_out"]),
-            "days_to_return": _si(row["days_to_return"]),
-            "cause": cause_primary,
-        })
+        rec = _outage_dict(row)
+        rec["tags"] = tags
+        notable.append(rec)
 
     def sort_key(r):
         risk_priority = 0 if "high-risk" in r["tags"] else 1
-        return (risk_priority, -r["kv"], r.get("days_to_return") or 9999)
+        return (risk_priority, -(r["kv"] or 0), r.get("days_to_return") or 9999)
 
-    notable_rows.sort(key=sort_key)
-    return notable_rows
+    notable.sort(key=sort_key)
+    return notable
 
 
-def _build_recently_cancelled(df: pd.DataFrame) -> list[dict]:
-    """Outages cancelled in the last 7 days — congestion relief signal."""
-    if df.empty:
-        return []
+# ─── Builder 1 — pjm_transmission_outages_active ─────────────────────────────
 
-    rows = []
-    seen_tickets = set()
 
-    for _, row in df.sort_values("voltage_kv", ascending=False).iterrows():
-        tid = row.get("ticket_id")
-        if tid and tid in seen_tickets:
+def build_active_view_model(
+    df: pd.DataFrame, reference_date: date | None = None,
+) -> dict:
+    """View model for ``GET /views/transmission_outages_active``.
+
+    Consumes the ``pjm_transmission_outages_active`` mart
+    (Active/Approved, ≥230 kV, LINE/XFMR/PS).
+
+    Sections produced:
+      - regional_summary  : one row per region, voltage-tier counts + risk count
+      - notable_outages   : tickets tagged high-risk / 500kv+ / new / returning
+    """
+    if df is None or df.empty:
+        return {
+            "reference_date": str(reference_date or date.today()),
+            "error": "No active outage data available.",
+        }
+
+    if reference_date is None:
+        reference_date = date.today()
+
+    df = _normalize(df, reference_date)
+
+    return {
+        "reference_date": str(reference_date),
+        "total_active": len(df),
+        "regional_summary": _build_regional_summary(df),
+        "notable_outages": _build_notable_outages(df, reference_date),
+    }
+
+
+# ─── Builder 2 — pjm_transmission_outages_window_7d ──────────────────────────
+
+
+def build_window_7d_view_model(
+    df: pd.DataFrame, reference_date: date | None = None,
+) -> dict:
+    """View model for ``GET /views/transmission_outages_window_7d``.
+
+    Consumes the ``pjm_transmission_outages_window_7d`` mart
+    (Active/Approved/Received, ≥230 kV, LINE/XFMR/PS, overlapping [now, now+7d]).
+    Each row carries ``state_class`` ∈ {locked, planned}.
+
+    Sections produced:
+      - regional_summary : per-region counts split by state_class
+      - locked_outages   : Active/Approved tickets in window, sorted by days_to_return
+      - planned_outages  : Received tickets in window, sorted by start
+    """
+    if df is None or df.empty:
+        return {
+            "reference_date": str(reference_date or date.today()),
+            "total": 0,
+            "locked_count": 0,
+            "planned_count": 0,
+            "regional_summary": [],
+            "locked_outages": [],
+            "planned_outages": [],
+        }
+
+    if reference_date is None:
+        reference_date = date.today()
+
+    df = _normalize(df, reference_date)
+
+    locked = df[df["state_class"] == "locked"]
+    planned = df[df["state_class"] == "planned"]
+
+    locked_records = sorted(
+        [_outage_dict(r) for _, r in locked.iterrows()],
+        key=lambda r: (
+            r["days_to_return"] if r["days_to_return"] is not None else 9999,
+            -(r["kv"] or 0),
+        ),
+    )
+    planned_records = sorted(
+        [_outage_dict(r) for _, r in planned.iterrows()],
+        key=lambda r: (r["started"] or "9999", -(r["kv"] or 0)),
+    )
+
+    regional: list[dict] = []
+    seen: set[str] = set()
+    for region in REGION_ORDER + sorted(set(df["region"]) - set(REGION_ORDER)):
+        if region in seen:
             continue
-        if tid:
-            seen_tickets.add(tid)
-
-        cause_raw = row.get("cause", "") or ""
-        cause_primary = cause_raw.split(";")[0].strip() if cause_raw else ""
-
-        equip_type = row.get("equipment_type", "")
-        parsed = _parse_facility(row.get("facility_name", ""), equip_type)
-
-        rows.append({
-            "region": row["region"],
-            "zone": row["zone"],
-            "facility": row.get("facility_name", ""),
-            "equip": equip_type,
-            "equip_category": _EQUIP_CATEGORY.get(equip_type, "other"),
-            "kv": row["voltage_kv"],
-            "from_station": parsed["from_station"],
-            "to_station": parsed["to_station"],
-            "station": parsed["station"],
-            "was_scheduled_start": str(row["start_datetime"].date()) if row["start_datetime"] is not pd.NaT else None,
-            "was_scheduled_end": str(row["end_datetime"].date()) if row["end_datetime"] is not pd.NaT else None,
-            "cancelled_date": str(row["last_revised"].date()) if row["last_revised"] is not pd.NaT else None,
-            "cause": cause_primary,
+        rdf = df[df["region"] == region]
+        if rdf.empty:
+            continue
+        seen.add(region)
+        regional.append({
+            "region": region,
+            "total": len(rdf),
+            "locked": int((rdf["state_class"] == "locked").sum()),
+            "planned": int((rdf["state_class"] == "planned").sum()),
+            "count_500kv_plus": int((rdf["voltage_kv"] >= 500).sum()),
+            "risk_flagged": int(rdf["risk_flag"].sum()),
         })
 
-    return rows
+    return {
+        "reference_date": str(reference_date),
+        "total": len(df),
+        "locked_count": len(locked),
+        "planned_count": len(planned),
+        "regional_summary": regional,
+        "locked_outages": locked_records,
+        "planned_outages": planned_records,
+    }
 
 
-def _si(val) -> int | None:
-    """Safe int — return None for NaN/None."""
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        return None if np.isnan(f) else int(f)
-    except (TypeError, ValueError):
-        return None
+# ─── Builder 3 — pjm_transmission_outages_changes_24h_simple ─────────────────
+
+
+def build_changes_24h_simple_view_model(
+    df: pd.DataFrame, reference_date: date | None = None,
+) -> dict:
+    """View model for ``GET /views/transmission_outages_changes_24h_simple``.
+
+    Consumes the ``pjm_transmission_outages_changes_24h_simple`` mart
+    (last-24h delta driven by source ``created_at`` and ``last_revised``).
+
+    Sections produced:
+      - new_tickets     : tickets that first appeared in last 24h
+      - revised_tickets : existing tickets PJM updated in last 24h
+
+    Trade-off vs the snapshot variant: no diff text, no CLEARED detection.
+    Useful from day 1 (no history baseline required).
+    """
+    if df is None or df.empty:
+        return {
+            "reference_date": str(reference_date or date.today()),
+            "total_changes": 0,
+            "new_count": 0,
+            "revised_count": 0,
+            "new_tickets": [],
+            "revised_tickets": [],
+        }
+
+    if reference_date is None:
+        reference_date = date.today()
+
+    df = _normalize(df, reference_date)
+
+    new_df = df[df["change_type"] == "NEW"].sort_values("voltage_kv", ascending=False)
+    revised_df = df[df["change_type"] == "REVISED"].sort_values("voltage_kv", ascending=False)
+
+    return {
+        "reference_date": str(reference_date),
+        "total_changes": len(df),
+        "new_count": len(new_df),
+        "revised_count": len(revised_df),
+        "new_tickets": [_outage_dict(r) for _, r in new_df.iterrows()],
+        "revised_tickets": [_outage_dict(r) for _, r in revised_df.iterrows()],
+    }
+
+
+# ─── Builder 4 — pjm_transmission_outages_changes_24h_snapshot ───────────────
+
+
+def build_changes_24h_snapshot_view_model(
+    df: pd.DataFrame, reference_date: date | None = None,
+) -> dict:
+    """View model for ``GET /views/transmission_outages_changes_24h_snapshot``.
+
+    Consumes the ``pjm_transmission_outages_changes_24h_snapshot`` mart
+    (last-24h delta driven by the SCD2 snapshot).
+
+    Sections produced:
+      - new_tickets     : tickets that first appeared in last 24h
+      - revised_tickets : existing tickets PJM updated in last 24h, with diff_text
+                          like "end: 5/12 → 5/19, state: Approved → Active"
+      - cleared_tickets : tickets that vanished from PJM source in last 24h
+
+    Returns all-zero counts (and a ``note`` field) for the first 24h after the
+    snapshot is initialized — there's no history yet to diff against.
+    """
+    if df is None or df.empty:
+        return {
+            "reference_date": str(reference_date or date.today()),
+            "total_changes": 0,
+            "new_count": 0,
+            "revised_count": 0,
+            "cleared_count": 0,
+            "new_tickets": [],
+            "revised_tickets": [],
+            "cleared_tickets": [],
+            "note": (
+                "Snapshot has not yet captured 24h of history. "
+                "This view will populate after the second daily run."
+            ),
+        }
+
+    if reference_date is None:
+        reference_date = date.today()
+
+    df = _normalize(df, reference_date)
+
+    new_df = df[df["change_type"] == "NEW"].sort_values("voltage_kv", ascending=False)
+    revised_df = df[df["change_type"] == "REVISED"].sort_values("voltage_kv", ascending=False)
+    cleared_df = df[df["change_type"] == "CLEARED"].sort_values("voltage_kv", ascending=False)
+
+    return {
+        "reference_date": str(reference_date),
+        "total_changes": len(df),
+        "new_count": len(new_df),
+        "revised_count": len(revised_df),
+        "cleared_count": len(cleared_df),
+        "new_tickets": [_outage_dict(r) for _, r in new_df.iterrows()],
+        "revised_tickets": [_outage_dict(r, include_diff=True) for _, r in revised_df.iterrows()],
+        "cleared_tickets": [_outage_dict(r) for _, r in cleared_df.iterrows()],
+    }

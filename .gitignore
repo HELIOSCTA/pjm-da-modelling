@@ -35,6 +35,7 @@ TODO/*
 *.xlsb
 *.parquet
 *.html
+*.raw
 
 # Keep source PDFs and trade log shipped with the obsidian research snapshot
 !fundies/research/**/*.pdf

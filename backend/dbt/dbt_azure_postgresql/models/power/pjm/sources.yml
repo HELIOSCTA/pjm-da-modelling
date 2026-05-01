@@ -43,6 +43,18 @@ sources:
         description: "Five-minute realized RTO-total solar generation from PJM Data Miner 2. System-wide only (no area column). Used as intra-day fallback for the hourly solar_generation_by_area feed when the latter is still 0-padded; only fills the RTO row of the mart."
       - name: instantaneous_wind_gen_v1_2026_apr_28
         description: "15-second realized RTO-total wind generation from PJM Data Miner 2 (PJM names this 'instantaneous'). System-wide only (no area column). Used as intra-day fallback for the hourly wind_generation_by_area feed when the latter is still 0-padded; only fills the RTO row of the mart."
+      - name: transmission_outages
+        description: "PJM Transmission Facilities Outage List (TFOL) from eDART linesout.txt. One row per ticket_id (snapshot-overwrite via daily upsert). Holds Active/Approved (currently happening or scheduled-and-locked-in), Received (scheduled but unapproved), Complete, Cancelle, Denied, Revised. Equipment types: BRKR, LINE, XFMR, CAP, LD, GEN, SD, PS. Voltage range 12-765 kV. Accumulating store — old completed/cancelled tickets remain with their last-known state."
+      - name: da_transmission_constraints
+        description: "PJM day-ahead binding transmission constraints from PJM Data Miner 2 (da_transconstraints feed). One row per (datetime_beginning_utc, day_ahead_congestion_event, monitored_facility, contingency_facility). Carries the human-readable congestion event label and the duration (hours) the constraint bound. No price column — pair with da_marginal_value for shadow prices."
+      - name: da_marginal_value
+        description: "PJM day-ahead binding-constraint shadow prices ($/MWh) from PJM Data Miner 2 (da_marginal_value feed). Hourly grain, one row per (datetime_beginning_utc, monitored_facility, contingency_facility). Lacks the day_ahead_congestion_event label — join to da_transmission_constraints on (datetime_beginning_utc, monitored_facility, contingency_facility) to attach it."
+      - name: rt_marginal_value
+        description: "PJM real-time binding-constraint shadow prices ($/MWh) from PJM Data Miner 2 (rt_marginal_value feed). Hourly grain, one row per (datetime_beginning_utc, monitored_facility, contingency_facility). Adds transmission_constraint_penalty_factor and limit_control_percentage versus the DA companion (often null). DART = DA shadow_price - RT shadow_price; build via FULL OUTER JOIN with da_marginal_value on the same key."
+      - name: rt_default_mv_override
+        description: "PJM real-time long-running constraint penalty-factor overrides from PJM Data Miner 2 (rt_default_mv_override feed). Reference table pulled in full each run. One row per (constraint_name, contingency_description, effective_day); terminate_day = 9999-12-31 for currently-active overrides."
+      - name: rt_short_term_mv_override
+        description: "PJM real-time short-term (event) constraint penalty-factor overrides from PJM Data Miner 2 (rt_short_term_mv_override feed). Event log pulled in full each run. One row per (constraint_name, contingency_description, effective_datetime_utc) with precise UTC and EPT effective/terminate timestamps."
 
   - name: gridstatus_v1
     schema: gridstatus
