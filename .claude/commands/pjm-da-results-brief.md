@@ -18,7 +18,29 @@ Each tier hands a concrete drilldown payload to the next so the brief
 stays causally connected (top zones → top hubs → binding hours →
 constraint bus IDs → outages on those buses).
 
-## Data sources (in order of preference)
+## Pre-flight: always-fresh MCP server
+
+**First step — always.** Run the pre-flight before anything else:
+
+```bash
+python -m backend.mcp_server.ensure_running
+```
+
+The script kills any process bound to port 8000 (whether it's the
+existing MCP server or a stale uvicorn), spawns a fresh detached
+uvicorn against the current code on disk, and waits up to 30s for
+`/openapi.json` to respond.
+
+- Exit 0 → MCP is healthy. Continue with the data-source steps below.
+- Exit non-zero → **STOP IMMEDIATELY.** Tell the user the server failed
+  to come up and point them at the log:
+  `backend/mcp_server/logs/server.log`. Do not synthesize a brief.
+
+Do not call view builders directly via Python under any circumstance.
+There is no fallback path — if MCP can't be brought up, this command
+produces no output.
+
+## Data sources
 
 The brief consumes four MCP endpoints from `http://localhost:8000`:
 
@@ -35,78 +57,8 @@ The brief consumes four MCP endpoints from `http://localhost:8000`:
 4. `/views/transmission_outages_for_constraints?format=json&bus_ids=<csv>&constraint_labels=<csv>` —
    Tier 4. Outages on or near the bus set from Tier 3.
 
-If the FastAPI server is down (curl exit 7), fall back to running the
-data path directly via Python:
-
-```bash
-cd C:/Users/AidanKeaveny/Documents/github/helioscta-pjm-da-data-scrapes && python << 'EOF'
-import json, os
-from datetime import date, timedelta
-from backend.mcp_server.data import constraints, lmp, transmission_outages
-from backend.mcp_server.data.constraint_network_match import match_constraints_to_branches
-from backend.mcp_server.data.network_match import load_network, match_outages_to_branches
-from backend.mcp_server.views.constraints import build_da_network_view_model
-from backend.mcp_server.views.lmp import (
-    build_lmps_daily_summary_view_model,
-    build_lmps_hourly_summary_view_model,
-)
-from backend.mcp_server.views.transmission_outages import (
-    build_outages_for_constraints_view_model,
-)
-
-today = date.today()
-target = today + timedelta(days=1)
-base = 'backend/mcp_server/briefings'
-buses, branches = load_network()
-
-# Tier 1
-daily_df = lmp.pull_lmps_daily(target)
-tier1 = build_lmps_daily_summary_view_model(daily_df, target)
-top_hubs = tier1['top_zones_for_drilldown']
-
-# Tier 2
-hourly_df = lmp.pull_lmps_hourly(target, hubs=top_hubs)
-tier2 = build_lmps_hourly_summary_view_model(hourly_df, target, hubs_filter=top_hubs)
-binding_hours = tier2['binding_hours_for_drilldown']
-
-# Tier 3
-con_df = constraints.pull_constraints_da(target, binding_hours=binding_hours)
-con_enriched = match_constraints_to_branches(con_df, branches, buses)
-tier3 = build_da_network_view_model(
-    con_enriched, branches, target,
-    top_n=10, max_neighbors=5, binding_hours=binding_hours,
-)
-
-# Tier 4
-bus_set = set()
-constraint_index = {}
-for c in tier3.get('matched_constraints', []):
-    for b in c.get('neighbor_bus_ids', []):
-        bus_set.add(b)
-        constraint_index.setdefault(b, []).append(c['constraint_name'])
-out_df = transmission_outages.pull_active()
-out_enriched = match_outages_to_branches(out_df, branches, buses)
-tier4 = build_outages_for_constraints_view_model(
-    out_enriched, branches, sorted(bus_set),
-    constraint_index=constraint_index, reference_date=today,
-)
-
-def save(subdir: str, data: dict) -> None:
-    path = f'{base}/{subdir}'
-    os.makedirs(path, exist_ok=True)
-    with open(f'{path}/{today.isoformat()}.json', 'w') as f:
-        json.dump(data, f, default=str)
-
-save('lmps_daily_summary', tier1)
-save('lmps_hourly_summary', tier2)
-save('constraints_da_network', tier3)
-save('transmission_outages_for_constraints', tier4)
-print('ok')
-EOF
-```
-
-Both paths drop dated JSON snapshots into per-view subfolders under
-`backend/mcp_server/briefings/`:
+After hitting each endpoint, save the JSON response into per-view
+subfolders under `backend/mcp_server/briefings/`:
 
 ```
 backend/mcp_server/briefings/

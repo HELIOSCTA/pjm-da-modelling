@@ -7,10 +7,31 @@ description: Generate a PJM transmission outages morning brief — network-conte
 Generate a daily brief covering active / upcoming / returning transmission
 outages, framed by the PJM PSS/E network model context.
 
-## Data sources (in order of preference)
+## Pre-flight: always-fresh MCP server
 
-The brief consumes four MCP endpoints from the local FastAPI server at
-`http://localhost:8000`:
+**First step — always.** Run the pre-flight before anything else:
+
+```bash
+python -m backend.mcp_server.ensure_running
+```
+
+The script kills any process bound to port 8000 (whether it's the
+existing MCP server or a stale uvicorn), spawns a fresh detached
+uvicorn against the current code on disk, and waits up to 30s for
+`/openapi.json` to respond.
+
+- Exit 0 → MCP is healthy. Continue with the data-source steps below.
+- Exit non-zero → **STOP IMMEDIATELY.** Tell the user the server failed
+  to come up and point them at the log:
+  `backend/mcp_server/logs/server.log`. Do not synthesize a brief.
+
+Do not call view builders directly via Python under any circumstance.
+There is no fallback path — if MCP can't be brought up, this command
+produces no output.
+
+## Data sources
+
+The brief consumes four MCP endpoints from `http://localhost:8000`:
 
 1. `/views/transmission_outages_network?format=json&max_neighbors=5`
    — match coverage + matched/ambiguous/unmatched outages with bus IDs
@@ -22,46 +43,8 @@ The brief consumes four MCP endpoints from the local FastAPI server at
 4. `/views/transmission_outages_changes_24h_simple?format=json` — last
    24h NEW + REVISED tickets
 
-If the FastAPI server is down (curl exit 7 / connection refused), fall
-back to running the same data path directly via Python:
-
-```bash
-cd C:/Users/AidanKeaveny/Documents/github/helioscta-pjm-da-data-scrapes && python << 'EOF'
-import json, os
-from datetime import date
-from backend.mcp_server.data import transmission_outages
-from backend.mcp_server.data.network_match import load_network, match_outages_to_branches
-from backend.mcp_server.views.transmission_outages import (
-    build_active_view_model, build_window_7d_view_model,
-    build_changes_24h_simple_view_model, build_network_view_model,
-)
-
-today = date.today().isoformat()
-base = 'backend/mcp_server/briefings'
-
-active_df = transmission_outages.pull_active()
-window_df = transmission_outages.pull_window_7d()
-changes_df = transmission_outages.pull_changes_24h_simple()
-buses, branches = load_network()
-enriched = match_outages_to_branches(active_df, branches, buses)
-
-# One subfolder per MCP view endpoint; dated JSON snapshot inside.
-def save(subdir: str, data: dict) -> None:
-    path = f'{base}/{subdir}'
-    os.makedirs(path, exist_ok=True)
-    with open(f'{path}/{today}.json', 'w') as f:
-        json.dump(data, f, default=str)
-
-save('transmission_outages_active', build_active_view_model(active_df))
-save('transmission_outages_window_7d', build_window_7d_view_model(window_df))
-save('transmission_outages_changes_24h_simple', build_changes_24h_simple_view_model(changes_df))
-save('transmission_outages_network', build_network_view_model(enriched, branches, max_neighbors=5))
-print('ok')
-EOF
-```
-
-Either path drops dated JSON snapshots into per-view subfolders under
-`backend/mcp_server/briefings/`:
+After hitting each endpoint, save the JSON response into per-view
+subfolders under `backend/mcp_server/briefings/`:
 
 ```
 backend/mcp_server/briefings/
