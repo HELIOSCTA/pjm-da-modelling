@@ -432,9 +432,70 @@ def format_constraints_da_network(vm: dict) -> str:
     return "\n".join(parts)
 
 
+def _hist_glyph(count: int) -> str:
+    """1-char glyph for a binding-HE histogram count: how many days bound at this HE."""
+    if count >= 5:
+        return "#"
+    if count >= 2:
+        return "+"
+    if count >= 1:
+        return "."
+    return "·"
+
+
+def _format_rt_dart_morning_table(rows: list[dict]) -> str:
+    """Wide table for morning_mode worst_binders — one row per constraint
+    rolled up across the window."""
+    headers = [
+        "Constraint", "Contingency", "kV", "Route", "Buses",
+        "RT $ (week)", "Days Bound", "HE Pattern", "Histogram",
+    ]
+    out = []
+    for r in rows:
+        bp = r.get("binding_he_pattern") or {}
+        hist = bp.get("histogram") or [0] * 24
+        glyph = "".join(_hist_glyph(int(c)) for c in hist)
+        out.append([
+            (r.get("constraint_name") or "-")[:28],
+            (r.get("contingency") or "-")[:28],
+            r.get("parsed_voltage_kv") or "-",
+            _constraint_route(r),
+            _bus_pair(r),
+            _money(r.get("rt_total_price_week")),
+            r.get("binding_day_count") or 0,
+            (bp.get("label") or "(none)")[:24],
+            glyph,
+        ])
+    return _table(headers, out)
+
+
 def format_constraints_rt_dart_network(vm: dict) -> str:
     """Markdown for ``GET /views/constraints_rt_dart_network``."""
     parts: list[str] = []
+
+    if vm.get("morning_mode"):
+        parts.append(
+            f"# Worst RT Binders — {vm.get('lookback_days', 7)}-day rollup — "
+            f"{vm.get('start_date', '?')} → {vm.get('end_date', '?')}"
+        )
+        cov = vm.get("match_coverage", {})
+        wb = vm.get("worst_binders", [])
+        parts.append(
+            f"\n**{len(wb)} constraints** rolled up across the window. "
+            f"Coverage: {cov.get('matched', 0) + cov.get('ambiguous', 0)} / "
+            f"{cov.get('total', 0) - cov.get('interface', 0)} branch-class "
+            f"({cov.get('match_rate_pct', 0)}%)"
+        )
+        if wb:
+            parts.append(
+                f"\n## Worst binders ({len(wb)}) — sorted by |RT $ over week|"
+            )
+            parts.append(_format_rt_dart_morning_table(wb))
+            parts.append(
+                "\n_HE histogram glyphs: `·` 0d  `.` 1d  `+` 2-4d  `#` ≥5d_"
+            )
+        return "\n".join(parts)
+
     parts.append(
         f"# RT + DART Constraints — Network-Enriched — "
         f"{vm.get('start_date', '?')} → {vm.get('end_date', '?')}"
@@ -904,7 +965,150 @@ def format_lmps_hourly_summary(vm: dict) -> str:
     return "\n".join(parts)
 
 
+# ─── Pre-DA morning brief — Tier 1: DART realization ─────────────────────────
+
+
+def format_lmps_dart_realization(vm: dict) -> str:
+    """Markdown for ``GET /views/lmps_dart_realization``."""
+    parts: list[str] = []
+    parts.append(
+        f"# LMP DART Realization — "
+        f"{vm.get('start_date', '?')} → {vm.get('end_date', '?')} "
+        f"(T-{vm.get('lookback_days', 7)} → T-1)"
+    )
+
+    if vm.get("error"):
+        parts.append(f"\n_{vm['error']}_")
+        return "\n".join(parts)
+
+    agg = vm.get("window_aggregates") or {}
+    threshold = vm.get("dart_threshold", 10.0)
+    parts.append(
+        f"\n**{agg.get('hub_count', 0)} hubs** × {agg.get('day_count', 0)} days · "
+        f"avg DART cong ${_money_d(agg.get('avg_dart_cong_all_hubs')) if agg.get('avg_dart_cong_all_hubs') is not None else '-'} · "
+        f"**{agg.get('total_hub_days_over_threshold', 0)}** hub-days > "
+        f"${threshold:.0f}/MWh · "
+        f"{agg.get('hubs_with_widening_trend', 0)} widening / "
+        f"{agg.get('hubs_with_narrowing_trend', 0)} narrowing"
+    )
+
+    worst = vm.get("worst_realized_hubs") or []
+    if worst:
+        parts.append("\n## Worst-realized hubs (top by Σ|DART cong|)")
+        headers = ["Hub", "Σ|DART cong|", "Trend", "Peak HEs"]
+        rows = []
+        for w in worst:
+            rows.append([
+                w.get("hub", "-"),
+                _money_d(w.get("sum_abs_dart_cong")),
+                w.get("trend_signal", "-"),
+                ", ".join(f"HE{h}" for h in (w.get("peak_hours_of_day") or [])),
+            ])
+        parts.append(_table(headers, rows))
+
+    rollup = vm.get("hub_rollup") or []
+    if rollup:
+        parts.append("\n## Per-hub rollup")
+        headers = [
+            "Hub", "Avg DART", "Max |DART|", "Worst Day",
+            "Hrs > Thr", "Σ|DART|", "Trend",
+        ]
+        rows = []
+        for r in rollup:
+            rows.append([
+                r.get("hub", "-"),
+                _money_d(r.get("avg_dart_cong")),
+                _money_d(r.get("max_abs_dart_cong")),
+                r.get("max_dart_date") or "-",
+                r.get("hours_over_threshold", 0),
+                _money_d(r.get("sum_abs_dart_cong")),
+                r.get("trend_signal", "-"),
+            ])
+        parts.append(_table(headers, rows))
+
+    drilldown = vm.get("top_zones_for_drilldown") or []
+    if drilldown:
+        parts.append(
+            f"\n_Tier 2 deep-dive: **{', '.join(drilldown)}** "
+            f"(top {len(drilldown)} hubs by Σ|DART cong|)._"
+        )
+
+    return "\n".join(parts)
+
+
 # ─── Tier 4 — outages for constraints ────────────────────────────────────────
+
+
+def format_historical_outages_for_constraints(vm: dict) -> str:
+    """Markdown for ``GET /views/historical_outages_for_constraints``."""
+    parts: list[str] = []
+    parts.append(
+        f"# Outages Active During Binding Hours — "
+        f"{vm.get('window_start', '?')} → {vm.get('window_end', '?')}"
+    )
+
+    bh = vm.get("binding_hours")
+    if bh:
+        parts.append(f"\n_Binding HEs: {bh}_")
+
+    parts.append(
+        f"\n**{vm.get('matched_count', 0)}** outages on/near the "
+        f"**{vm.get('constraint_bus_count', 0)}** constraint bus IDs · "
+        f"({vm.get('total_outages_in_window', 0)} outages overlapped window)"
+    )
+
+    outages = vm.get("outages") or []
+    if not outages:
+        parts.append("\n_No outages on the supplied bus set._")
+        return "\n".join(parts)
+
+    # Group by persistence_class for the headline view
+    sustained = [o for o in outages if o.get("persistence_class") == "sustained"]
+    intermittent = [o for o in outages if o.get("persistence_class") == "intermittent"]
+    transient = [o for o in outages if o.get("persistence_class") == "transient"]
+
+    def _hist_rows(group: list[dict]) -> list[list]:
+        rows = []
+        for o in group:
+            labels = o.get("near_constraint_labels") or []
+            near = "; ".join(labels[:2]) if labels else \
+                ", ".join(str(b) for b in (o.get("near_constraint_buses") or []))
+            still = "active" if o.get("still_active_at_run") else "ended"
+            rows.append([
+                f"{o.get('persistence_days', 0)}d {still}",
+                o.get("kv") or "-",
+                o.get("equip_category", o.get("equip", "")),
+                (o.get("facility") or "")[:36],
+                _route(o),
+                o.get("from_bus_psse", "-"),
+                o.get("to_bus_psse", "-"),
+                o.get("started", "-"),
+                o.get("est_return", "-"),
+                (near or "-")[:36],
+            ])
+        return rows
+
+    headers = [
+        "Persistence", "kV", "Type", "Facility", "Route",
+        "From", "To", "Started", "Est Return", "Near Constraint",
+    ]
+    if sustained:
+        parts.append(f"\n## Sustained ({len(sustained)}) — active ≥5 days in window")
+        parts.append(_table(headers, _hist_rows(sustained)))
+    if intermittent:
+        parts.append(f"\n## Intermittent ({len(intermittent)}) — active 2–4 days")
+        parts.append(_table(headers, _hist_rows(intermittent)))
+    if transient:
+        if len(transient) <= 10:
+            parts.append(f"\n## Transient ({len(transient)}) — active 1 day")
+            parts.append(_table(headers, _hist_rows(transient)))
+        else:
+            parts.append(
+                f"\n_+{len(transient)} transient outages (single-day) — "
+                f"see JSON for detail._"
+            )
+
+    return "\n".join(parts)
 
 
 def format_transmission_outages_for_constraints(vm: dict) -> str:

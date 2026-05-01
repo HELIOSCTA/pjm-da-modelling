@@ -374,6 +374,195 @@ def build_lmps_hourly_summary_view_model(
     }
 
 
+# ─── Pre-DA morning brief — Tier 1: 7-day DA→RT realization ──────────────────
+
+
+def build_lmps_dart_realization_view_model(
+    df: pd.DataFrame,
+    end_date: date,
+    *,
+    lookback_days: int = 7,
+    top_n_drilldown: int = 5,
+    dart_threshold: float = 10.0,
+) -> dict:
+    """View model for ``GET /views/lmps_dart_realization`` (pre-DA brief Tier 1).
+
+    Long-form ``df`` has rows per (date, hour_ending, hub, market) where market
+    in {'da','rt','dart'}. Emits:
+
+      - ``daily_summary``: per (date, hub) aggregates of total/cong for each market
+      - ``hub_rollup``: per-hub aggregates over the window
+      - ``worst_realized_hubs``: top-N hubs by ``sum_abs_dart_cong``, with
+        ``peak_hours_of_day`` for HE-band scoping by Tier 2
+      - ``top_zones_for_drilldown``: hub-name list (handoff for downstream)
+      - ``window_aggregates``: market-wide rollups
+    """
+    start_date = end_date - timedelta(days=lookback_days - 1)
+
+    if df is None or df.empty:
+        return {
+            "target_date": str(end_date),
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "lookback_days": lookback_days,
+            "dart_threshold": dart_threshold,
+            "daily_summary": [],
+            "hub_rollup": [],
+            "worst_realized_hubs": [],
+            "top_zones_for_drilldown": [],
+            "window_aggregates": {},
+            "error": "No LMP data for window.",
+        }
+
+    df = df.copy()
+    for col in [
+        "lmp_total", "lmp_system_energy_price",
+        "lmp_congestion_price", "lmp_marginal_loss_price",
+    ]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["hour_ending"] = pd.to_numeric(df["hour_ending"], errors="coerce").astype("Int64")
+
+    da = df[df["market"] == "da"]
+    rt = df[df["market"] == "rt"]
+    dart = df[df["market"] == "dart"].copy()
+
+    # Per (date, hub) per market — daily mean
+    keys = ["date", "hub"]
+    da_d = da.groupby(keys, sort=False).agg(
+        da_total=("lmp_total", "mean"),
+        da_cong=("lmp_congestion_price", "mean"),
+    )
+    rt_d = rt.groupby(keys, sort=False).agg(
+        rt_total=("lmp_total", "mean"),
+        rt_cong=("lmp_congestion_price", "mean"),
+    )
+    dart_d = dart.groupby(keys, sort=False).agg(
+        dart_total=("lmp_total", "mean"),
+        dart_cong=("lmp_congestion_price", "mean"),
+    )
+
+    # Peak HE per (date, hub) by max |dart_cong|
+    if not dart.empty:
+        dart["abs_cong"] = dart["lmp_congestion_price"].abs()
+        peak_he_idx = (
+            dart.dropna(subset=["abs_cong"])
+                .sort_values("abs_cong", ascending=False)
+                .groupby(keys, sort=False)
+                .head(1)[keys + ["hour_ending"]]
+                .set_index(keys)
+        )
+        peak_he_idx = peak_he_idx.rename(columns={"hour_ending": "peak_he"})
+    else:
+        peak_he_idx = pd.DataFrame(columns=["peak_he"])
+
+    daily = pd.concat([da_d, rt_d, dart_d, peak_he_idx], axis=1).reset_index()
+    daily_records = []
+    for _, row in daily.sort_values(keys).iterrows():
+        daily_records.append({
+            "date": str(row["date"]),
+            "hub": row["hub"],
+            "da_total": _sf(row.get("da_total")),
+            "rt_total": _sf(row.get("rt_total")),
+            "dart_total": _sf(row.get("dart_total")),
+            "da_cong": _sf(row.get("da_cong")),
+            "rt_cong": _sf(row.get("rt_cong")),
+            "dart_cong": _sf(row.get("dart_cong")),
+            "peak_he": _si(row.get("peak_he")),
+        })
+
+    # Per-hub rollup over the whole window
+    rollups: list[dict] = []
+    if not dart.empty:
+        for hub_name, g in dart.groupby("hub", sort=False):
+            avg_dart_cong = _sf(g["lmp_congestion_price"].mean())
+            max_abs = _sf(g["abs_cong"].max())
+            max_idx = g["abs_cong"].idxmax() if g["abs_cong"].notna().any() else None
+            max_date = str(g.loc[max_idx, "date"]) if max_idx is not None else None
+            hours_over = int((g["abs_cong"] > dart_threshold).sum())
+            sum_abs = _sf(g["abs_cong"].sum())
+
+            # 24-vec mean |dart_cong| per HE
+            by_hod = g.groupby("hour_ending")["abs_cong"].mean()
+            dart_by_hod = [
+                _sf(by_hod.get(h)) if h in by_hod.index else 0.0
+                for h in range(1, 25)
+            ]
+
+            # Trend slope: linear regression of daily |dart_cong| over day index
+            daily_abs = g.groupby("date")["abs_cong"].mean().sort_index()
+            if len(daily_abs) >= 3:
+                x = np.arange(len(daily_abs), dtype=float)
+                y = daily_abs.values.astype(float)
+                slope = float(np.polyfit(x, y, 1)[0])
+            else:
+                slope = 0.0
+            if slope > 0.5:
+                trend = "widening"
+            elif slope < -0.5:
+                trend = "narrowing"
+            else:
+                trend = "stable"
+
+            rollups.append({
+                "hub": hub_name,
+                "avg_dart_cong": avg_dart_cong,
+                "max_abs_dart_cong": max_abs,
+                "max_dart_date": max_date,
+                "hours_over_threshold": hours_over,
+                "sum_abs_dart_cong": sum_abs,
+                "dart_cong_by_hod": dart_by_hod,
+                "trend_signal": trend,
+                "trend_slope": round(slope, 3),
+            })
+
+    rollups.sort(key=lambda r: -(r.get("sum_abs_dart_cong") or 0))
+
+    # Worst-realized hubs handoff
+    worst_records = []
+    for r in rollups[:top_n_drilldown]:
+        hod = r.get("dart_cong_by_hod") or [0.0] * 24
+        ranked = sorted(range(24), key=lambda i: -(hod[i] or 0))[:3]
+        peak_hods = sorted([i + 1 for i in ranked])
+        worst_records.append({
+            "hub": r["hub"],
+            "sum_abs_dart_cong": r["sum_abs_dart_cong"],
+            "peak_hours_of_day": peak_hods,
+            "trend_signal": r["trend_signal"],
+        })
+
+    # Window aggregates
+    if not dart.empty:
+        avg_dart_all = _sf(dart["lmp_congestion_price"].mean())
+        hub_days_over = int(
+            (dart.groupby(["date", "hub"])["abs_cong"].max() > dart_threshold).sum()
+        )
+    else:
+        avg_dart_all = None
+        hub_days_over = 0
+
+    window_agg = {
+        "avg_dart_cong_all_hubs": avg_dart_all,
+        "total_hub_days_over_threshold": hub_days_over,
+        "hubs_with_widening_trend": sum(1 for r in rollups if r["trend_signal"] == "widening"),
+        "hubs_with_narrowing_trend": sum(1 for r in rollups if r["trend_signal"] == "narrowing"),
+        "hub_count": len(rollups),
+        "day_count": int(dart["date"].nunique()) if not dart.empty else 0,
+    }
+
+    return {
+        "target_date": str(end_date),
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "lookback_days": lookback_days,
+        "dart_threshold": dart_threshold,
+        "window_aggregates": window_agg,
+        "daily_summary": daily_records,
+        "hub_rollup": rollups,
+        "worst_realized_hubs": worst_records,
+        "top_zones_for_drilldown": [r["hub"] for r in worst_records],
+    }
+
+
 # ─── Outage overlap ──────────────────────────────────────────────────────────
 
 

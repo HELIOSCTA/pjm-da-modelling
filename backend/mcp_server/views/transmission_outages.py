@@ -686,3 +686,153 @@ def build_outages_for_constraints_view_model(
         "matched_count": int(len(hits)),
         "outages": records,
     }
+
+
+# ─── Builder 7 — Pre-DA morning brief Tier 3: historical outages on bus IDs ──
+
+
+def build_historical_outages_for_constraints_view_model(
+    enriched_df: pd.DataFrame,
+    branches_df: pd.DataFrame,
+    bus_ids: list[int],
+    *,
+    binding_hours: list[int] | None = None,
+    constraint_index: dict[int, list[str]] | None = None,
+    window_start: date | None = None,
+    window_end: date | None = None,
+    reference_date: date | None = None,
+    max_neighbors: int = 3,
+) -> dict:
+    """View model for ``GET /views/historical_outages_for_constraints``.
+
+    Backward-looking variant of ``build_outages_for_constraints_view_model``.
+    Filters outages whose [start_datetime, end_datetime] overlaps the window
+    AND whose from_bus_psse / to_bus_psse intersects ``bus_ids``. Each
+    record carries:
+
+      - ``persistence_days``: days the outage was active within the window
+      - ``persistence_class``: sustained (≥5d) / intermittent (2-4d) / transient (1d)
+      - ``still_active_at_run``: bool — outage hasn't ended at the reference time
+      - ``overlapping_he_count``: count of HEs in ``binding_hours`` covered by
+        the outage window (rough proxy for "this outage was up during binding")
+      - ``near_constraint_labels``: from ``constraint_index``
+    """
+    from backend.mcp_server.data.network_match import list_neighbors
+
+    if reference_date is None:
+        reference_date = date.today()
+    if window_end is None:
+        window_end = reference_date
+    if window_start is None:
+        window_start = window_end - pd.Timedelta(days=6).to_pytimedelta()
+
+    bus_set: set[int] = set()
+    for b in bus_ids or []:
+        try:
+            bus_set.add(int(b))
+        except (TypeError, ValueError):
+            continue
+
+    if enriched_df is None or enriched_df.empty or not bus_set:
+        return {
+            "reference_date": str(reference_date),
+            "window_start": str(window_start),
+            "window_end": str(window_end),
+            "binding_hours": list(binding_hours) if binding_hours else None,
+            "constraint_bus_count": len(bus_set),
+            "total_outages_in_window": 0 if enriched_df is None else len(enriched_df),
+            "matched_count": 0,
+            "outages": [],
+        }
+
+    df = _normalize(enriched_df, reference_date)
+    fb = pd.to_numeric(df.get("from_bus_psse"), errors="coerce")
+    tb = pd.to_numeric(df.get("to_bus_psse"), errors="coerce")
+    mask = fb.isin(bus_set) | tb.isin(bus_set)
+    hits = df[mask].copy()
+
+    win_start_ts = pd.Timestamp(window_start)
+    win_end_ts = pd.Timestamp(window_end) + pd.Timedelta(hours=23, minutes=59)
+    binding_set = set(int(h) for h in (binding_hours or []))
+    ref_ts = pd.Timestamp(reference_date)
+
+    records: list[dict] = []
+    for _, row in hits.sort_values(["voltage_kv"], ascending=False).iterrows():
+        rec = _outage_dict(row)
+        f_b = row.get("from_bus_psse")
+        t_b = row.get("to_bus_psse")
+        rec["from_bus_psse"] = int(f_b) if pd.notna(f_b) else None
+        rec["to_bus_psse"] = int(t_b) if pd.notna(t_b) else None
+        rec["rating_mva"] = float(row["rating_mva"]) if pd.notna(row.get("rating_mva")) else None
+        rec["match_status"] = row.get("network_match_status")
+
+        # Active interval clipped to the window
+        start = row.get("start_datetime")
+        end = row.get("end_datetime")
+        eff_start = max(start, win_start_ts) if pd.notna(start) else win_start_ts
+        eff_end = min(end, win_end_ts) if pd.notna(end) else win_end_ts
+        active_days = max((eff_end - eff_start).days + 1, 0) if eff_end >= eff_start else 0
+        rec["persistence_days"] = int(active_days)
+        if active_days >= 5:
+            rec["persistence_class"] = "sustained"
+        elif active_days >= 2:
+            rec["persistence_class"] = "intermittent"
+        elif active_days >= 1:
+            rec["persistence_class"] = "transient"
+        else:
+            rec["persistence_class"] = "none"
+
+        rec["still_active_at_run"] = (
+            pd.isna(end) or end >= ref_ts
+        )
+
+        # Binding-HE overlap: rough — does the outage cover the binding HE
+        # range on at least one of its active days? Without per-hour activity
+        # data this is "if active that day AND binding HEs are reasonable",
+        # so we just flag yes/no here.
+        if binding_set and active_days > 0:
+            # If outage spans full days within the window, all binding HEs
+            # are technically covered. Multi-hour partial-day coverage would
+            # need start_datetime / end_datetime hour comparison; v1 uses the
+            # full-day approximation.
+            rec["overlapping_he_count"] = len(binding_set) * active_days
+        else:
+            rec["overlapping_he_count"] = 0
+
+        # Cross-link annotation
+        near_buses: list[int] = []
+        for v in (rec["from_bus_psse"], rec["to_bus_psse"]):
+            if v is not None and v in bus_set:
+                near_buses.append(v)
+        rec["near_constraint_buses"] = near_buses
+
+        labels: list[str] = []
+        if constraint_index:
+            for b in near_buses:
+                for label in constraint_index.get(b, []):
+                    if label not in labels:
+                        labels.append(label)
+        rec["near_constraint_labels"] = labels
+
+        if rec["from_bus_psse"] is not None and rec["to_bus_psse"] is not None and max_neighbors > 0:
+            rec["neighbors"] = list_neighbors(
+                rec["from_bus_psse"], rec["to_bus_psse"],
+                branches_df, max_n=max_neighbors,
+            )
+        else:
+            rec["neighbors"] = []
+        records.append(rec)
+
+    # Sort: persistence_days desc, then voltage_kv desc
+    records.sort(key=lambda r: (-(r.get("persistence_days") or 0), -(r.get("kv") or 0)))
+
+    return {
+        "reference_date": str(reference_date),
+        "window_start": str(window_start),
+        "window_end": str(window_end),
+        "binding_hours": list(binding_hours) if binding_hours else None,
+        "constraint_bus_count": len(bus_set),
+        "total_outages_in_window": int(len(df)),
+        "matched_count": int(len(hits)),
+        "outages": records,
+    }

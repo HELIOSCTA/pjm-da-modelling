@@ -54,6 +54,7 @@ from backend.mcp_server.views.lmp import (
     build_lmp_da_hub_summary_view_model,
     build_lmp_da_outage_overlap_view_model,
     build_lmps_daily_summary_view_model,
+    build_lmps_dart_realization_view_model,
     build_lmps_hourly_summary_view_model,
 )
 from backend.mcp_server.views.markdown_formatters import (
@@ -62,7 +63,9 @@ from backend.mcp_server.views.markdown_formatters import (
     format_lmp_da_hub_summary,
     format_lmp_da_outage_overlap,
     format_lmps_daily_summary,
+    format_lmps_dart_realization,
     format_lmps_hourly_summary,
+    format_historical_outages_for_constraints,
     format_transmission_outages_active,
     format_transmission_outages_changes_24h_simple,
     format_transmission_outages_changes_24h_snapshot,
@@ -74,6 +77,7 @@ from backend.mcp_server.views.transmission_outages import (
     build_active_view_model,
     build_changes_24h_simple_view_model,
     build_changes_24h_snapshot_view_model,
+    build_historical_outages_for_constraints_view_model,
     build_network_view_model,
     build_outages_for_constraints_view_model,
     build_window_7d_view_model,
@@ -322,14 +326,25 @@ def get_constraints_rt_dart_network(
     max_neighbors: int = Query(
         10, ge=0, le=30, description="2-hop ≥230kV neighbors per matched constraint",
     ),
+    morning_mode: bool = Query(
+        False,
+        description="Roll up across days into worst_binders with binding-HE "
+                    "pattern + daily breakdown (used by /pjm-pre-da-morning-brief)",
+    ),
     format: OutputFormat = Query(OutputFormat.md, description="md or json"),
 ):
     """RT and DART binding constraints over a window, pivoted side-by-side.
 
-    Backward-looking: each row is one ``(date, constraint, contingency)``
-    pair carrying both ``rt_*`` and ``dart_*`` totals. DART rows only exist
-    when the same constraint bound in BOTH DA and RT that day. Sorted by
-    ``|dart_total_price|`` desc so the largest DA→RT spreads surface first.
+    Default mode: each row is one ``(date, constraint, contingency)``
+    pair carrying both ``rt_*`` and ``dart_*`` totals. Sorted by
+    ``|dart_total_price|`` desc.
+
+    Morning mode (``morning_mode=true``): rows roll up across the window
+    per (constraint, contingency). Each record carries
+    ``binding_day_count``, ``binding_he_pattern`` (24-int histogram +
+    ranges label), ``daily_breakdown``, and ``bus_ids`` for downstream
+    cross-link to outages. Sorted by ``|rt_total_price_week|`` desc.
+    Backward-compat: morning_mode=false (default) preserves existing shape.
     """
     if end_date is None:
         end_date = date.today() - timedelta(days=1)
@@ -342,6 +357,7 @@ def get_constraints_rt_dart_network(
     vm = build_rt_dart_network_view_model(
         enriched, branches_df, start_date, end_date,
         top_n=top_n, max_neighbors=max_neighbors,
+        morning_mode=morning_mode,
     )
     if format == OutputFormat.json:
         return vm
@@ -489,6 +505,51 @@ def get_lmps_daily_summary(
     )
 
 
+# ─── Pre-DA morning brief — Tier 1: 7-day DA→RT realization ──────────────────
+
+
+@app.get("/views/lmps_dart_realization")
+def get_lmps_dart_realization(
+    target_date: date | None = Query(
+        None, description="End of window (default: yesterday / T-1)",
+    ),
+    lookback_days: int = Query(
+        7, ge=2, le=30, description="Days of history (window = T-lookback..T)",
+    ),
+    top_n_drilldown: int = Query(
+        5, ge=1, le=20, description="Hubs handed to Tier 2 hourly drilldown",
+    ),
+    dart_threshold: float = Query(
+        10.0, ge=0, le=200,
+        description="$/MWh — count hub-days where |DART cong| crosses this",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Tier 1 of the pre-DA morning brief — backward-looking DA→RT realization.
+
+    Per-hub DA-priced vs RT-realized congestion across a rolling window
+    (default 7 days ending at yesterday). Surfaces ``worst_realized_hubs``
+    — top hubs by ``Σ|DART cong|`` — that Tier 2 reads as its hub filter.
+    """
+    if target_date is None:
+        target_date = date.today() - timedelta(days=1)
+    start_date = target_date - timedelta(days=lookback_days - 1)
+
+    df = lmp.pull_lmps_window(start_date, target_date)
+    vm = build_lmps_dart_realization_view_model(
+        df, target_date,
+        lookback_days=lookback_days,
+        top_n_drilldown=top_n_drilldown,
+        dart_threshold=dart_threshold,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_lmps_dart_realization(vm),
+        media_type="text/markdown",
+    )
+
+
 # ─── DA results brief — Tier 2: hourly LMP drilldown ─────────────────────────
 
 
@@ -618,6 +679,83 @@ def get_transmission_outages_for_constraints(
         return vm
     return PlainTextResponse(
         content=format_transmission_outages_for_constraints(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── Pre-DA morning brief — Tier 3: historical outages on constraint buses ───
+
+
+@app.get("/views/historical_outages_for_constraints")
+def get_historical_outages_for_constraints(
+    bus_ids: str = Query(
+        ..., description="CSV of PSS/E bus integers (Tier 2 worst_binders bus_ids union)",
+    ),
+    start_date: date | None = Query(
+        None, description="Window start (default: end_date - 6 days)",
+    ),
+    end_date: date | None = Query(
+        None, description="Window end (default: today - 1)",
+    ),
+    binding_hours: list[int] | None = Query(
+        None, description="HEs of interest (informational; for overlap counting)",
+    ),
+    constraint_labels: str | None = Query(
+        None, description="CSV 'bus:label,bus:label' for cross-link annotation",
+    ),
+    max_neighbors: int = Query(
+        3, ge=0, le=10, description="1-hop neighbors per outage",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Tier 3 of the pre-DA morning brief — outages active during binding hours.
+
+    Filters source-table outages to those whose [start_datetime, end_datetime]
+    overlaps the lookback window AND whose from_bus_psse / to_bus_psse is in
+    the supplied bus_ids set. Tags each outage with persistence (sustained /
+    intermittent / transient) and optionally annotates with the binding
+    constraint label(s).
+
+    Note: source table is upserted (latest-state per ticket); for full
+    historical fidelity, switch the data layer to read from the SCD2
+    snapshot mart once it has accumulated sufficient history (~2026-05-08).
+    """
+    if end_date is None:
+        end_date = date.today() - timedelta(days=1)
+    if start_date is None:
+        start_date = end_date - timedelta(days=6)
+
+    try:
+        bus_id_list = _parse_int_csv(bus_ids)
+    except ValueError:
+        return PlainTextResponse(
+            content='{"error": "bus_ids must be CSV of integers"}',
+            status_code=400, media_type="application/json",
+        )
+    if not bus_id_list:
+        return PlainTextResponse(
+            content='{"error": "bus_ids is required"}',
+            status_code=400, media_type="application/json",
+        )
+
+    label_map = _parse_constraint_labels(constraint_labels)
+
+    buses_df, branches_df = _get_network()
+    df = transmission_outages.pull_outages_in_window(start_date, end_date)
+    enriched = match_outages_to_branches(df, branches_df, buses_df)
+    vm = build_historical_outages_for_constraints_view_model(
+        enriched, branches_df, bus_id_list,
+        binding_hours=binding_hours,
+        constraint_index=label_map,
+        window_start=start_date,
+        window_end=end_date,
+        reference_date=date.today(),
+        max_neighbors=max_neighbors,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_historical_outages_for_constraints(vm),
         media_type="text/markdown",
     )
 

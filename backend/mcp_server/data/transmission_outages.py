@@ -62,6 +62,40 @@ def pull_changes_24h_simple() -> pd.DataFrame:
     return _pull_mart("pjm_transmission_outages_changes_24h_simple")
 
 
+def pull_outages_in_window(start_date, end_date) -> pd.DataFrame:
+    """Outages whose [start_datetime, end_datetime] overlaps the given window.
+
+    Reads from the source ``pjm.transmission_outages`` table (latest-state
+    upsert). Outages that PJM has fully removed from eDART will be missing
+    — for full historical fidelity, switch to the SCD2 snapshot mart
+    ``pjm_transmission_outages_snapshot`` once it has accumulated history
+    (target ~2026-05-08).
+
+    Used by the pre-DA morning brief (Tier 3) to find outages active during
+    binding hours of the lookback window.
+    """
+    from datetime import date as _date  # local — avoid a top-level rename
+    s = start_date.isoformat() if isinstance(start_date, _date) else str(start_date)
+    e = end_date.isoformat() if isinstance(end_date, _date) else str(end_date)
+    query = f"""
+        SELECT
+            ticket_id, item_number, zone, facility_name,
+            equipment_type, station, voltage_kv,
+            start_datetime, end_datetime,
+            outage_state, last_revised, risk, cause
+        FROM pjm.transmission_outages
+        WHERE equipment_type IN ('LINE','XFMR','PS')
+          AND voltage_kv >= 230
+          AND start_datetime <= '{e} 23:59:59'
+          AND (end_datetime IS NULL OR end_datetime >= '{s} 00:00:00')
+        ORDER BY voltage_kv DESC, start_datetime DESC
+    """
+    logger.info(f"Pulling outages in window {s}..{e}")
+    df = pull_from_db(query=query)
+    logger.info(f"Pulled {len(df):,} outages overlapping window")
+    return df
+
+
 def pull_changes_24h_snapshot() -> pd.DataFrame:
     """Last-24h delta (snapshot variant).
 

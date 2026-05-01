@@ -61,3 +61,41 @@ def pull_lmp_da_hourly(
     df = pull_from_db(query=query)
     logger.info(f"Pulled {len(df):,} DA LMP rows ({df['hub'].nunique() if len(df) else 0} hubs)")
     return df
+
+
+def pull_lmps_window(
+    start_date: date, end_date: date,
+    hubs: list[str] | None = None,
+    markets: tuple[str, ...] = ("da", "rt", "dart"),
+) -> pd.DataFrame:
+    """All markets at hub grain over a date window. Returns long form with a
+    ``market`` column — caller pivots on market.
+
+    Used by the pre-DA morning brief to compute DA-priced vs RT-realized
+    DART trend over a rolling 7-day window.
+    """
+    hub_filter = ""
+    if hubs:
+        quoted = ", ".join(f"'{h}'" for h in hubs)
+        hub_filter = f"AND hub IN ({quoted})"
+    market_list = ", ".join(f"'{m}'" for m in markets)
+    query = f"""
+        SELECT
+            date,
+            hour_ending,
+            hub,
+            market,
+            lmp_total,
+            lmp_system_energy_price,
+            lmp_congestion_price,
+            lmp_marginal_loss_price
+        FROM {_LMPS_TABLE}
+        WHERE date BETWEEN '{start_date.isoformat()}' AND '{end_date.isoformat()}'
+          AND market IN ({market_list})
+          {hub_filter}
+        ORDER BY date, hub, hour_ending, market
+    """
+    logger.info(f"Pulling LMPs window {start_date}..{end_date} markets={markets}")
+    df = pull_from_db(query=query)
+    logger.info(f"Pulled {len(df):,} window LMP rows")
+    return df

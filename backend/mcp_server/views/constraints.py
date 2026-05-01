@@ -342,26 +342,39 @@ def build_rt_dart_network_view_model(
     *,
     top_n: int = 30,
     max_neighbors: int = 3,
+    morning_mode: bool = False,
 ) -> dict:
     """View model for ``GET /views/constraints_rt_dart_network``.
 
-    Sections produced (sorted by ``ABS(dart_total_price)`` desc, then
-    ``rt_total_price`` desc):
-      - matched_constraints
-      - ambiguous_constraints
-      - unmatched_constraints
-      - interface_constraints
+    Default mode — sections sorted by ``ABS(dart_total_price)`` desc:
+      - matched_constraints, ambiguous_constraints, unmatched_constraints,
+        interface_constraints (per-day rows, existing shape)
+
+    Morning mode (``morning_mode=True``) — used by the pre-DA brief:
+      - rows roll up across dates per (constraint_name, contingency)
+      - only matched + ambiguous returned, in a single ``worst_binders``
+        list sorted by ``ABS(rt_total_price_week)`` desc
+      - each record carries ``binding_day_count``, ``binding_he_pattern``
+        (24-int histogram + ranges label), ``daily_breakdown``, ``bus_ids``
+        (seed + 1-hop ≥230 kV neighbors)
     """
     if enriched_df is None or enriched_df.empty:
-        return {
+        empty: dict = {
             "start_date": str(start_date),
             "end_date": str(end_date),
+            "morning_mode": morning_mode,
             "match_coverage": _coverage(pd.DataFrame()),
-            "matched_constraints": [],
-            "ambiguous_constraints": [],
-            "unmatched_constraints": [],
-            "interface_constraints": [],
         }
+        if morning_mode:
+            empty["worst_binders"] = []
+        else:
+            empty.update({
+                "matched_constraints": [],
+                "ambiguous_constraints": [],
+                "unmatched_constraints": [],
+                "interface_constraints": [],
+            })
+        return empty
 
     pivoted = _pivot_rt_dart(enriched_df)
 
@@ -371,6 +384,34 @@ def build_rt_dart_network_view_model(
     pivoted["rt_total_price"] = pd.to_numeric(
         pivoted.get("rt_total_price"), errors="coerce",
     )
+
+    if morning_mode:
+        # Roll up across dates per (constraint_name, contingency).
+        net = pivoted[pivoted["network_match_status"].isin(["matched", "ambiguous"])]
+        records: list[dict] = []
+        if not net.empty:
+            for _, group in net.groupby(
+                ["constraint_name", "contingency"], dropna=False,
+            ):
+                records.append(
+                    _morning_rollup_record(
+                        group, branches_df, max_neighbors=max_neighbors,
+                    )
+                )
+            records.sort(
+                key=lambda r: abs(r.get("rt_total_price_week") or 0),
+                reverse=True,
+            )
+            if top_n:
+                records = records[:top_n]
+        return {
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "morning_mode": True,
+            "lookback_days": (end_date - start_date).days + 1,
+            "match_coverage": _coverage(pivoted),
+            "worst_binders": records,
+        }
 
     sections = {}
     for status, key in [
@@ -392,9 +433,133 @@ def build_rt_dart_network_view_model(
     return {
         "start_date": str(start_date),
         "end_date": str(end_date),
+        "morning_mode": False,
         "match_coverage": _coverage(pivoted),
         **sections,
     }
+
+
+def _format_he_range(hours: list[int]) -> str:
+    """Compact label for a list of HEs.
+
+    [14,15,16,17,18,19] -> 'HE 14-19'.
+    [6,7,8,14,15,16]    -> 'HE 6-8, 14-16'.
+    """
+    if not hours:
+        return "(none)"
+    hours = sorted(set(int(h) for h in hours))
+    ranges: list[tuple[int, int]] = []
+    start = prev = hours[0]
+    for h in hours[1:]:
+        if h == prev + 1:
+            prev = h
+        else:
+            ranges.append((start, prev))
+            start = prev = h
+    ranges.append((start, prev))
+    return "HE " + ", ".join(f"{a}-{b}" if a != b else f"{a}" for a, b in ranges)
+
+
+def _morning_rollup_record(
+    group: pd.DataFrame,
+    branches_df: pd.DataFrame,
+    *,
+    max_neighbors: int = 5,
+) -> dict:
+    """Aggregate one constraint's rows (across the lookback window) into a
+    single morning-mode record. Group is rows for a single (constraint_name,
+    contingency) across the dates in the window.
+    """
+    from backend.mcp_server.data.network_match import k_hop_neighbors
+
+    # Per-HE counts and sums (RT-realized — morning brief is RT-driven)
+    he_counts: dict[int, int] = {}
+    he_sums: dict[int, float] = {}
+    for h in range(1, 25):
+        col = f"rt_he{h:02d}"
+        if col not in group.columns:
+            continue
+        vals = pd.to_numeric(group[col], errors="coerce").fillna(0)
+        he_counts[h] = int((vals.abs() > 0.01).sum())
+        he_sums[h] = float(vals.abs().sum())
+
+    binding_he_hours = sorted([h for h, c in he_counts.items() if c >= 1])
+    histogram = [he_counts.get(h, 0) for h in range(1, 25)]
+
+    # binding_day_count: distinct dates with rt_total_hours > 0
+    rt_hours = pd.to_numeric(
+        group.get("rt_total_hours", pd.Series(dtype=float)), errors="coerce",
+    ).fillna(0)
+    binding_day_count = int((rt_hours > 0).sum())
+
+    # daily_breakdown sorted by date asc
+    daily = []
+    for _, row in group.sort_values("date").iterrows():
+        d = row.get("date")
+        if pd.notna(d):
+            daily.append({
+                "date": str(d),
+                "rt_total_price": _sf(row.get("rt_total_price")),
+                "rt_total_hours": _si(row.get("rt_total_hours")),
+                "dart_total_price": _sf(row.get("dart_total_price")),
+            })
+
+    # week-aggregate scalars
+    rt_prices = pd.to_numeric(
+        group.get("rt_total_price", pd.Series(dtype=float)), errors="coerce",
+    ).fillna(0)
+    rt_total_week = float(rt_prices.sum())
+    dart_prices = pd.to_numeric(
+        group.get("dart_total_price", pd.Series(dtype=float)), errors="coerce",
+    )
+    dart_abs_week = float(dart_prices.abs().fillna(0).sum())
+
+    # Representative row for facility/bus metadata (use most-recent date)
+    rep = group.sort_values("date").iloc[-1]
+
+    rec: dict = {
+        "constraint_name": _ss(rep.get("constraint_name")),
+        "contingency": _ss(rep.get("contingency")),
+        "reported_name": _ss(rep.get("reported_name")),
+        "rt_total_price_week": rt_total_week,
+        "dart_total_price_week_abs": dart_abs_week,
+        "binding_day_count": binding_day_count,
+        "binding_he_pattern": {
+            "hours": binding_he_hours,
+            "histogram": histogram,
+            "label": _format_he_range(binding_he_hours),
+        },
+        "daily_breakdown": daily,
+    }
+    rec.update(_network_fields(rep))
+
+    # bus_ids: seed + 1-hop ≥230 kV neighbors, deduped
+    fb, tb = rec.get("from_bus_psse"), rec.get("to_bus_psse")
+    bus_ids: list[int] = []
+    seen: set[int] = set()
+    for v in (fb, tb):
+        if v is not None and v not in seen:
+            seen.add(v)
+            bus_ids.append(v)
+    if fb is not None and tb is not None and max_neighbors > 0:
+        neighbors = k_hop_neighbors(
+            fb, tb, branches_df, k=1, min_voltage_kv=230, max_n=max_neighbors,
+        )
+        for nb in neighbors:
+            for k in ("from_bus", "to_bus"):
+                v = nb.get(k)
+                if v is None:
+                    continue
+                try:
+                    vi = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if vi in seen:
+                    continue
+                seen.add(vi)
+                bus_ids.append(vi)
+    rec["bus_ids"] = bus_ids
+    return rec
 
 
 def _rt_dart_record(
