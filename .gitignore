@@ -36,6 +36,10 @@ TODO/*
 *.parquet
 *.html
 
+# Keep source PDFs and trade log shipped with the obsidian research snapshot
+!fundies/research/**/*.pdf
+!fundies/research/**/*.csv
+
 # cache
 backend/cache/
 
