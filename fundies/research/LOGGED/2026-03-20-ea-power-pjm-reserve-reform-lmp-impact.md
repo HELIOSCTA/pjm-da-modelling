@@ -8,7 +8,7 @@ summary: "PJM RCSTF 3/17 proposal to overhaul reserve markets with new Ramp/Unce
 signal_relevance: "Structural bullish for summer/winter LMPs if approved. New ORDCs and partial unnesting of reserve products raise price ceiling and increase reserve procurement during solar ramp hours (HE10-14). Not yet in EA's 2027 spark forecast due to approval uncertainty."
 confidence: 3
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-03-20-ea-power-pjm-reserve-reform-lmp-impact.pdf"
+original_source_path: "PJM/@Reading/2026-03-20-ea-power-pjm-reserve-reform-lmp-impact.pdf"
 original_url: "https://my.energyaspects.com/research/north-america-power/reports/north-america-power-insight/2026-03-20-pjm-reserve-reforms-would-be-moderately-bullish-to-lmps-if-approved__bltad051e4762a8336f"
 ---
 
@@ -53,5 +53,5 @@ PJM simulated the new requirements against 2025 data. Results show moderate LMP 
 
 ## Sources
 
-- Original: [[PJM/999-Reading/2026-03-20-ea-power-pjm-reserve-reform-lmp-impact.pdf]]
+- Original: [[PJM/@Reading/2026-03-20-ea-power-pjm-reserve-reform-lmp-impact.pdf]]
 - EA analysts: Brian Myers, Daniel Pyrek (New York)

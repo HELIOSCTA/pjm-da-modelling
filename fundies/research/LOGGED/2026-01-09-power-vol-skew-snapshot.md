@@ -8,7 +8,7 @@ summary: "Trident OTC PJM power vol and skew snapshot (Jan 9) — pre-geopolitic
 signal_relevance: "Pre-Iran-siege vol baseline — compare to Mar 6 snapshot where J26 ATM rose to 60%, NQ26 skew above historical bounds; shows how much vol surface has repriced on geopolitics"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-01-09-power-vol-skew-snapshot.pdf"
+original_source_path: "PJM/@Reading/2026-01-09-power-vol-skew-snapshot.pdf"
 original_url: ""
 ---
 
@@ -61,5 +61,5 @@ Pre-geopolitical baseline snapshot of the PJM power vol surface from Trident OTC
 
 ## Sources
 
-- Original: [[PJM/999-Reading/2026-01-09-power-vol-skew-snapshot.pdf]]
+- Original: [[PJM/@Reading/2026-01-09-power-vol-skew-snapshot.pdf]]
 - Source: Trident OTC Power Vol Desk (Vikram Reddy, Aron Woolman)

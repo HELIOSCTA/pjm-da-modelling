@@ -8,7 +8,7 @@ summary: "PJM DLR facilities list as of 4/1/2026: 34 Dominion 230kV facilities p
 signal_relevance: "Dominion DLR go-live in August 2026 will increase dynamic transfer capacity on Northern Virginia 230kV lines — could partially relieve datacenter-driven congestion in data center alley. But won't help with Southern Dominion constraints (Cloud XF, Easters). Monitor for congestion relief on AD-West interface post-August."
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-04-09-power-pjm-dlr-updates.pdf"
+original_source_path: "PJM/@Reading/2026-04-09-power-pjm-dlr-updates.pdf"
 original_url: "https://www.pjm.com/-/media/DotCom/committees-groups/committees/oc/2026/20260409/20260409-item-12---dlr-updates.pdf"
 ---
 

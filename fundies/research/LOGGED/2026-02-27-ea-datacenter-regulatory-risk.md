@@ -8,7 +8,7 @@ summary: "EA Insight on regulatory headwinds for PJM and ERCOT data centre proje
 signal_relevance: "PJM data centre additions face 50 MW co-location threshold, Connect and Manage curtailment risk, and BYONG queue pathway; DOM connected 0.7 GW across 11 DCs in 2025 (lowest since 2021); AEP contracted 11 GW OH + 3 GW IN + 1 GW VA; construction shifting to WECC/SERC/MISO/SPP (~17 GW)"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-02-27-ea-datacenter-regulatory-risk.pdf"
+original_source_path: "PJM/@Reading/2026-02-27-ea-datacenter-regulatory-risk.pdf"
 original_url: "https://my.energyaspects.com/research/north-america-power/reports/north-america-power-insight/2026-02-27-regulatory-risk-a-significant-headwind-for-pjm-and-ercot-data-centre-projects"
 ---
 
@@ -79,4 +79,4 @@ EA reports that tracked US operational data centre rated capacity rose 11.2 GW y
 
 ## Sources
 
-- Original: [[PJM/999-Reading/2026-02-27-ea-datacenter-regulatory-risk.pdf]]
+- Original: [[PJM/@Reading/2026-02-27-ea-datacenter-regulatory-risk.pdf]]

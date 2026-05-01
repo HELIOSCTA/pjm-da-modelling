@@ -8,7 +8,7 @@ summary: "EA weekly power & gas outlook — bearish gas storage (3.85 tcf end-Oc
 signal_relevance: "Gas storage loosening, PJM outages entering spring ramp, gas-share >70% through shoulder, NEXUS maintenance Apr 6-May 4"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-03-11-energy-aspects-power-gas-outlook.pdf"
+original_source_path: "PJM/@Reading/2026-03-11-energy-aspects-power-gas-outlook.pdf"
 original_url: ""
 ---
 
@@ -81,4 +81,4 @@ EA's weekly update covers power and gas fundamentals for the week of March 9. Th
 - Steel capacity utilisation: 77.4% (-0.9 ppts w/w)
 
 ## Sources
-- Original: [[PJM/999-Reading/2026-03-11-energy-aspects-power-gas-outlook.pdf]]
+- Original: [[PJM/@Reading/2026-03-11-energy-aspects-power-gas-outlook.pdf]]

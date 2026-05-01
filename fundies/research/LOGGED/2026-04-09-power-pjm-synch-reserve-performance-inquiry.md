@@ -8,7 +8,7 @@ summary: "IMM inquiry into March 1 2026 synch reserve event: 72% response rate (
 signal_relevance: "Reserve response shortfall patterns directly relevant to scarcity pricing risk. 28% non-response rate means reserve margins are effectively thinner than cleared MW suggest. Historical data shows persistent parameter/personnel issues — reserve events during tight stacks will underperform."
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-04-09-power-pjm-synch-reserve-performance-inquiry.pdf"
+original_source_path: "PJM/@Reading/2026-04-09-power-pjm-synch-reserve-performance-inquiry.pdf"
 original_url: "https://www.pjm.com/-/media/DotCom/committees-groups/committees/oc/2026/20260409/20260409-item-11---synchronized-reserve-performance-inquiry-results.pdf"
 ---
 

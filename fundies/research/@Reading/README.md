@@ -1,4 +1,4 @@
-# PJM 999-Reading — PDF Archive
+# PJM @Reading — PDF Archive
 
 This folder stores original PDFs. Companion markdown entries with analysis live in `PJM/LOGGED/`.
 

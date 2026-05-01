@@ -8,7 +8,7 @@ summary: "EA raises peak-summer PJM-W NQ spark forecast to $49.18/MWh on higher 
 signal_relevance: "Higher summer spark forecast and 73.7 GW fossil call support long spark positioning; record spring outages add upside risk; Waha weakness bearish for Permian-linked basis; storage loosening 44 bcf w/w to 3.88 tcf end-Oct estimate"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-03-18-ea-power-gas-weekly-outlook.pdf"
+original_source_path: "PJM/@Reading/2026-03-18-ea-power-gas-weekly-outlook.pdf"
 original_url: ""
 ---
 
@@ -125,4 +125,4 @@ EA raised their peak-summer PJM-W NQ on-peak spark spread forecast to $49.18/MWh
 ## Sources
 
 - Energy Aspects — North America Outlook, Week of 16 March 2026
-- PDF: [[PJM/999-Reading/2026-03-18-ea-power-gas-weekly-outlook.pdf]]
+- PDF: [[PJM/@Reading/2026-03-18-ea-power-gas-weekly-outlook.pdf]]

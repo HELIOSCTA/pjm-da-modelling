@@ -8,7 +8,7 @@ summary: "Virginia DEQ publishes draft RGGI regulatory text with proposed base C
 signal_relevance: "Confirms RGGI rejoin timeline and provides forward budget trajectory — declining budgets through 2030 mean progressively tighter compliance for VA fossil fleet, structurally bullish DOM dispatch costs and congestion."
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-04-09-power-virginia-rggi-proposed-regulation.pdf"
+original_source_path: "PJM/@Reading/2026-04-09-power-virginia-rggi-proposed-regulation.pdf"
 original_url: ""
 ---
 

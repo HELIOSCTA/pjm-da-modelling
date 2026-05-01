@@ -8,7 +8,7 @@ summary: "Trident OTC power vol desk weekly recap (week ending Mar 6) — gradua
 signal_relevance: "NQ26 vol surface most extended — ATM IV above avg, skew above historical bounds, ~25 vol gap to realised; K26 75 call well bid; geopolitical risk premium persistent; Super El Niño developing per NOAA/ECMWF could drive warmer summer"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-03-13-power-vol-weekly-recap.pdf"
+original_source_path: "PJM/@Reading/2026-03-13-power-vol-weekly-recap.pdf"
 original_url: ""
 ---
 
@@ -80,5 +80,5 @@ Trident OTC's power vol desk notes a week of gradual but consistent repricing of
 
 ## Sources
 
-- Original: [[PJM/999-Reading/2026-03-13-power-vol-weekly-recap.pdf]]
+- Original: [[PJM/@Reading/2026-03-13-power-vol-weekly-recap.pdf]]
 - Authors: Vikram Reddy, Aron Woolman (Trident OTC Power Vol Desk)

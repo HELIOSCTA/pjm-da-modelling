@@ -8,7 +8,7 @@ summary: "EA weekly power & gas outlook (week of 23 Feb) — end-March storage l
 signal_relevance: "Gas storage loosening sharply on mild weather; Golden Pass LNG start-up imminent adding demand; NE blizzard caused Mass-Maine price dislocation that will persist this summer; NYISO 1.2 GW net longer y/y this summer"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-02-25-ea-power-gas-outlook.pdf"
+original_source_path: "PJM/@Reading/2026-02-25-ea-power-gas-outlook.pdf"
 original_url: ""
 ---
 
@@ -89,4 +89,4 @@ EA's weekly update covers power and gas fundamentals for the week of 23 February
 
 ## Sources
 
-- Original: [[PJM/999-Reading/2026-02-25-ea-power-gas-outlook.pdf]]
+- Original: [[PJM/@Reading/2026-02-25-ea-power-gas-outlook.pdf]]

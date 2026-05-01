@@ -8,7 +8,7 @@ summary: "FERC Order 881 mandates AARs and requires RTOs to accept voluntary DLR
 signal_relevance: "DLR adoption on congested PJM lines could materially reduce congestion pricing and shift FTR values"
 confidence: 3
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-03-10-ferc-order-881-dlr.pdf"
+original_source_path: "PJM/@Reading/2026-03-10-ferc-order-881-dlr.pdf"
 original_url: ""
 ---
 

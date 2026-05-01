@@ -13,8 +13,8 @@ at `helioscta-obsidian/PJM`. Not synced — re-copy to refresh.
 | `TODO/` | Open investigations, one folder per topic (reserves, congestion, weather vs load, ...). |
 | `Daily-Prompt/` | Daily-prompt template + prompt iteration log + supporting SQL. |
 | `PAPER-TRADING/` | Trade journal, review log/template, trade-log CSV. |
-| `999-Reading/` | Source PDFs that the LOGGED briefs are written from. |
-| `999-Images/` | Image attachments referenced by markdown notes. |
+| `@Reading/` | Source PDFs that the LOGGED briefs are written from. |
+| `@Images/` | Image attachments referenced by markdown notes. |
 | `PJM-Morning-Fundies.md` | Standing morning fundies note (live in obsidian; this is a snapshot). |
 | `TRADING_SIGNALS.md` | Trading-signals reference. |
 | `lessons-learned.md` | Running lessons-learned log. |
@@ -24,7 +24,7 @@ at `helioscta-obsidian/PJM`. Not synced — re-copy to refresh.
 The repo `.gitignore` excludes `*.pdf` and `*.csv`. After this snapshot,
 the following live on disk but are untracked by git:
 
-- 13 source PDFs in `999-Reading/`
+- 13 source PDFs in `@Reading/`
 - `PAPER-TRADING/trade-log.csv`
 
 The markdown notes (including everything under `TODO/`) are tracked.

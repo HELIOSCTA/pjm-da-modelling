@@ -8,7 +8,7 @@ summary: "PJM FERC filing to amend co-location rules — 50 MW threshold, nettin
 signal_relevance: "Structural change to how data centres connect to PJM grid"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/E-1-RM20-16-000 _ Federal Energy Regulatory Commission.pdf"
+original_source_path: "PJM/@Reading/E-1-RM20-16-000 _ Federal Energy Regulatory Commission.pdf"
 ---
 
 # PJM Co-Location Rules (Proposed FERC Filing)

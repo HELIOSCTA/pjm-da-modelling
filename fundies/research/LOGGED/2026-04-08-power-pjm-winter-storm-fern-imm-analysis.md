@@ -8,7 +8,7 @@ summary: "IMM analysis of Winter Storm Fern market operations presented at MIC. 
 signal_relevance: "Fern drove record PJM-W winter congestion and sparked the NQ26 geopolitical risk premium. IMM findings on generator underperformance and fuel issues inform reserve reliability and scarcity pricing risk for future winter events."
 confidence: 2
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-04-08-power-pjm-winter-storm-fern-imm-analysis.pdf"
+original_source_path: "PJM/@Reading/2026-04-08-power-pjm-winter-storm-fern-imm-analysis.pdf"
 original_url: "https://www.pjm.com/-/media/DotCom/committees-groups/committees/mic/2026/20260408/20260408-item-09---winter-storm-fern-analysis---imm.pdf"
 ---
 

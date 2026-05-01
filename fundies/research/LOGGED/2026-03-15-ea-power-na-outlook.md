@@ -8,7 +8,7 @@ summary: "EA March NA Power Outlook — raised PJM-W NQ26 spark forecast to $49.
 signal_relevance: "PJM summer spark forecast raised, nuclear outages driving congestion around BGE/N.Dom, coal price risk from Iran war, AEP/Dominion zones leading load growth, CVOW commissioning could flatten Dominion congestion from Q3 26"
 confidence: 4
 status: "logged"
-original_source_path: "PJM/999-Reading/2026-03-15-ea-power-na-outlook.pdf"
+original_source_path: "PJM/@Reading/2026-03-15-ea-power-na-outlook.pdf"
 original_url: ""
 ---
 
@@ -89,4 +89,4 @@ EA's monthly NA Power Outlook leads with PJM summer sparks outrunning gas prices
 - PJM summer peak: 166.2 GW (2026), 171.4 GW (2027); winter peak: 145.7 GW (2026), 153.0 GW (2027)
 
 ## Sources
-- Original: [[PJM/999-Reading/2026-03-15-ea-power-na-outlook.pdf]]
+- Original: [[PJM/@Reading/2026-03-15-ea-power-na-outlook.pdf]]
