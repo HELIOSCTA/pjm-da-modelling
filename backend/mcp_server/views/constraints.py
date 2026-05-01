@@ -112,11 +112,21 @@ def _constraint_record(
     market_prefix: Optional[str] = None,
     max_neighbors: int = 10,
     include_he: bool = True,
+    binding_hours: Optional[list[int]] = None,
 ) -> dict:
     """Compose one constraint row (network-enriched) for the response.
 
     Neighbors are 2-hop, ≥230 kV — k=1 misses parallel-path topology and k=3
     explodes; the HV filter keeps radial 138 kV taps out of the result.
+
+    When ``binding_hours`` is set (Tier 3 funnel mode), the response is
+    trimmed: ``hourly`` (24-list) is replaced with ``hourly_binding`` (dict
+    keyed on the binding HE values), and verbose ``neighbors`` are dropped
+    in favor of ``neighbor_bus_ids`` (a flat int list). When unset, the
+    response shape is unchanged for backward compat with callers like the
+    existing ``pjm-da-constraints-brief`` slash command.
+
+    ``neighbor_bus_ids`` is always emitted (additive, safe).
     """
     # Late import — keeps this module importable without parquets present
     from backend.mcp_server.data.network_match import k_hop_neighbors
@@ -130,16 +140,50 @@ def _constraint_record(
     rec.update(_row_dict(row, market_prefix=market_prefix))
     rec.update(_network_fields(row))
 
-    if include_he:
-        rec["hourly"] = [_sf(row.get(c)) for c in _HE_COLS]
-
     fb, tb = rec.get("from_bus_psse"), rec.get("to_bus_psse")
+    neighbors: list[dict] = []
     if fb is not None and tb is not None and max_neighbors > 0:
-        rec["neighbors"] = k_hop_neighbors(
+        neighbors = k_hop_neighbors(
             fb, tb, branches_df, k=2, min_voltage_kv=230, max_n=max_neighbors,
         )
-    else:
+
+    # Always emit flat bus-id list (Tier 4 handoff; additive, safe).
+    nb_ids: list[int] = []
+    seen: set[int] = set()
+    for nb in neighbors:
+        for k in ("from_bus", "to_bus"):
+            v = nb.get(k)
+            if v is None:
+                continue
+            try:
+                vi = int(v)
+            except (TypeError, ValueError):
+                continue
+            if vi == fb or vi == tb or vi in seen:
+                continue
+            seen.add(vi)
+            nb_ids.append(vi)
+    rec["neighbor_bus_ids"] = nb_ids[:10]
+
+    if binding_hours:
+        # Funnel mode — trim verbose fields, surface only the binding HE prices.
+        bh_dict = {}
+        for h in binding_hours:
+            v = _sf(row.get(f"he{h:02d}"))
+            if v is not None:
+                bh_dict[int(h)] = v
+        rec["hourly_binding"] = bh_dict
+        rec["binding_price"] = sum(bh_dict.values()) if bh_dict else 0.0
+        rec["binding_hours_bound"] = sum(
+            1 for v in bh_dict.values() if v is not None and abs(v) > 0
+        )
+        # Drop verbose neighbors (kept the bus-id list above)
         rec["neighbors"] = []
+    else:
+        # Default mode — preserve existing shape for backward compat.
+        if include_he:
+            rec["hourly"] = [_sf(row.get(c)) for c in _HE_COLS]
+        rec["neighbors"] = neighbors
     return rec
 
 
@@ -153,6 +197,7 @@ def build_da_network_view_model(
     *,
     top_n: int = 20,
     max_neighbors: int = 3,
+    binding_hours: Optional[list[int]] = None,
 ) -> dict:
     """View model for ``GET /views/constraints_da_network``.
 
@@ -162,10 +207,16 @@ def build_da_network_view_model(
       - ambiguous_constraints  : multi-candidate matches (first PSS/E shown)
       - unmatched_constraints  : facility didn't parse to a known PSS/E branch
       - interface_constraints  : zone/interface names (no branch match attempted)
+
+    When ``binding_hours`` is provided (Tier 3 funnel mode), matched and
+    ambiguous constraints are re-ranked by sum-over-binding-hours shadow
+    price instead of total_price, and per-record HE list collapses to the
+    binding hours only.
     """
     if enriched_df is None or enriched_df.empty:
         return {
             "target_date": str(target_date),
+            "binding_hours": list(binding_hours) if binding_hours else None,
             "match_coverage": _coverage(pd.DataFrame()),
             "matched_constraints": [],
             "ambiguous_constraints": [],
@@ -176,6 +227,23 @@ def build_da_network_view_model(
     df = enriched_df.copy()
     df["total_price"] = pd.to_numeric(df["total_price"], errors="coerce")
 
+    # When in funnel mode, compute binding_price (sum over binding HEs) and
+    # binding_price_abs (sort key — shadow prices in PJM are negative, so we
+    # want the largest |binding_price| first to surface the most-bound
+    # constraints during those hours).
+    if binding_hours:
+        he_cols = [f"he{h:02d}" for h in binding_hours]
+        present_cols = [c for c in he_cols if c in df.columns]
+        if present_cols:
+            df["binding_price"] = (
+                df[present_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1)
+            )
+        else:
+            df["binding_price"] = 0.0
+        df["binding_price_abs"] = df["binding_price"].abs()
+
+    funnel_sort = "binding_price_abs" if binding_hours else "total_price"
+
     sections = {}
     for status, key in [
         ("matched", "matched_constraints"),
@@ -183,19 +251,27 @@ def build_da_network_view_model(
         ("unmatched", "unmatched_constraints"),
         ("interface", "interface_constraints"),
     ]:
-        sub = df[df["network_match_status"] == status].sort_values(
-            "total_price", ascending=False, na_position="last",
-        )
+        if status in ("matched", "ambiguous"):
+            sub = df[df["network_match_status"] == status].sort_values(
+                funnel_sort, ascending=False, na_position="last",
+            )
+        else:
+            # Unmatched / interface — keep original total_price ordering.
+            sub = df[df["network_match_status"] == status].sort_values(
+                "total_price", ascending=False, na_position="last",
+            )
         if status in ("matched", "ambiguous") and top_n:
             sub = sub.head(top_n)
         sections[key] = [
             _constraint_record(r, branches_df, market_prefix="da",
-                               max_neighbors=max_neighbors)
+                               max_neighbors=max_neighbors,
+                               binding_hours=binding_hours)
             for _, r in sub.iterrows()
         ]
 
     return {
         "target_date": str(target_date),
+        "binding_hours": list(binding_hours) if binding_hours else None,
         "match_coverage": _coverage(df),
         **sections,
     }

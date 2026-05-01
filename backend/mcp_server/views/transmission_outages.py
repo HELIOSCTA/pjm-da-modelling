@@ -593,3 +593,96 @@ def build_network_view_model(
             for _, r in unmatched.sort_values("voltage_kv", ascending=False).iterrows()
         ],
     }
+
+
+# ─── Builder 6 — Tier 4: outages near constraint bus IDs ─────────────────────
+
+
+def build_outages_for_constraints_view_model(
+    enriched_df: pd.DataFrame,
+    branches_df: pd.DataFrame,
+    bus_ids: list[int],
+    *,
+    constraint_index: dict[int, list[str]] | None = None,
+    reference_date: date | None = None,
+    max_neighbors: int = 3,
+) -> dict:
+    """View model for ``GET /views/transmission_outages_for_constraints``.
+
+    Filters active outages to those whose ``from_bus_psse`` or
+    ``to_bus_psse`` is in ``bus_ids`` — the union of seed + 1-hop
+    neighbor buses from the matched constraints in Tier 3.
+
+    When ``constraint_index`` is provided (mapping bus_id → list of
+    constraint names), each outage record gets a ``near_constraint_labels``
+    field for cross-link annotation.
+    """
+    from backend.mcp_server.data.network_match import list_neighbors
+
+    if reference_date is None:
+        reference_date = date.today()
+
+    bus_set = set()
+    for b in bus_ids or []:
+        try:
+            bus_set.add(int(b))
+        except (TypeError, ValueError):
+            continue
+
+    if enriched_df is None or enriched_df.empty or not bus_set:
+        return {
+            "reference_date": str(reference_date),
+            "constraint_bus_count": len(bus_set),
+            "total_active": 0 if enriched_df is None else len(enriched_df),
+            "matched_count": 0,
+            "outages": [],
+        }
+
+    df = _normalize(enriched_df, reference_date)
+    fb = pd.to_numeric(df.get("from_bus_psse"), errors="coerce")
+    tb = pd.to_numeric(df.get("to_bus_psse"), errors="coerce")
+    mask = fb.isin(bus_set) | tb.isin(bus_set)
+    hits = df[mask].copy()
+
+    records: list[dict] = []
+    for _, row in hits.sort_values("voltage_kv", ascending=False).iterrows():
+        rec = _outage_dict(row)
+        f_b = row.get("from_bus_psse")
+        t_b = row.get("to_bus_psse")
+        rec["from_bus_psse"] = int(f_b) if pd.notna(f_b) else None
+        rec["to_bus_psse"] = int(t_b) if pd.notna(t_b) else None
+        rec["rating_mva"] = float(row["rating_mva"]) if pd.notna(row.get("rating_mva")) else None
+        rec["match_status"] = row.get("network_match_status")
+
+        # Cross-link annotation
+        near_buses: list[int] = []
+        for v in (rec["from_bus_psse"], rec["to_bus_psse"]):
+            if v is not None and v in bus_set:
+                near_buses.append(v)
+        rec["near_constraint_buses"] = near_buses
+
+        labels: list[str] = []
+        if constraint_index:
+            for b in near_buses:
+                for label in constraint_index.get(b, []):
+                    if label not in labels:
+                        labels.append(label)
+        rec["near_constraint_labels"] = labels
+
+        # Trim neighbors to a small set for compactness
+        if rec["from_bus_psse"] is not None and rec["to_bus_psse"] is not None and max_neighbors > 0:
+            rec["neighbors"] = list_neighbors(
+                rec["from_bus_psse"], rec["to_bus_psse"],
+                branches_df, max_n=max_neighbors,
+            )
+        else:
+            rec["neighbors"] = []
+        records.append(rec)
+
+    return {
+        "reference_date": str(reference_date),
+        "constraint_bus_count": len(bus_set),
+        "total_active": int(len(df)),
+        "matched_count": int(len(hits)),
+        "outages": records,
+    }

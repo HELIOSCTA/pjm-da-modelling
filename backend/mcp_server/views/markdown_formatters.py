@@ -384,6 +384,13 @@ def format_constraints_da_network(vm: dict) -> str:
     parts: list[str] = []
     parts.append(f"# DA Constraints — Network-Enriched — {vm.get('target_date', '?')}")
 
+    bh = vm.get("binding_hours")
+    if bh:
+        parts.append(
+            f"\n_Funnel mode: filtered to binding HEs {bh}, "
+            f"sorted by sum-over-binding-hours shadow price._"
+        )
+
     cov = vm.get("match_coverage", {})
     parts.append(
         f"\n**Match coverage**: {cov.get('matched', 0) + cov.get('ambiguous', 0)} / "
@@ -397,15 +404,16 @@ def format_constraints_da_network(vm: dict) -> str:
 
     matched = vm.get("matched_constraints", [])
     if matched:
-        parts.append(f"\n## Matched ({len(matched)}) — sorted by total price")
-        parts.append(_constraint_da_table(matched, with_neighbors=True))
+        sort_label = "binding HE price" if bh else "total price"
+        parts.append(f"\n## Matched ({len(matched)}) — sorted by {sort_label}")
+        parts.append(_constraint_da_table(matched, with_neighbors=True, binding_hours=bh))
 
     ambiguous = vm.get("ambiguous_constraints", [])
     if ambiguous:
         parts.append(
             f"\n## Ambiguous ({len(ambiguous)}) — first PSS/E candidate shown"
         )
-        parts.append(_constraint_da_table(ambiguous, with_neighbors=True))
+        parts.append(_constraint_da_table(ambiguous, with_neighbors=True, binding_hours=bh))
 
     unmatched = vm.get("unmatched_constraints", [])
     if unmatched:
@@ -469,7 +477,45 @@ def format_constraints_rt_dart_network(vm: dict) -> str:
     return "\n".join(parts)
 
 
-def _constraint_da_table(rows: list[dict], *, with_neighbors: bool) -> str:
+def _constraint_da_table(
+    rows: list[dict], *, with_neighbors: bool,
+    binding_hours: list[int] | None = None,
+) -> str:
+    if binding_hours:
+        # Funnel mode — replace OnPk/OffPk $ cols with Binding HE $ summary
+        headers = [
+            "Constraint", "Contingency", "kV", "Route", "Buses",
+            "Total $", "Binding HE $", "Hrs Bound", "MVA",
+        ]
+        if with_neighbors:
+            headers.append("Top Neighbors")
+        out = []
+        for r in rows:
+            bh = r.get("hourly_binding") or {}
+            sum_str = (
+                f"{_money(r.get('binding_price'))} "
+                f"(HE{','.join(str(h) for h in sorted(bh.keys()))})"
+                if bh else "-"
+            )
+            row = [
+                (r.get("constraint_name") or "-")[:30],
+                (r.get("contingency") or "-")[:30],
+                r.get("parsed_voltage_kv") or "-",
+                _constraint_route(r),
+                _bus_pair(r),
+                _money(r.get("da_total_price")),
+                sum_str,
+                r.get("binding_hours_bound") or "-",
+                f"{r['rating_mva']:,.0f}" if r.get("rating_mva") else "-",
+            ]
+            if with_neighbors:
+                # In funnel mode neighbors are dropped, so show bus IDs instead
+                ids = r.get("neighbor_bus_ids") or []
+                row.append(", ".join(str(b) for b in ids[:5]) if ids else "-")
+            out.append(row)
+        return _table(headers, out)
+
+    # Default mode — unchanged
     headers = [
         "Constraint", "Contingency", "kV", "Route", "Buses",
         "Total $", "Hrs", "OnPk $", "OffPk $", "MVA",
@@ -524,6 +570,155 @@ def _constraint_rt_dart_table(rows: list[dict], *, with_neighbors: bool) -> str:
     return _table(headers, out)
 
 
+# ─── DA LMPs — hub summary + outage overlap ──────────────────────────────────
+
+
+def _money_d(val) -> str:
+    """$X.XX with cents — LMP-scale prices (vs constraint-scale ``_money``)."""
+    if val is None:
+        return "-"
+    return f"${val:,.2f}"
+
+
+def _pct(val) -> str:
+    if val is None:
+        return "-"
+    return f"{val * 100:.0f}%"
+
+
+def format_lmp_da_hub_summary(vm: dict) -> str:
+    """Markdown for ``GET /views/lmp_da_hub_summary``."""
+    parts: list[str] = []
+    parts.append(f"# DA LMP — Hub Summary — {vm.get('target_date', '?')}")
+
+    if "error" in vm and not vm.get("hubs"):
+        parts.append(f"\n_{vm['error']}_")
+        return "\n".join(parts)
+
+    parts.append(
+        f"\n**{vm.get('hub_count', 0)} hubs** × {vm.get('hour_count', 0)} hours · "
+        f"**{vm.get('high_congestion_count', 0)}** with onpeak |congestion| > "
+        f"{vm.get('high_congestion_threshold', 0.10) * 100:.0f}% of total"
+    )
+
+    mo = vm.get("market_avg_onpeak") or {}
+    mf = vm.get("market_avg_offpeak") or {}
+    parts.append(
+        f"\n**Market avg (onpeak)**: total {_money_d(mo.get('total'))} = "
+        f"energy {_money_d(mo.get('energy'))} + congestion {_money_d(mo.get('congestion'))} + "
+        f"loss {_money_d(mo.get('loss'))}  ·  "
+        f"**(offpeak)**: total {_money_d(mf.get('total'))}, "
+        f"congestion {_money_d(mf.get('congestion'))}"
+    )
+
+    hubs = vm.get("hubs") or []
+    if hubs:
+        parts.append("\n## Hubs — sorted by |onpeak congestion|")
+        headers = [
+            "Hub", "OnPk Total", "OnPk Energy", "OnPk Cong", "Cong %",
+            "OffPk Total", "OffPk Cong",
+            "Peak HE", "Peak Total", "Peak Cong",
+        ]
+        rows = []
+        for h in hubs:
+            rows.append([
+                h.get("hub", "-"),
+                _money_d(h.get("onpeak_total")),
+                _money_d(h.get("onpeak_energy")),
+                _money_d(h.get("onpeak_congestion")),
+                _pct(h.get("congestion_pct_of_total")),
+                _money_d(h.get("offpeak_total")),
+                _money_d(h.get("offpeak_congestion")),
+                h.get("peak_hour") or "-",
+                _money_d(h.get("peak_total")),
+                _money_d(h.get("peak_congestion")),
+            ])
+        parts.append(_table(headers, rows))
+
+    return "\n".join(parts)
+
+
+def format_lmp_da_outage_overlap(vm: dict) -> str:
+    """Markdown for ``GET /views/lmp_da_outage_overlap``."""
+    parts: list[str] = []
+    parts.append(f"# DA Constraints × Outage Overlap — {vm.get('target_date', '?')}")
+
+    if "error" in vm and not vm.get("constraints"):
+        parts.append(f"\n_{vm['error']}_")
+        return "\n".join(parts)
+
+    parts.append(
+        f"\nTop **{vm.get('constraint_count', 0)}** binding DA constraints · "
+        f"**{vm.get('with_overlap_count', 0)}** have an outage overlap on the "
+        f"seed branch or a 2-hop ≥230 kV neighbor "
+        f"(window: target ± {vm.get('window_days', 7)}d)"
+    )
+
+    constraints = vm.get("constraints") or []
+    if not constraints:
+        parts.append("\n_No matched constraints._")
+        return "\n".join(parts)
+
+    # Summary table — one row per top constraint
+    parts.append("\n## Constraints")
+    sum_headers = [
+        "Constraint", "Contingency", "kV", "Route", "Buses",
+        "Total $", "Hrs", "Nbrs", "Active", "Starting", "Ending",
+    ]
+    sum_rows = []
+    for c in constraints:
+        sum_rows.append([
+            (c.get("constraint_name") or "-")[:30],
+            (c.get("contingency") or "-")[:25],
+            c.get("parsed_voltage_kv") or "-",
+            _constraint_route(c),
+            _bus_pair(c),
+            _money(c.get("total_price")),
+            c.get("total_hours") or "-",
+            c.get("neighbor_count_k2_hv") or 0,
+            c.get("active_count") or "-",
+            c.get("starting_soon_count") or "-",
+            c.get("ending_soon_count") or "-",
+        ])
+    parts.append(_table(sum_headers, sum_rows))
+
+    # Per-constraint detail — only those with overlap
+    overlap_constraints = [c for c in constraints if c.get("outage_overlap")]
+    if overlap_constraints:
+        parts.append(f"\n## Outage Detail ({len(overlap_constraints)})")
+        for c in overlap_constraints:
+            cname = c.get("constraint_name") or "?"
+            parts.append(
+                f"\n### {cname} — "
+                f"{_constraint_route(c)} · {_bus_pair(c)} · "
+                f"{_money(c.get('total_price'))} · "
+                f"{c.get('total_hours') or 0}h"
+            )
+            o_headers = [
+                "Bucket", "On", "Branch", "Facility", "kV",
+                "State", "Risk", "Start", "End", "Days→Ret",
+            ]
+            o_rows = []
+            for o in c["outage_overlap"]:
+                o_rows.append([
+                    o.get("bucket"),
+                    o.get("on_branch"),
+                    (o.get("branch_label") or "-")[:30],
+                    (o.get("facility") or "")[:38],
+                    o.get("kv") or "-",
+                    o.get("outage_state") or "-",
+                    "Yes" if o.get("risk_flag") else "-",
+                    o.get("started") or "-",
+                    o.get("est_return") or "-",
+                    o.get("days_to_return") if o.get("days_to_return") is not None else "-",
+                ])
+            parts.append(_table(o_headers, o_rows))
+    else:
+        parts.append("\n_No outage overlaps in window._")
+
+    return "\n".join(parts)
+
+
 def _constraint_unmatched_table(rows: list[dict], *, market: str) -> str:
     """Compact table for unmatched / interface rows. ``market`` controls
     whether DA or RT+DART metrics are shown."""
@@ -553,3 +748,171 @@ def _constraint_unmatched_table(rows: list[dict], *, market: str) -> str:
                 r.get("parser_dialect") or "?",
             ])
     return _table(headers, out)
+
+
+# ─── Tier 1 — DA LMP daily summary ───────────────────────────────────────────
+
+
+def format_lmps_daily_summary(vm: dict) -> str:
+    """Markdown for ``GET /views/lmps_daily_summary``."""
+    parts: list[str] = [format_lmp_da_hub_summary(vm)]
+    drilldown = vm.get("top_zones_for_drilldown") or []
+    if drilldown:
+        parts.append(
+            f"\n_Tier 2 deep-dive: **{', '.join(drilldown)}** "
+            f"(top {len(drilldown)} hubs by |onpeak congestion|)._"
+        )
+    return "\n".join(parts)
+
+
+# ─── Tier 2 — DA LMP hourly drilldown (heatmap) ──────────────────────────────
+
+
+def _heatmap_glyph(cong: float | None) -> str:
+    """Single-char intensity glyph for a congestion price."""
+    if cong is None:
+        return " "
+    if cong < 0:
+        return "."
+    a = abs(cong)
+    if a < 10:
+        return "."
+    if a < 25:
+        return "-"
+    if a < 50:
+        return "+"
+    return "#"
+
+
+def format_lmps_hourly_summary(vm: dict) -> str:
+    """Markdown for ``GET /views/lmps_hourly_summary``."""
+    parts: list[str] = []
+    parts.append(f"# DA LMP — Hourly Drilldown — {vm.get('target_date', '?')}")
+
+    if vm.get("error") and not vm.get("hub_hour_grid"):
+        parts.append(f"\n_{vm['error']}_")
+        return "\n".join(parts)
+
+    threshold = vm.get("binding_threshold_usd", 25.0)
+    binding = vm.get("binding_hours_for_drilldown") or []
+    parts.append(
+        f"\n**{vm.get('hub_count', 0)} hubs** × {vm.get('hour_count', 0)} hours · "
+        f"binding threshold ${threshold:.0f}/MWh · "
+        f"**{len(binding)} binding hours**"
+    )
+
+    callout = vm.get("peak_hour_callout") or []
+    if callout:
+        parts.append("\n## Peak-hour callout")
+        for c in callout:
+            parts.append(
+                f"- HE {c.get('hour_ending')} — max |cong| "
+                f"{_money_d(c.get('max_abs_congestion'))} at "
+                f"{c.get('hub')} · mean across hubs "
+                f"{_money_d(c.get('mean_abs_congestion_across_hubs'))} · "
+                f"{c.get('hubs_with_congestion_gt_threshold')} hubs > ${threshold:.0f}"
+            )
+
+    grid = vm.get("hub_hour_grid") or []
+    if grid:
+        # Build pivot: rows = hubs, cols = HE 1..24, cells = glyph based on congestion
+        hubs_order = vm.get("hubs") or sorted({r["hub"] for r in grid})
+        by_hub_he: dict[tuple[str, int], dict] = {}
+        for r in grid:
+            he = r.get("hour_ending")
+            if he is None:
+                continue
+            by_hub_he[(r["hub"], int(he))] = r
+
+        parts.append(
+            "\n## Congestion heatmap "
+            "(`. <$10`  `- <$25`  `+ <$50`  `# ≥$50`, `.` for negative)"
+        )
+        # Header line
+        hour_hdr = " ".join(f"{h:02d}" for h in range(1, 25))
+        parts.append(f"\n```\n{'Hub':<22} {hour_hdr}")
+        for hub in hubs_order:
+            cells = []
+            for h in range(1, 25):
+                cell = by_hub_he.get((hub, h))
+                cong = cell.get("lmp_congestion_price") if cell else None
+                cells.append(_heatmap_glyph(cong))
+            parts.append(f"{hub[:22]:<22} {' '.join(c.rjust(2) for c in cells)}")
+        parts.append("```")
+
+    per_hub = vm.get("per_hub_summary") or []
+    if per_hub:
+        parts.append("\n## Per-hub summary")
+        headers = ["Hub", "Max |Cong|", "@ HE", "Mean Cong", "Hrs > Thresh"]
+        rows = [
+            [
+                p.get("hub"),
+                _money_d(p.get("max_abs_congestion")),
+                p.get("max_abs_hour") or "-",
+                _money_d(p.get("mean_congestion")),
+                p.get("binding_hours_count") or 0,
+            ]
+            for p in per_hub
+        ]
+        parts.append(_table(headers, rows))
+
+    if binding:
+        parts.append(
+            f"\n_Tier 3 deep-dive: binding HEs **{binding}**._"
+        )
+
+    return "\n".join(parts)
+
+
+# ─── Tier 4 — outages for constraints ────────────────────────────────────────
+
+
+def format_transmission_outages_for_constraints(vm: dict) -> str:
+    """Markdown for ``GET /views/transmission_outages_for_constraints``."""
+    parts: list[str] = []
+    parts.append(
+        f"# Transmission Outages — On/Near Constraint Buses — "
+        f"{vm.get('reference_date', '?')}"
+    )
+
+    parts.append(
+        f"\n**{vm.get('matched_count', 0)}** outages on or adjacent to the "
+        f"**{vm.get('constraint_bus_count', 0)}** constraint bus IDs · "
+        f"({vm.get('total_active', 0)} active outages scanned)"
+    )
+
+    outages = vm.get("outages") or []
+    if not outages:
+        parts.append("\n_No active outages on the supplied constraint bus set._")
+        return "\n".join(parts)
+
+    headers = [
+        "Region", "Facility", "Type", "kV", "Route",
+        "From Bus", "To Bus", "State",
+        "Started", "Days Out", "Days Left",
+        "Near Constraint",
+    ]
+    rows = []
+    for o in outages:
+        labels = o.get("near_constraint_labels") or []
+        if labels:
+            near = "; ".join(labels[:2])  # cap to 2 for table width
+        else:
+            near = ", ".join(str(b) for b in (o.get("near_constraint_buses") or []))
+        rows.append([
+            o.get("region", "-"),
+            (o.get("facility") or "")[:36],
+            o.get("equip_category", o.get("equip", "")),
+            o.get("kv") or "-",
+            _route(o),
+            o.get("from_bus_psse", "-"),
+            o.get("to_bus_psse", "-"),
+            o.get("outage_state", "-"),
+            o.get("started", "-"),
+            o.get("days_out") if o.get("days_out") is not None else "-",
+            o.get("days_to_return") if o.get("days_to_return") is not None else "overdue",
+            (near or "-")[:40],
+        ])
+    parts.append(_table(headers, rows))
+
+    return "\n".join(parts)

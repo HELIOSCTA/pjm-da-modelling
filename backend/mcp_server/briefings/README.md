@@ -27,11 +27,15 @@ briefs (which combine multiple endpoints) sit at the top level.
 | `transmission_outages_changes_24h_simple/` | `GET /views/transmission_outages_changes_24h_simple` |
 | `transmission_outages_changes_24h_snapshot/` | `GET /views/transmission_outages_changes_24h_snapshot` *(503-disabled until SCD2 ages)* |
 | `transmission_outages_network/` | `GET /views/transmission_outages_network` |
-| `constraints_da_network/` | `GET /views/constraints_da_network` |
+| `transmission_outages_for_constraints/` | `GET /views/transmission_outages_for_constraints` *(Tier 4 of DA-results funnel)* |
+| `constraints_da_network/` | `GET /views/constraints_da_network` *(extended with `binding_hours` for Tier 3)* |
 | `constraints_rt_dart_network/` | `GET /views/constraints_rt_dart_network` |
+| `lmp_da_hub_summary/` | `GET /views/lmp_da_hub_summary` |
+| `lmp_da_outage_overlap/` | `GET /views/lmp_da_outage_overlap` |
+| `lmps_daily_summary/` | `GET /views/lmps_daily_summary` *(Tier 1 of DA-results funnel)* |
+| `lmps_hourly_summary/` | `GET /views/lmps_hourly_summary` *(Tier 2)* |
 
-Add a new subfolder when you wire up a new endpoint (e.g., `lmps_da_summary/`,
-`fuel_mix_hourly/`).
+Add a new subfolder when you wire up a new endpoint (e.g., `fuel_mix_hourly/`).
 
 ## Top-level synthesis files
 
@@ -39,6 +43,7 @@ Add a new subfolder when you wire up a new endpoint (e.g., `lmps_da_summary/`,
 |---|---|---|
 | `transmission_outages_<YYYY-MM-DD>.md` | `/pjm-transmission-outages-brief` | Network-context-first brief: hotspots → Active → Starting → Ending |
 | `da_constraints_<YYYY-MM-DD>.md` | `/pjm-da-constraints-brief` | DA-released brief: tomorrow's binding constraints → outage intersection → trading lens |
+| `da_results_<YYYY-MM-DD>.md` | `/pjm-da-results-brief` | 5-tier funnel: Daily LMP → Hourly drilldown → DA constraints → outages → trader lens (filename = TARGET date) |
 
 ## Generating a brief
 

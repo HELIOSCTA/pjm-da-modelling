@@ -1,24 +1,30 @@
 """FastAPI MCP entry point — run with: uvicorn backend.mcp_server.main:app --reload
 
-Exposes one HTTP endpoint per dbt mart in the transmission-outages family.
 Each endpoint is a thin wrapper:
 
     GET /views/<endpoint>?format=md|json
         ↓
-    data.transmission_outages.pull_<mart>()       — select * from <DBT_SCHEMA>.<mart>
+    data.<module>.pull_*()                — select * from <DBT_SCHEMA>.<mart>
         ↓
-    views.transmission_outages.build_<mart>_view_model(df)
+    views.<module>.build_*_view_model()
         ↓
-    (md) views.markdown_formatters.format_<mart>(vm)
+    (md) views.markdown_formatters.format_*(vm)
     (json) view-model dict
 
-Endpoint → mart mapping:
+Endpoint → source mapping:
 
+  Outages:
     /views/transmission_outages_active                → pjm_transmission_outages_active
     /views/transmission_outages_window_7d             → pjm_transmission_outages_window_7d
     /views/transmission_outages_changes_24h_simple    → pjm_transmission_outages_changes_24h_simple
     /views/transmission_outages_changes_24h_snapshot  → pjm_transmission_outages_changes_24h_snapshot
     /views/transmission_outages_network               → active mart + PSS/E network model
+  Constraints:
+    /views/constraints_da_network                     → pjm_constraints_hourly_pivot (DA, k=2 ≥230kV)
+    /views/constraints_rt_dart_network                → pjm_constraints_hourly_pivot (RT+DART, k=2 ≥230kV)
+  DA LMPs:
+    /views/lmp_da_hub_summary                         → pjm_lmps_hourly (market='da')
+    /views/lmp_da_outage_overlap                      → constraints × outages × PSS/E network
 """
 import logging
 from datetime import date, timedelta
@@ -32,7 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi_mcp import FastApiMCP
 
-from backend.mcp_server.data import constraints, transmission_outages
+from backend.mcp_server.data import constraints, lmp, transmission_outages
 from backend.mcp_server.data.constraint_network_match import (
     match_constraints_to_branches,
 )
@@ -44,12 +50,23 @@ from backend.mcp_server.views.constraints import (
     build_da_network_view_model,
     build_rt_dart_network_view_model,
 )
+from backend.mcp_server.views.lmp import (
+    build_lmp_da_hub_summary_view_model,
+    build_lmp_da_outage_overlap_view_model,
+    build_lmps_daily_summary_view_model,
+    build_lmps_hourly_summary_view_model,
+)
 from backend.mcp_server.views.markdown_formatters import (
     format_constraints_da_network,
     format_constraints_rt_dart_network,
+    format_lmp_da_hub_summary,
+    format_lmp_da_outage_overlap,
+    format_lmps_daily_summary,
+    format_lmps_hourly_summary,
     format_transmission_outages_active,
     format_transmission_outages_changes_24h_simple,
     format_transmission_outages_changes_24h_snapshot,
+    format_transmission_outages_for_constraints,
     format_transmission_outages_network,
     format_transmission_outages_window_7d,
 )
@@ -58,6 +75,7 @@ from backend.mcp_server.views.transmission_outages import (
     build_changes_24h_simple_view_model,
     build_changes_24h_snapshot_view_model,
     build_network_view_model,
+    build_outages_for_constraints_view_model,
     build_window_7d_view_model,
 )
 
@@ -247,6 +265,9 @@ def get_constraints_da_network(
     max_neighbors: int = Query(
         10, ge=0, le=30, description="2-hop ≥230kV neighbors per matched constraint",
     ),
+    binding_hours: list[int] | None = Query(
+        None, description="HE values 1-24 from Tier 2; when set, filters and re-ranks",
+    ),
     format: OutputFormat = Query(OutputFormat.md, description="md or json"),
 ):
     """DA binding constraints for a target date, cross-referenced with PSS/E.
@@ -257,6 +278,13 @@ def get_constraints_da_network(
     PSS/E branch by station + voltage. Neighbors are 2-hop, ≥230 kV
     (parallel-path topology around the seed branch). Sections:
     matched / ambiguous / unmatched / interface.
+
+    When ``binding_hours`` is supplied (Tier 3 funnel mode), matched and
+    ambiguous constraints are re-ranked by sum-over-binding-hours shadow
+    price, ``hourly`` collapses to ``hourly_binding`` (only the binding
+    HEs), and ``neighbors`` is replaced by a flat ``neighbor_bus_ids``
+    list for downstream Tier 4 cross-linking. Without the param, the
+    response shape is unchanged for backward compat.
     """
     if target_date is None:
         target_date = date.today() + timedelta(days=1)
@@ -267,6 +295,7 @@ def get_constraints_da_network(
     vm = build_da_network_view_model(
         enriched, branches_df, target_date,
         top_n=top_n, max_neighbors=max_neighbors,
+        binding_hours=binding_hours,
     )
     if format == OutputFormat.json:
         return vm
@@ -318,6 +347,260 @@ def get_constraints_rt_dart_network(
         return vm
     return PlainTextResponse(
         content=format_constraints_rt_dart_network(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── DA LMP — hub summary ────────────────────────────────────────────────────
+
+
+@app.get("/views/lmp_da_hub_summary")
+def get_lmp_da_hub_summary(
+    target_date: date | None = Query(
+        None, description="DA target date (default: tomorrow)",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Hub-level DA LMP decomposition for a target date.
+
+    One row per hub: total / energy / congestion / loss split into onpeak
+    (HE 8-23), offpeak, flat, plus the day's peak hour. Sorted by
+    |onpeak congestion|. Header carries market-wide averages and a count
+    of hubs where onpeak |congestion| / |total| exceeds 10% — a quick
+    signal of network stress before drilling into specific constraints.
+
+    DA-only because the upstream scrape filters ``type=hub``; only PJM
+    aggregate hubs (~15-20) are in the mart, no zonal or bus-level LMP.
+    """
+    if target_date is None:
+        target_date = date.today() + timedelta(days=1)
+
+    df = lmp.pull_lmp_da_hourly(target_date)
+    vm = build_lmp_da_hub_summary_view_model(df, target_date)
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_lmp_da_hub_summary(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── DA LMP — constraint × outage overlap ────────────────────────────────────
+
+
+@app.get("/views/lmp_da_outage_overlap")
+def get_lmp_da_outage_overlap(
+    target_date: date | None = Query(
+        None, description="DA target date (default: tomorrow)",
+    ),
+    top_n: int = Query(
+        20, ge=1, le=100, description="Top-N DA constraints by total_price",
+    ),
+    max_neighbors: int = Query(
+        10, ge=0, le=30, description="2-hop ≥230kV neighbors per constraint",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Top binding DA constraints crossed against transmission outages.
+
+    For each top-N matched constraint: expand to its 2-hop ≥230 kV neighbor
+    set on the PSS/E network, then look for transmission outages in
+    [target_date, target_date + 7d] that sit on the seed branch or any
+    neighbor. Outages bucketed Active / Starting soon / Ending soon.
+
+    Window source: ``pjm_transmission_outages_window_7d`` (covers the
+    upcoming 7 days from the dbt run, may miss 1-2 days of horizon if the
+    target_date is far in the future relative to the last refresh).
+    """
+    if target_date is None:
+        target_date = date.today() + timedelta(days=1)
+
+    buses_df, branches_df = _get_network()
+
+    constraints_df = constraints.pull_constraints_da(target_date)
+    enriched_constraints = match_constraints_to_branches(
+        constraints_df, branches_df, buses_df,
+    )
+
+    outages_df = transmission_outages.pull_window_7d()
+    enriched_outages = match_outages_to_branches(outages_df, branches_df, buses_df)
+
+    vm = build_lmp_da_outage_overlap_view_model(
+        enriched_constraints, enriched_outages, branches_df, target_date,
+        top_n=top_n, max_neighbors=max_neighbors,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_lmp_da_outage_overlap(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── DA results brief — Tier 1: daily LMP summary ────────────────────────────
+
+
+@app.get("/views/lmps_daily_summary")
+def get_lmps_daily_summary(
+    target_date: date | None = Query(
+        None, description="DA target date (default: tomorrow)",
+    ),
+    top_n_drilldown: int = Query(
+        5, ge=1, le=20, description="Hubs handed to Tier 2 hourly drilldown",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Tier 1 of the DA-results funnel — zonal/hub daily summary.
+
+    Hub-grain (mart only carries PJM aggregate hubs, not zonal). One row
+    per hub: total / energy / congestion / loss split into onpeak / offpeak.
+    Surfaces ``top_zones_for_drilldown`` — the top-N hubs by absolute
+    onpeak congestion that Tier 2 reads as its hub filter.
+    """
+    if target_date is None:
+        target_date = date.today() + timedelta(days=1)
+
+    df = lmp.pull_lmp_da_hourly(target_date)
+    vm = build_lmps_daily_summary_view_model(
+        df, target_date, top_n_drilldown=top_n_drilldown,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_lmps_daily_summary(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── DA results brief — Tier 2: hourly LMP drilldown ─────────────────────────
+
+
+@app.get("/views/lmps_hourly_summary")
+def get_lmps_hourly_summary(
+    target_date: date | None = Query(
+        None, description="DA target date (default: tomorrow)",
+    ),
+    hubs: str | None = Query(
+        None, description="Comma-separated hub names (default: top 5 from Tier 1)",
+    ),
+    binding_threshold: float = Query(
+        25.0, ge=0, le=500,
+        description="$/MWh — hours where any hub crosses this become 'binding'",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Tier 2 of the DA-results funnel — hourly LMP drilldown.
+
+    Filtered to a small hub set (Tier 1 hands the top-5 list). Renders an
+    hour × hub congestion heatmap and surfaces
+    ``binding_hours_for_drilldown`` — 3-5 HEs where congestion crossed
+    ``binding_threshold``. Tier 3 reads that field to filter constraints.
+    """
+    if target_date is None:
+        target_date = date.today() + timedelta(days=1)
+
+    hubs_list = [h.strip() for h in hubs.split(",")] if hubs else None
+    df = lmp.pull_lmp_da_hourly(target_date, hubs=hubs_list)
+    vm = build_lmps_hourly_summary_view_model(
+        df, target_date,
+        hubs_filter=hubs_list, binding_threshold=binding_threshold,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_lmps_hourly_summary(vm),
+        media_type="text/markdown",
+    )
+
+
+# ─── DA results brief — Tier 4: outages on/near constraint buses ─────────────
+
+
+def _parse_int_csv(s: str | None) -> list[int]:
+    """Parse a CSV of ints, raising ValueError on bad tokens."""
+    if not s:
+        return []
+    out: list[int] = []
+    for tok in s.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        out.append(int(tok))
+    return out
+
+
+def _parse_constraint_labels(s: str | None) -> dict[int, list[str]]:
+    """Parse 'bus:label,bus:label,...' into a bus→labels mapping.
+
+    Multiple labels for the same bus are accumulated.
+    """
+    if not s:
+        return {}
+    out: dict[int, list[str]] = {}
+    for tok in s.split(","):
+        tok = tok.strip()
+        if not tok or ":" not in tok:
+            continue
+        bus_str, _, label = tok.partition(":")
+        try:
+            bus = int(bus_str.strip())
+        except ValueError:
+            continue
+        out.setdefault(bus, []).append(label.strip())
+    return out
+
+
+@app.get("/views/transmission_outages_for_constraints")
+def get_transmission_outages_for_constraints(
+    bus_ids: str = Query(
+        ..., description="CSV of PSS/E bus integers (Tier 3 neighbor_bus_ids union)",
+    ),
+    constraint_labels: str | None = Query(
+        None,
+        description="CSV 'bus:label,bus:label' for cross-link annotation",
+    ),
+    max_neighbors: int = Query(
+        3, ge=0, le=10, description="1-hop neighbors per outage",
+    ),
+    format: OutputFormat = Query(OutputFormat.md, description="md or json"),
+):
+    """Tier 4 of the DA-results funnel — outages near constraint buses.
+
+    Filters active outages to those whose ``from_bus_psse`` or
+    ``to_bus_psse`` is in the supplied ``bus_ids`` set. When
+    ``constraint_labels`` is supplied, each outage row is annotated with
+    the binding constraint(s) it sits near — the visible cross-link
+    between price (Tier 3) and physical cause (this tier).
+    """
+    try:
+        bus_id_list = _parse_int_csv(bus_ids)
+    except ValueError:
+        return PlainTextResponse(
+            content='{"error": "bus_ids must be a CSV of integers"}',
+            status_code=400,
+            media_type="application/json",
+        )
+    if not bus_id_list:
+        return PlainTextResponse(
+            content='{"error": "bus_ids is required"}',
+            status_code=400,
+            media_type="application/json",
+        )
+
+    label_map = _parse_constraint_labels(constraint_labels)
+
+    buses_df, branches_df = _get_network()
+    active_df = transmission_outages.pull_active()
+    enriched = match_outages_to_branches(active_df, branches_df, buses_df)
+    vm = build_outages_for_constraints_view_model(
+        enriched, branches_df, bus_id_list,
+        constraint_index=label_map,
+        max_neighbors=max_neighbors,
+    )
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_transmission_outages_for_constraints(vm),
         media_type="text/markdown",
     )
 
