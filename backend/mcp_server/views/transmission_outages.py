@@ -507,3 +507,89 @@ def build_changes_24h_snapshot_view_model(
         "revised_tickets": [_outage_dict(r, include_diff=True) for _, r in revised_df.iterrows()],
         "cleared_tickets": [_outage_dict(r) for _, r in cleared_df.iterrows()],
     }
+
+
+# ─── Builder 5 — pjm_transmission_outages_active + PSS/E network enrichment ──
+
+
+def build_network_view_model(
+    enriched_df: pd.DataFrame,
+    branches_df: pd.DataFrame,
+    reference_date: date | None = None,
+    max_neighbors: int = 5,
+) -> dict:
+    """View model for ``GET /views/transmission_outages_network``.
+
+    Consumes the active mart enriched by
+    ``backend.mcp_server.data.network_match.match_outages_to_branches`` —
+    each row carries ``from_bus_psse``, ``to_bus_psse``, ``rating_mva``,
+    ``network_match_status``, ``neighbor_count``.
+
+    Sections produced:
+      - match_coverage    : counts and percentages
+      - matched_outages   : enriched outages, with up to ``max_neighbors``
+                            1-hop neighbors per outage
+      - ambiguous_outages : multi-match cases (typically multi-XFMR substations)
+      - unmatched_outages : facilities not found in PSS/E (missing from model
+                            or non-standard descriptions)
+    """
+    if enriched_df is None or enriched_df.empty:
+        return {
+            "reference_date": str(reference_date or date.today()),
+            "error": "No active outage data.",
+        }
+
+    if reference_date is None:
+        reference_date = date.today()
+
+    df = _normalize(enriched_df, reference_date)
+
+    # Late import to keep network_match optional for non-network endpoints
+    from backend.mcp_server.data.network_match import list_neighbors
+
+    matched = df[df["network_match_status"] == "matched"]
+    ambiguous = df[df["network_match_status"] == "ambiguous"]
+    unmatched = df[df["network_match_status"] == "unmatched"]
+
+    n = len(df)
+    coverage = {
+        "total": n,
+        "matched": int(len(matched)),
+        "ambiguous": int(len(ambiguous)),
+        "unmatched": int(len(unmatched)),
+        "match_rate_pct": round(100 * (len(matched) + len(ambiguous)) / n, 1) if n else 0.0,
+    }
+
+    def _network_record(row: pd.Series, *, with_neighbors: bool) -> dict:
+        rec = _outage_dict(row)
+        from_b = row.get("from_bus_psse")
+        to_b = row.get("to_bus_psse")
+        rec["from_bus_psse"] = int(from_b) if pd.notna(from_b) else None
+        rec["to_bus_psse"] = int(to_b) if pd.notna(to_b) else None
+        rec["rating_mva"] = float(row["rating_mva"]) if pd.notna(row.get("rating_mva")) else None
+        rec["neighbor_count"] = _si(row.get("neighbor_count"))
+        rec["match_status"] = row.get("network_match_status")
+        if with_neighbors and rec["from_bus_psse"] is not None and rec["to_bus_psse"] is not None:
+            rec["neighbors"] = list_neighbors(
+                rec["from_bus_psse"], rec["to_bus_psse"], branches_df, max_n=max_neighbors,
+            )
+        else:
+            rec["neighbors"] = []
+        return rec
+
+    return {
+        "reference_date": str(reference_date),
+        "match_coverage": coverage,
+        "matched_outages": [
+            _network_record(r, with_neighbors=True)
+            for _, r in matched.sort_values("voltage_kv", ascending=False).iterrows()
+        ],
+        "ambiguous_outages": [
+            _network_record(r, with_neighbors=True)
+            for _, r in ambiguous.sort_values("voltage_kv", ascending=False).iterrows()
+        ],
+        "unmatched_outages": [
+            _network_record(r, with_neighbors=False)
+            for _, r in unmatched.sort_values("voltage_kv", ascending=False).iterrows()
+        ],
+    }

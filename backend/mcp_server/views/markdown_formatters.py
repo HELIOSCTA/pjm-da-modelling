@@ -255,3 +255,98 @@ def _change_outage_table(outages: list[dict], *, include_diff: bool) -> str:
             row.append(n.get("diff_text", "-"))
         rows.append(row)
     return _table(headers, rows)
+
+
+# ─── Network-enriched view ───────────────────────────────────────────────────
+
+
+def format_transmission_outages_network(vm: dict) -> str:
+    """Markdown for ``GET /views/transmission_outages_network``."""
+    if "error" in vm:
+        return f"# Error\n\n{vm['error']}"
+
+    parts: list[str] = []
+    parts.append(f"# Transmission Outages — Network Enrichment — {vm.get('reference_date', '?')}")
+
+    cov = vm.get("match_coverage", {})
+    parts.append(
+        f"\n**Match coverage**: {cov.get('matched', 0) + cov.get('ambiguous', 0)} / "
+        f"{cov.get('total', 0)} ({cov.get('match_rate_pct', 0)}%) — "
+        f"{cov.get('matched', 0)} unique, "
+        f"{cov.get('ambiguous', 0)} multi-match, "
+        f"{cov.get('unmatched', 0)} unmatched"
+    )
+
+    matched = vm.get("matched_outages", [])
+    if matched:
+        parts.append(f"\n## Matched ({len(matched)})")
+        parts.append(_network_outage_table(matched, with_neighbors=True))
+
+    ambiguous = vm.get("ambiguous_outages", [])
+    if ambiguous:
+        parts.append(
+            f"\n## Ambiguous ({len(ambiguous)}) — first PSS/E candidate shown; "
+            f"facility name maps to multiple branches at same substation+kV"
+        )
+        parts.append(_network_outage_table(ambiguous, with_neighbors=True))
+
+    unmatched = vm.get("unmatched_outages", [])
+    if unmatched:
+        parts.append(
+            f"\n## Unmatched ({len(unmatched)}) — substation missing from PSS/E "
+            f"model or non-standard facility description"
+        )
+        parts.append(_network_unmatched_table(unmatched))
+
+    return "\n".join(parts)
+
+
+def _network_outage_table(outages: list[dict], *, with_neighbors: bool) -> str:
+    headers = [
+        "Region", "Facility", "Type", "kV", "Route",
+        "From Bus", "To Bus", "Rating MVA", "Neighbors",
+    ]
+    if with_neighbors:
+        headers.append("Top Neighbors")
+
+    rows = []
+    for n in outages:
+        row = [
+            n["region"],
+            n.get("facility", "")[:40],
+            n.get("equip_category", n.get("equip", "")),
+            n["kv"],
+            _route(n),
+            n.get("from_bus_psse", "-"),
+            n.get("to_bus_psse", "-"),
+            f"{n['rating_mva']:,.0f}" if n.get("rating_mva") else "-",
+            n.get("neighbor_count", "-"),
+        ]
+        if with_neighbors:
+            row.append(_format_neighbors(n.get("neighbors", [])))
+        rows.append(row)
+    return _table(headers, rows)
+
+
+def _network_unmatched_table(outages: list[dict]) -> str:
+    headers = ["Region", "Zone", "Facility", "Type", "kV"]
+    rows = [
+        [n["region"], n.get("zone", "-"), n.get("facility", "")[:50],
+         n.get("equip_category", n.get("equip", "")), n["kv"]]
+        for n in outages
+    ]
+    return _table(headers, rows)
+
+
+def _format_neighbors(neighbors: list[dict]) -> str:
+    """One-line summary of top 1-hop neighbors."""
+    if not neighbors:
+        return "-"
+    parts = []
+    for nb in neighbors[:3]:
+        if nb.get("equipment_type") == "LINE":
+            label = f"{nb['from_name']}→{nb['to_name']}"
+        else:
+            label = f"XFMR@{nb['from_name']}"
+        parts.append(f"{label} ({int(nb['voltage_kv'])}kV)")
+    return "; ".join(parts)

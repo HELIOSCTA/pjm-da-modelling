@@ -18,28 +18,36 @@ Endpoint → mart mapping:
     /views/transmission_outages_window_7d             → pjm_transmission_outages_window_7d
     /views/transmission_outages_changes_24h_simple    → pjm_transmission_outages_changes_24h_simple
     /views/transmission_outages_changes_24h_snapshot  → pjm_transmission_outages_changes_24h_snapshot
+    /views/transmission_outages_network               → active mart + PSS/E network model
 """
 import logging
 from enum import Enum
 
 import backend.settings  # noqa: F401 — load env vars
 
+import pandas as pd
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi_mcp import FastApiMCP
 
 from backend.mcp_server.data import transmission_outages
+from backend.mcp_server.data.network_match import (
+    load_network,
+    match_outages_to_branches,
+)
 from backend.mcp_server.views.markdown_formatters import (
     format_transmission_outages_active,
     format_transmission_outages_changes_24h_simple,
     format_transmission_outages_changes_24h_snapshot,
+    format_transmission_outages_network,
     format_transmission_outages_window_7d,
 )
 from backend.mcp_server.views.transmission_outages import (
     build_active_view_model,
     build_changes_24h_simple_view_model,
     build_changes_24h_snapshot_view_model,
+    build_network_view_model,
     build_window_7d_view_model,
 )
 
@@ -168,6 +176,49 @@ def get_transmission_outages_changes_24h_snapshot(
     return PlainTextResponse(
         content=f"# Disabled\n\n{msg}\n",
         status_code=503,
+        media_type="text/markdown",
+    )
+
+
+# ─── Network-enriched view ───────────────────────────────────────────────────
+# The PSS/E parquets (~800 KB combined) are loaded lazily on first request and
+# cached in this module. Reset _NETWORK_CACHE to None to force a reload after
+# rerunning parse_psse_raw.
+_NETWORK_CACHE: tuple[pd.DataFrame, pd.DataFrame] | None = None
+
+
+def _get_network() -> tuple[pd.DataFrame, pd.DataFrame]:
+    global _NETWORK_CACHE
+    if _NETWORK_CACHE is None:
+        _NETWORK_CACHE = load_network()
+        logger.info("loaded PSS/E network parquets into memory")
+    return _NETWORK_CACHE
+
+
+@app.get("/views/transmission_outages_network")
+def get_transmission_outages_network(
+    format: OutputFormat = Query(OutputFormat.md, description="md (markdown) or json"),
+    max_neighbors: int = Query(5, ge=0, le=20, description="1-hop neighbors per outage"),
+):
+    """Active outages cross-referenced with the PJM PSS/E network model.
+
+    Each outage's facility name is matched to a PSS/E branch by substation
+    endpoints + voltage_kv. Matched outages get from-bus/to-bus IDs, MVA
+    rating, and a list of 1-hop neighbor branches sharing either endpoint
+    substation. Outages are bucketed by match status:
+      - matched   : exactly one PSS/E candidate
+      - ambiguous : multiple candidates (typically multi-XFMR substations)
+      - unmatched : no candidate (substation missing from PSS/E or
+                    non-standard description)
+    """
+    buses_df, branches_df = _get_network()
+    active_df = transmission_outages.pull_active()
+    enriched = match_outages_to_branches(active_df, branches_df, buses_df)
+    vm = build_network_view_model(enriched, branches_df, max_neighbors=max_neighbors)
+    if format == OutputFormat.json:
+        return vm
+    return PlainTextResponse(
+        content=format_transmission_outages_network(vm),
         media_type="text/markdown",
     )
 

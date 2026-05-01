@@ -55,3 +55,9 @@ slack-sdk
 fastapi>=0.115.0
 uvicorn>=0.34.0
 fastapi-mcp>=0.3.0
+
+# grid network analysis (PSS/E .raw parsing for transmission topology)
+# grg-pssedata: focused PSS/E RAW v33 parser (LANL, MIT)
+# pypsa:       reserved for LODF/PTDF flow analysis once enrichment lands
+grg-pssedata>=0.1.4
+pypsa>=0.30.0
