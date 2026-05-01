@@ -178,10 +178,19 @@ def build_lmp_da_hub_summary_view_model(
 # ─── Tier 1 — daily summary (hub-grain, with drilldown handoff) ──────────────
 
 
+def _delta(cur: Optional[float], prior: Optional[float]) -> Optional[float]:
+    """Return cur - prior, or None if either side is missing."""
+    if cur is None or prior is None:
+        return None
+    return float(cur) - float(prior)
+
+
 def build_lmps_daily_summary_view_model(
     df: pd.DataFrame,
     target_date: date,
     *,
+    prior_period_df: pd.DataFrame | None = None,
+    prior_period_date: date | None = None,
     top_n_drilldown: int = 5,
     high_congestion_threshold: float = 0.10,
 ) -> dict:
@@ -190,12 +199,48 @@ def build_lmps_daily_summary_view_model(
     Wraps ``build_lmp_da_hub_summary_view_model`` and adds the funnel
     handoff field ``top_zones_for_drilldown`` — the top ``top_n_drilldown``
     hubs by ``|onpeak_congestion|``, which Tier 2 reads as its hub filter.
+
+    When ``prior_period_df`` is supplied (typically same-weekday-prior-week),
+    each hub record gets a ``vs_peer`` block with onpeak/offpeak/congestion
+    deltas, and a ``vs_peer_market`` block at top level for the RTO average.
     """
     vm = build_lmp_da_hub_summary_view_model(
         df, target_date, high_congestion_threshold=high_congestion_threshold,
     )
     hubs = vm.get("hubs") or []
     vm["top_zones_for_drilldown"] = [h["hub"] for h in hubs[:top_n_drilldown]]
+
+    if prior_period_df is not None and not prior_period_df.empty:
+        peer_date = prior_period_date or (target_date - timedelta(days=7))
+        prior_vm = build_lmp_da_hub_summary_view_model(
+            prior_period_df, peer_date,
+            high_congestion_threshold=high_congestion_threshold,
+        )
+        prior_by_hub = {h["hub"]: h for h in (prior_vm.get("hubs") or [])}
+
+        for h in hubs:
+            prior = prior_by_hub.get(h["hub"])
+            if not prior:
+                continue
+            h["vs_peer"] = {
+                "peer_date": str(peer_date),
+                "onpeak_total_delta": _delta(h.get("onpeak_total"), prior.get("onpeak_total")),
+                "onpeak_congestion_delta": _delta(h.get("onpeak_congestion"), prior.get("onpeak_congestion")),
+                "offpeak_total_delta": _delta(h.get("offpeak_total"), prior.get("offpeak_total")),
+                "flat_total_delta": _delta(h.get("flat_total"), prior.get("flat_total")),
+            }
+
+        cur_mkt = vm.get("market_avg_onpeak") or {}
+        prior_mkt = prior_vm.get("market_avg_onpeak") or {}
+        cur_off = vm.get("market_avg_offpeak") or {}
+        prior_off = prior_vm.get("market_avg_offpeak") or {}
+        vm["vs_peer_market"] = {
+            "peer_date": str(peer_date),
+            "onpeak_total_delta": _delta(cur_mkt.get("total"), prior_mkt.get("total")),
+            "onpeak_congestion_delta": _delta(cur_mkt.get("congestion"), prior_mkt.get("congestion")),
+            "offpeak_total_delta": _delta(cur_off.get("total"), prior_off.get("total")),
+        }
+
     return vm
 
 

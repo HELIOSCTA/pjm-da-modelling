@@ -46,6 +46,16 @@ def _sf(val) -> Optional[float]:
         return None
 
 
+def _ss(val) -> Optional[str]:
+    """Safe string — None for NaN / pd.NaT / empty / non-string-coercible."""
+    if val is None:
+        return None
+    if isinstance(val, float) and np.isnan(val):
+        return None
+    s = str(val).strip()
+    return s if s and s.lower() != "nan" else None
+
+
 def _row_dict(row: pd.Series, *, market_prefix: Optional[str] = None) -> dict:
     """Common fields shared between DA and RT/DART rows.
 
@@ -67,17 +77,17 @@ def _row_dict(row: pd.Series, *, market_prefix: Optional[str] = None) -> dict:
 def _network_fields(row: pd.Series) -> dict:
     """Network-match metadata + parsed parser fields for a constraint row."""
     return {
-        "parser_dialect": row.get("parser_dialect"),
-        "parsed_equipment_type": row.get("parsed_equipment_type"),
+        "parser_dialect": _ss(row.get("parser_dialect")),
+        "parsed_equipment_type": _ss(row.get("parsed_equipment_type")),
         "parsed_voltage_kv": _si(row.get("parsed_voltage_kv")),
-        "parsed_from_station": row.get("parsed_from_station"),
-        "parsed_to_station": row.get("parsed_to_station"),
-        "parsed_single_station": row.get("parsed_single_station"),
+        "parsed_from_station": _ss(row.get("parsed_from_station")),
+        "parsed_to_station": _ss(row.get("parsed_to_station")),
+        "parsed_single_station": _ss(row.get("parsed_single_station")),
         "from_bus_psse": _si(row.get("from_bus_psse")),
         "to_bus_psse": _si(row.get("to_bus_psse")),
         "rating_mva": _sf(row.get("rating_mva")),
         "neighbor_count": _si(row.get("neighbor_count")),
-        "match_status": row.get("network_match_status"),
+        "match_status": _ss(row.get("network_match_status")),
     }
 
 
@@ -133,9 +143,9 @@ def _constraint_record(
 
     rec = {
         "date": str(row["date"]) if pd.notna(row.get("date")) else None,
-        "constraint_name": row.get("constraint_name"),
-        "contingency": row.get("contingency"),
-        "reported_name": row.get("reported_name"),
+        "constraint_name": _ss(row.get("constraint_name")),
+        "contingency": _ss(row.get("contingency")),
+        "reported_name": _ss(row.get("reported_name")),
     }
     rec.update(_row_dict(row, market_prefix=market_prefix))
     rec.update(_network_fields(row))
@@ -226,6 +236,9 @@ def build_da_network_view_model(
 
     df = enriched_df.copy()
     df["total_price"] = pd.to_numeric(df["total_price"], errors="coerce")
+    # PJM shadow prices are negative; "most binding" = largest |total_price|.
+    # Sort by absolute value so -$1,730 comes before -$35 (was inverted).
+    df["total_price_abs"] = df["total_price"].abs()
 
     # When in funnel mode, compute binding_price (sum over binding HEs) and
     # binding_price_abs (sort key — shadow prices in PJM are negative, so we
@@ -242,7 +255,7 @@ def build_da_network_view_model(
             df["binding_price"] = 0.0
         df["binding_price_abs"] = df["binding_price"].abs()
 
-    funnel_sort = "binding_price_abs" if binding_hours else "total_price"
+    funnel_sort = "binding_price_abs" if binding_hours else "total_price_abs"
 
     sections = {}
     for status, key in [
@@ -256,9 +269,9 @@ def build_da_network_view_model(
                 funnel_sort, ascending=False, na_position="last",
             )
         else:
-            # Unmatched / interface — keep original total_price ordering.
+            # Unmatched / interface — by absolute price too (was inverted).
             sub = df[df["network_match_status"] == status].sort_values(
-                "total_price", ascending=False, na_position="last",
+                "total_price_abs", ascending=False, na_position="last",
             )
         if status in ("matched", "ambiguous") and top_n:
             sub = sub.head(top_n)
@@ -392,9 +405,9 @@ def _rt_dart_record(
 
     rec = {
         "date": str(row["date"]) if pd.notna(row.get("date")) else None,
-        "constraint_name": row.get("constraint_name"),
-        "contingency": row.get("contingency"),
-        "reported_name": row.get("reported_name"),
+        "constraint_name": _ss(row.get("constraint_name")),
+        "contingency": _ss(row.get("contingency")),
+        "reported_name": _ss(row.get("reported_name")),
         "rt_total_price": _sf(row.get("rt_total_price")),
         "rt_total_hours": _si(row.get("rt_total_hours")),
         "rt_onpeak_price": _sf(row.get("rt_onpeak_price")),

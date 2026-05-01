@@ -448,6 +448,10 @@ def get_lmps_daily_summary(
     top_n_drilldown: int = Query(
         5, ge=1, le=20, description="Hubs handed to Tier 2 hourly drilldown",
     ),
+    compare_peer: bool = Query(
+        False,
+        description="Include vs same-weekday-prior-week deltas per hub",
+    ),
     format: OutputFormat = Query(OutputFormat.md, description="md or json"),
 ):
     """Tier 1 of the DA-results funnel — zonal/hub daily summary.
@@ -456,13 +460,26 @@ def get_lmps_daily_summary(
     per hub: total / energy / congestion / loss split into onpeak / offpeak.
     Surfaces ``top_zones_for_drilldown`` — the top-N hubs by absolute
     onpeak congestion that Tier 2 reads as its hub filter.
+
+    When ``compare_peer=true``, also pulls the same target_date - 7 days
+    (same weekday last week) and emits per-hub ``vs_peer`` deltas plus a
+    top-level ``vs_peer_market`` block.
     """
     if target_date is None:
         target_date = date.today() + timedelta(days=1)
 
     df = lmp.pull_lmp_da_hourly(target_date)
+    prior_df = None
+    prior_date = None
+    if compare_peer:
+        prior_date = target_date - timedelta(days=7)
+        prior_df = lmp.pull_lmp_da_hourly(prior_date)
+
     vm = build_lmps_daily_summary_view_model(
-        df, target_date, top_n_drilldown=top_n_drilldown,
+        df, target_date,
+        top_n_drilldown=top_n_drilldown,
+        prior_period_df=prior_df,
+        prior_period_date=prior_date,
     )
     if format == OutputFormat.json:
         return vm

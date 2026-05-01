@@ -753,9 +753,49 @@ def _constraint_unmatched_table(rows: list[dict], *, market: str) -> str:
 # ─── Tier 1 — DA LMP daily summary ───────────────────────────────────────────
 
 
+def _signed_money_d(val: float | None) -> str:
+    """Same scale as _money_d but with explicit sign. Used for deltas."""
+    if val is None:
+        return "-"
+    return f"{'+' if val >= 0 else ''}{val:,.2f}"
+
+
 def format_lmps_daily_summary(vm: dict) -> str:
     """Markdown for ``GET /views/lmps_daily_summary``."""
     parts: list[str] = [format_lmp_da_hub_summary(vm)]
+
+    vsm = vm.get("vs_peer_market")
+    if vsm:
+        parts.append(
+            f"\n**vs {vsm.get('peer_date')} (same weekday last week)**: "
+            f"onpeak total Δ ${_signed_money_d(vsm.get('onpeak_total_delta'))}, "
+            f"onpeak cong Δ ${_signed_money_d(vsm.get('onpeak_congestion_delta'))}, "
+            f"offpeak total Δ ${_signed_money_d(vsm.get('offpeak_total_delta'))}"
+        )
+
+    hubs_with_peer = [h for h in (vm.get("hubs") or []) if h.get("vs_peer")]
+    if hubs_with_peer:
+        parts.append(
+            f"\n## Hubs — vs peer ({hubs_with_peer[0]['vs_peer']['peer_date']})"
+        )
+        headers = [
+            "Hub", "OnPk Total", "OnPk Total Δ", "OnPk Cong", "OnPk Cong Δ",
+            "OffPk Total", "OffPk Total Δ",
+        ]
+        rows = []
+        for h in hubs_with_peer:
+            vp = h["vs_peer"]
+            rows.append([
+                h.get("hub", "-"),
+                _money_d(h.get("onpeak_total")),
+                _signed_money_d(vp.get("onpeak_total_delta")),
+                _money_d(h.get("onpeak_congestion")),
+                _signed_money_d(vp.get("onpeak_congestion_delta")),
+                _money_d(h.get("offpeak_total")),
+                _signed_money_d(vp.get("offpeak_total_delta")),
+            ])
+        parts.append(_table(headers, rows))
+
     drilldown = vm.get("top_zones_for_drilldown") or []
     if drilldown:
         parts.append(
