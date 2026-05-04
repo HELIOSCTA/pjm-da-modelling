@@ -174,40 +174,30 @@ def get_transmission_outages_changes_24h_simple(
 
 
 # ─── Changes 24h — snapshot ──────────────────────────────────────────────────
-# DISABLED 2026-05-01 — letting the SCD2 snapshot accumulate history before
-# exposing this view. On day 1 it reports the entire active set as NEW because
-# every ticket got the same `dbt_valid_from` at baseline.
-#
-# The dbt mart and `dbt snapshot` step in the Prefect flow keep running daily
-# so history builds up. Re-enable by replacing the endpoint body below with the
-# pull/build/format pipeline (see git history for the working version).
-#
-# Re-enable target: ~2026-05-08 (after 1 week of daily snapshots).
 
 
 @app.get("/views/transmission_outages_changes_24h_snapshot")
 def get_transmission_outages_changes_24h_snapshot(
     format: OutputFormat = Query(OutputFormat.md, description="md (markdown) or json"),
 ):
-    """[DISABLED] Snapshot variant — paused while SCD2 history builds up.
+    """Last-24h delta (snapshot variant) — NEW + REVISED + CLEARED tickets.
 
-    Use ``/views/transmission_outages_changes_24h_simple`` in the meantime;
-    it gives NEW + REVISED from day 1 (no diff_text, no CLEARED).
+    Driven by the SCD2 snapshot ``pjm_transmission_outages_snapshot``. REVISED
+    rows carry ``prev_*`` columns so diffs (state transitions, schedule pushes,
+    risk-flag flips) are explicit. CLEARED rows are tickets that disappeared
+    from the source between captures.
+
+    Compared to ``/views/transmission_outages_changes_24h_simple``: catches
+    field-level diffs that the source's ``last_revised`` doesn't bump, and
+    surfaces CLEARED. Trade-off: blind for the first 24h after the snapshot
+    is initialized.
     """
-    msg = (
-        "Snapshot variant is disabled while the SCD2 snapshot accumulates "
-        "24h+ of history. Use /views/transmission_outages_changes_24h_simple "
-        "in the meantime."
-    )
+    df = transmission_outages.pull_changes_24h_snapshot()
+    vm = build_changes_24h_snapshot_view_model(df)
     if format == OutputFormat.json:
-        return PlainTextResponse(
-            content=f'{{"status": "disabled", "message": "{msg}"}}',
-            status_code=503,
-            media_type="application/json",
-        )
+        return vm
     return PlainTextResponse(
-        content=f"# Disabled\n\n{msg}\n",
-        status_code=503,
+        content=format_transmission_outages_changes_24h_snapshot(vm),
         media_type="text/markdown",
     )
 

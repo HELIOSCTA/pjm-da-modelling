@@ -11,15 +11,16 @@ pull:
 
 deployments:
 
-  # ────── PJM Transmission Outages Daily ──────
-  # Daily flow: scrape eDART linesout.txt, capture SCD2 snapshot of the source,
+  # ────── PJM Transmission Outages Hourly ──────
+  # Hourly flow: scrape eDART linesout.txt, capture SCD2 snapshot of the source,
   # then build the four view marts (active / 7-day window / 24h changes simple +
   # snapshot variants).
   #
   # Upstream cadence: PJM publishes linesout.txt continuously throughout the
-  # day; scheduling once daily is enough for morning brief consumption.
-  # We run at 05:00 MST to land before the morning fundies prompt; the 06:00
-  # and 07:00 retries give two hours of recovery if the eDART download fails.
+  # day. Hourly captures keep the SCD2 history granular so the
+  # changes_24h_snapshot mart's diff_text resolves which capture window each
+  # state-transition / schedule-push landed in. Each run is ~45-60s (scrape +
+  # snapshot insert + 4 view rebuilds).
 
   - name: PJM Transmission Outages Daily
     entrypoint: schedulers/prefect/power/pjm/pjm_transmission_outages_daily_flows.py:pjm_transmission_outages_daily
@@ -29,6 +30,6 @@ deployments:
     tags: [pjm, power, transmission_outages_daily]
     schedules:
 
-      # ────── Daily at 05:00 MST ──────
-      - cron: "0 5,6,7 * * *"
+      # ────── Hourly at :00 ──────
+      - cron: "0 * * * *"
         timezone: "America/Denver"

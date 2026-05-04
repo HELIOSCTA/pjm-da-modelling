@@ -168,11 +168,15 @@ def _outage_dict(row: pd.Series, *, include_diff: bool = False) -> dict:
     }
     if include_diff:
         rec["prev_outage_state"] = _clean_str(row.get("prev_outage_state"))
+        rec["prev_status"] = _clean_str(row.get("prev_status"))
         prev_start = pd.to_datetime(row.get("prev_start_datetime"), errors="coerce")
         prev_end = pd.to_datetime(row.get("prev_end_datetime"), errors="coerce")
         rec["prev_start"] = str(prev_start.date()) if pd.notna(prev_start) else None
         rec["prev_end"] = str(prev_end.date()) if pd.notna(prev_end) else None
         rec["prev_risk"] = _clean_str(row.get("prev_risk"))
+        prev_cause_raw = row.get("prev_cause") or ""
+        rec["prev_cause"] = prev_cause_raw.split(";")[0].strip() if isinstance(prev_cause_raw, str) and prev_cause_raw else None
+        rec["prev_equipment_count"] = _si(row.get("prev_equipment_count"))
         rec["diff_text"] = _build_diff_text(row)
     return rec
 
@@ -186,30 +190,75 @@ def _clean_str(val) -> str | None:
 
 
 def _build_diff_text(row: pd.Series) -> str:
-    """Compose 'end: 5/12 → 5/19, state: Approved → Active' from prev_* vs current."""
+    """Compose 'end: 5/12 → 5/19, state: Approved → Active' from prev_* vs current.
+
+    Compare start/end at date resolution (matching the display format), so a
+    sub-day shift like 18:00 → 00:00 doesn't render as 'end: 5/12 → 5/12'.
+    Use ``pd.notna`` for nullable risk/state strings — bare truthiness lets
+    NaN floats through and produces 'risk: nan → nan' noise.
+    """
     parts = []
 
     prev_state = row.get("prev_outage_state")
     cur_state = row.get("outage_state")
-    if prev_state and prev_state != cur_state:
+    if pd.notna(prev_state) and prev_state != cur_state:
         parts.append(f"state: {prev_state} → {cur_state}")
+
+    prev_status = row.get("prev_status")
+    cur_status = row.get("status")
+    if pd.notna(prev_status) and prev_status != cur_status:
+        parts.append(f"status: {prev_status} → {cur_status}")
 
     prev_start = pd.to_datetime(row.get("prev_start_datetime"), errors="coerce")
     cur_start = row.get("start_datetime")
     if pd.notna(prev_start) and pd.notna(cur_start) and prev_start != cur_start:
-        parts.append(f"start: {prev_start.date()} → {cur_start.date()}")
+        parts.append(f"start: {_fmt_dt_diff(prev_start, cur_start)}")
 
     prev_end = pd.to_datetime(row.get("prev_end_datetime"), errors="coerce")
     cur_end = row.get("end_datetime")
     if pd.notna(prev_end) and pd.notna(cur_end) and prev_end != cur_end:
-        parts.append(f"end: {prev_end.date()} → {cur_end.date()}")
+        parts.append(f"end: {_fmt_dt_diff(prev_end, cur_end)}")
 
     prev_risk = row.get("prev_risk")
     cur_risk = row.get("risk")
-    if prev_risk and prev_risk != cur_risk:
+    if pd.notna(prev_risk) and prev_risk != cur_risk:
         parts.append(f"risk: {prev_risk} → {cur_risk}")
 
+    # Compare cause at the primary-segment level (first segment before ';').
+    # PJM bakes revision metadata into the trailing segments
+    # (e.g., "Construction: New Equipment; Revised 04/09/2026 09:19; Cancelled
+    # 02/02/2026 11:57"), which would otherwise emit a diff on every revision.
+    prev_cause = _primary_cause(row.get("prev_cause"))
+    cur_cause = _primary_cause(row.get("cause"))
+    if prev_cause and cur_cause and prev_cause != cur_cause:
+        parts.append(f"cause: {prev_cause} → {cur_cause}")
+
+    prev_eq = row.get("prev_equipment_count")
+    cur_eq = row.get("equipment_count")
+    if pd.notna(prev_eq) and pd.notna(cur_eq) and int(prev_eq) != int(cur_eq):
+        parts.append(f"equipment_count: {int(prev_eq)} → {int(cur_eq)}")
+
     return ", ".join(parts) if parts else "(no tracked field changed)"
+
+
+def _primary_cause(val) -> str | None:
+    """First segment of an eDART cause string, before any ';' metadata."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    s = str(val).split(";")[0].strip()
+    return s if s else None
+
+
+def _fmt_dt_diff(prev: pd.Timestamp, cur: pd.Timestamp) -> str:
+    """Format a timestamp pair for diff display.
+
+    If the dates differ → 'YYYY-MM-DD → YYYY-MM-DD' (most common case).
+    If only time-of-day differs → 'YYYY-MM-DD HH:MM → YYYY-MM-DD HH:MM'
+    so a sub-day push doesn't render as 'X → X'.
+    """
+    if prev.date() != cur.date():
+        return f"{prev.date()} → {cur.date()}"
+    return f"{prev.strftime('%Y-%m-%d %H:%M')} → {cur.strftime('%Y-%m-%d %H:%M')}"
 
 
 def _si(val) -> int | None:

@@ -57,9 +57,12 @@ NEW_TICKETS AS (
         ,c.last_revised
         ,c.equipment_count
         ,NULL::TEXT                          AS prev_outage_state
+        ,NULL::VARCHAR                       AS prev_status
         ,NULL::TIMESTAMP                     AS prev_start_datetime
         ,NULL::TIMESTAMP                     AS prev_end_datetime
         ,NULL::TEXT                          AS prev_risk
+        ,NULL::VARCHAR                       AS prev_cause
+        ,NULL::INTEGER                       AS prev_equipment_count
 
     FROM CURRENT_ROWS c
     LEFT JOIN LAST_CLOSED p USING (ticket_id)
@@ -87,9 +90,12 @@ REVISED_TICKETS AS (
         ,c.last_revised
         ,c.equipment_count
         ,p.outage_state                      AS prev_outage_state
+        ,p.status                            AS prev_status
         ,p.start_datetime                    AS prev_start_datetime
         ,p.end_datetime                      AS prev_end_datetime
         ,p.risk                              AS prev_risk
+        ,p.cause                             AS prev_cause
+        ,p.equipment_count                   AS prev_equipment_count
 
     FROM CURRENT_ROWS c
     INNER JOIN LAST_CLOSED p USING (ticket_id)
@@ -116,9 +122,12 @@ CLEARED_TICKETS AS (
         ,p.last_revised
         ,p.equipment_count
         ,NULL::TEXT                          AS prev_outage_state
+        ,NULL::VARCHAR                       AS prev_status
         ,NULL::TIMESTAMP                     AS prev_start_datetime
         ,NULL::TIMESTAMP                     AS prev_end_datetime
         ,NULL::TEXT                          AS prev_risk
+        ,NULL::VARCHAR                       AS prev_cause
+        ,NULL::INTEGER                       AS prev_equipment_count
 
     FROM LAST_CLOSED p
     LEFT JOIN CURRENT_ROWS c USING (ticket_id)
