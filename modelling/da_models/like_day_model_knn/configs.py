@@ -41,9 +41,10 @@ SEASON_WINDOW_DAYS: int = 60
 # ── Calendar / day-type pre-filtering ──────────────────────────────────
 # Sun=0..Sat=6 numbering matches pjm_dates_daily.day_of_week_number.
 DOW_GROUPS: dict[str, list[int]] = {
-    "weekday": [1, 2, 3, 4, 5],
-    "saturday": [6],
-    "sunday": [0],
+    "early_week": [1, 2, 3],   # Mon, Tue, Wed
+    "late_week":  [4, 5],      # Thu, Fri (structural Thu/Fri price premium)
+    "saturday":   [6],
+    "sunday":     [0],
 }
 
 DAY_TYPE_WEEKDAY: str = "weekday"
