@@ -56,6 +56,19 @@ def _pull() -> pd.DataFrame:
     for col in ['posted_day', 'effective_day', 'terminate_day']:
         df[col] = pd.to_datetime(df[col])
 
+    # PJM occasionally returns multiple rows with the same
+    # (constraint_name, contingency_description, effective_day) — same PK as
+    # the target table — differing on posted_day/terminate_day. Keep the
+    # latest-posted row so the COPY into the staging table doesn't reject.
+    df = (
+        df.sort_values('posted_day')
+          .drop_duplicates(
+              subset=['constraint_name', 'contingency_description', 'effective_day'],
+              keep='last',
+          )
+          .reset_index(drop=True)
+    )
+
     return df
 
 

@@ -83,6 +83,19 @@ PJM_SYMBOLS: list[dict] = [
         "product_type": "power",
         "contract_type": "weekly",
     },
+    # -- Weekend power products ----------------------------------------------
+    {
+        "symbol": "PDO P1-IUS",
+        "description": "PJM WH DA Off-Peak Weekend 2x16",
+        "product_type": "power",
+        "contract_type": "weekend",
+    },
+    {
+        "symbol": "ODP P1-IUS",
+        "description": "PJM WH RT Off-Peak Weekend 2x16",
+        "product_type": "power",
+        "contract_type": "weekend",
+    },
     # -- Monthly power products (add strips as needed) -----------------------
     # Example: PMI H26-IUS = PJM Western Hub RT Peak, March 2026
     # Uncomment / add entries when you confirm the exact strips to track.
