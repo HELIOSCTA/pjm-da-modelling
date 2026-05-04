@@ -82,27 +82,46 @@ def _candidate_pool(
     return work
 
 
+# Group prefixes whose features participate in the per-HE dynamic window
+# (vs. the broadcast non-load path). Each prefix corresponds to a column
+# stem of the form ``{stem}_h{HE}`` (load_h1..load_h24, solar_h1..solar_h24,
+# wind_h1..wind_h24). Adding a new windowed feature family means: define
+# domain cols as ``{stem}_h{HE}``, name groups ``{stem}_*``, and add the
+# stem here.
+_WINDOWED_GROUP_PREFIXES: tuple[str, ...] = ("load_", "solar_", "wind_")
+_WINDOWED_COL_STEMS: tuple[str, ...] = ("load", "solar", "wind")
+
+
+def _is_windowed_group(group_name: str) -> bool:
+    return any(group_name.startswith(p) for p in _WINDOWED_GROUP_PREFIXES)
+
+
 def _window_columns(target_hour: int, flt_radius: int) -> list[str]:
-    """Hourly load feature column names for a target hour and +/- flt_radius window."""
+    """Windowed feature column names for a target hour and +/- flt_radius window.
+
+    Returns one set of cols per windowed stem (load_h, solar_h, wind_h).
+    Caller filters down to columns actually present in the pool/query.
+    """
     lo = max(1, target_hour - flt_radius)
     hi = min(24, target_hour + flt_radius)
-    return [f"load_h{h}" for h in range(lo, hi + 1)]
+    return [f"{stem}_h{h}" for stem in _WINDOWED_COL_STEMS for h in range(lo, hi + 1)]
 
 
 def _combined_non_load_distance(
     spec: ModelSpec, pool: pd.DataFrame, query: pd.Series,
 ) -> tuple[np.ndarray | None, float]:
-    """Weighted-average per-group RMS-z distance over non-load groups.
+    """Weighted-average per-group RMS-z distance over broadcast (non-windowed) groups.
 
-    Non-load group features are constant across target hours (broadcast),
-    so the combined non-load distance is computed once per pool row and
-    reused for all 24 target hours. Returns ``(distance_array, total_weight)``;
-    ``distance_array`` is ``None`` when the spec has no non-load groups.
+    Broadcast group features (e.g. outage_level, gas_level) are constant
+    across target hours, so the combined distance is computed once per
+    pool row and reused for all 24 target hours. Returns
+    ``(distance_array, total_weight)``; ``distance_array`` is ``None``
+    when the spec has no broadcast groups.
     """
     non_load_groups = [
         (g, float(spec.feature_group_weights.get(g, 0.0)))
         for g in spec.feature_groups
-        if not g.startswith("load_") and float(spec.feature_group_weights.get(g, 0.0)) > 0
+        if not _is_windowed_group(g) and float(spec.feature_group_weights.get(g, 0.0)) > 0
     ]
     if not non_load_groups:
         return None, 0.0
@@ -176,13 +195,15 @@ def find_twins_per_hour(
     flt_radius = int(spec.flt_radius)
     rows: list[dict] = []
 
-    # Pre-compute non-load groups' combined distance (constant across hours).
+    # Pre-compute broadcast (non-windowed) groups' combined distance (constant
+    # across hours). Windowed groups (load/solar/wind) are evaluated per HE
+    # below.
     non_load_dist, non_load_weight = _combined_non_load_distance(spec, work, query)
     load_weight = sum(
-        float(w) for g, w in spec.feature_group_weights.items() if g.startswith("load_")
+        float(w) for g, w in spec.feature_group_weights.items() if _is_windowed_group(g)
     )
     if load_weight <= 0:
-        # No load groups in the spec; treat the dynamic window as the full
+        # No windowed groups in the spec; treat the dynamic window as the full
         # remaining weight so distances stay finite.
         load_weight = max(0.0, 1.0 - non_load_weight)
 

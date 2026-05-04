@@ -37,6 +37,13 @@ from utils.logging_utils import init_logging  # noqa: E402
 REPORT_OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 
+_PER_HOUR_MODELS: tuple[str, ...] = (
+    configs.PER_HOUR_SPEC.name,
+    configs.PER_HOUR_LEVELS_SPEC.name,
+    configs.PER_HOUR_ALL_SPEC.name,
+)
+
+
 def generate(
     target_date: date,
     output_dir: Path | None = None,
@@ -46,14 +53,19 @@ def generate(
     min_pool_size: int | None = None,
     write_analog_store: bool = True,
     analog_store_dir: Path | None = None,
+    model_name: str = configs.PER_HOUR_SPEC.name,
     pl=None,
 ) -> Path:
+    if model_name not in _PER_HOUR_MODELS:
+        raise ValueError(
+            f"model_name='{model_name}' not in per-hour family {_PER_HOUR_MODELS}"
+        )
     output_dir = output_dir or REPORT_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_config = configs.KnnModelConfig(
         forecast_date=str(target_date),
-        model_name=configs.PER_HOUR_SPEC.name,
+        model_name=model_name,
         n_analogs=configs.DEFAULT_N_ANALOGS if n_analogs is None else int(n_analogs),
         season_window_days=(
             configs.SEASON_WINDOW_DAYS if season_window_days is None
@@ -75,9 +87,11 @@ def generate(
         pl.info(f"{spec.description}  |  flt_radius={spec.flt_radius}")
 
     with contextlib.redirect_stdout(io.StringIO()):
-        pool = build_pool(schema=config.schema, hub=config.hub, cache_dir=configs.CACHE_DIR)
+        pool = build_pool(
+            schema=config.schema, hub=config.hub, cache_dir=configs.CACHE_DIR, spec=spec,
+        )
         query = build_query_row(
-            target_date=target_date, schema=config.schema, cache_dir=configs.CACHE_DIR,
+            target_date=target_date, schema=config.schema, cache_dir=configs.CACHE_DIR, spec=spec,
         )
         dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
         analogs = find_twins_per_hour(
@@ -157,6 +171,9 @@ def _parse_date(s: str) -> date:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Per Hour single-day backtest.")
     parser.add_argument("--date", type=_parse_date, required=True, help="Target date YYYY-MM-DD.")
+    parser.add_argument("--model", type=str, default=configs.PER_HOUR_SPEC.name,
+                        choices=_PER_HOUR_MODELS,
+                        help="Per-hour model spec to run (default: %(default)s).")
     parser.add_argument("--flt-radius", type=int, default=configs.PER_HOUR_SPEC.flt_radius,
                         help="Half-width of the temporal feature window (default: %(default)d).")
     parser.add_argument("--out-dir", type=Path, default=None,
@@ -182,6 +199,7 @@ def main() -> None:
             flt_radius=args.flt_radius,
             write_analog_store=not args.skip_analog_store,
             analog_store_dir=args.analog_store_dir,
+            model_name=args.model,
             pl=pl,
         )
     finally:

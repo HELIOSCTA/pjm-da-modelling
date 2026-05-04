@@ -156,9 +156,11 @@ def build_pool_from_spec(
     """One row per delivery date with all enabled-domain feature cols + 24
     LMP labels.
 
-    Domains are pulled from ``spec.domains`` and inner-joined on ``date``
-    so any candidate day missing a feature is dropped (per the design call
-    on missing data). LMP labels are then left-joined for the hub.
+    Domains are pulled from ``spec.domains`` and outer-joined on ``date``
+    so candidate days can compete on whatever subset of features they have
+    — the engine's NaN-aware RMS-z handles partial coverage. (Older dates
+    where solar/wind/gas/outages didn't exist still compete on load.)
+    LMP labels are then left-joined for the hub.
     """
     if not spec.domains:
         raise ValueError(f"Spec '{spec.name}' has no domains.")
@@ -171,7 +173,7 @@ def build_pool_from_spec(
         if feat is None:
             feat = df
         else:
-            feat = feat.merge(df, on="date", how="inner")
+            feat = feat.merge(df, on="date", how="outer")
 
     df_lmp_da = load_lmp_da(cache_dir=cache_dir)
     df_labels = build_lmp_labels(df_lmp_da, hub)

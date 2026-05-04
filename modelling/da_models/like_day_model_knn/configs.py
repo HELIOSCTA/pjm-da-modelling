@@ -142,6 +142,27 @@ PER_HOUR_SPEC = ModelSpec(
     flt_radius=1,
 )
 
+# Level-feature variant: load + solar + wind on a 3-hour per-HE window;
+# outages and gas as daily-broadcast date-level filters. Solar/wind go
+# through the engine's dynamic-window path (engine.py treats load_/solar_/
+# wind_ group prefixes as windowed); outages/gas go through the broadcast
+# path. Pool spans 2010+ (load) but solar/wind only fill ~2019+ — pool
+# merge in _shared.build_pool_from_spec uses outer-join so older dates
+# compete on load alone via the engine's NaN-aware RMS-z.
+PER_HOUR_LEVELS_SPEC = ModelSpec(
+    name="per_hour_levels",
+    description="Load + solar + wind per-HE levels; outages + M3 gas as daily filters.",
+    match_unit="hour",
+    domains=(
+        "rto_load_profile",
+        "solar_profile",
+        "wind_profile",
+        "outages_level",
+        "gas_level",
+    ),
+    flt_radius=1,
+)
+
 # ── All-domains-on specs (RTO load + renewables + outages + gas) ──────
 
 PER_DAY_DAILY_FEATURES_ALL_SPEC = ModelSpec(
@@ -170,6 +191,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     PER_DAY_DAILY_FEATURES_SPEC.name: PER_DAY_DAILY_FEATURES_SPEC,
     PER_DAY_HOURLY_FEATURES_SPEC.name: PER_DAY_HOURLY_FEATURES_SPEC,
     PER_HOUR_SPEC.name: PER_HOUR_SPEC,
+    PER_HOUR_LEVELS_SPEC.name: PER_HOUR_LEVELS_SPEC,
     PER_DAY_DAILY_FEATURES_ALL_SPEC.name: PER_DAY_DAILY_FEATURES_ALL_SPEC,
     PER_DAY_HOURLY_FEATURES_ALL_SPEC.name: PER_DAY_HOURLY_FEATURES_ALL_SPEC,
     PER_HOUR_ALL_SPEC.name: PER_HOUR_ALL_SPEC,
