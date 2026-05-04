@@ -52,7 +52,7 @@ _ACTUAL_SOURCES: tuple[tuple[str, int | None, bool], ...] = (
 # Forecasts — these must reach ``target_date``.
 _FORECAST_SOURCES: tuple[tuple[str, bool], ...] = (
     # (source,                                              required)
-    ("pjm_outages_forecast_daily",                          False),
+    ("pjm_outages_forecast_history",                        False),
     ("wsi_pjm_hourly_forecast_temp_latest",                 False),
     ("pjm_load_forecast_hourly_da_cutoff",                  False),
     ("pjm_solar_forecast_hourly_da_cutoff",                 False),

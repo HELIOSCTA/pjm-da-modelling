@@ -17,6 +17,7 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
     "fuel_mix":                      ("pjm_fuel_mix_hourly",),
     "outages_actual":                ("pjm_outages_actual_daily",),
     "outages_forecast":              ("pjm_outages_forecast_daily",),
+    "outages_forecast_history":      ("pjm_outages_forecast_history",),
     "solar_forecast":                ("pjm_solar_forecast_hourly_da_cutoff",),
     "wind_forecast":                 ("pjm_wind_forecast_hourly_da_cutoff",),
     "weather_observed_hourly":       ("wsi_pjm_hourly_observed_temp",),
@@ -386,6 +387,55 @@ def _normalize_outages_forecast(df: pd.DataFrame) -> pd.DataFrame:
         )
     normalized = normalized.dropna(subset=["date"])
     return normalized
+
+
+def _normalize_outages_forecast_history(df: pd.DataFrame) -> pd.DataFrame:
+    """Thin pass-through for ``pjm_outages_forecast_history`` parquets.
+
+    The dbt mart already emits clean column names — ``as_of_date`` /
+    ``forecast_execution_date`` (synonymous), ``forecast_date``,
+    ``lead_days``, ``region``, and the four MW columns. This normalizer
+    just type-coerces dates and numerics and keeps every column.
+    """
+    output = df.copy()
+    region_col = _first_present(output.columns, _REGION_CANDIDATES)
+    outage_columns = [
+        column
+        for column in (
+            "total_outages_mw",
+            "planned_outages_mw",
+            "maintenance_outages_mw",
+            "forced_outages_mw",
+        )
+        if column in output.columns
+    ]
+
+    if "forecast_date" not in output.columns or region_col is None or not outage_columns:
+        raise KeyError(
+            "Could not normalize outages_forecast_history; expected "
+            "forecast_date/region/outage columns. "
+            f"Columns: {list(output.columns)}"
+        )
+
+    if region_col != "region":
+        output = output.rename(columns={region_col: "region"})
+    output["region"] = output["region"].astype(str)
+
+    for date_col in ("as_of_date", "forecast_execution_date", "forecast_date"):
+        if date_col in output.columns:
+            output[date_col] = pd.to_datetime(output[date_col], errors="coerce").dt.date
+
+    if "lead_days" in output.columns:
+        output["lead_days"] = pd.to_numeric(output["lead_days"], errors="coerce").astype("Int64")
+
+    for column in outage_columns:
+        output[column] = pd.to_numeric(output[column], errors="coerce")
+
+    output = output.dropna(subset=["forecast_date"])
+    sort_cols = [c for c in ("region", "forecast_date", "as_of_date") if c in output.columns]
+    if sort_cols:
+        output = output.sort_values(sort_cols).reset_index(drop=True)
+    return output
 
 
 def _normalize_solar_forecast(df: pd.DataFrame) -> pd.DataFrame:
@@ -808,6 +858,7 @@ _NORMALIZERS = {
     "fuel_mix": _normalize_fuel_mix,
     "outages_actual": _normalize_outages_actual,
     "outages_forecast": _normalize_outages_forecast,
+    "outages_forecast_history": _normalize_outages_forecast_history,
     "solar_forecast": _normalize_solar_forecast,
     "wind_forecast": _normalize_wind_forecast,
     "weather_observed_hourly": _normalize_weather_hourly,
@@ -944,6 +995,32 @@ def load_outages_forecast(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("outages_forecast", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_outages_forecast_history(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+    lead_days: int | None = 1,
+) -> pd.DataFrame:
+    """PJM outages forecast history (back to 2020).
+
+    Carries one row per (region, forecast_date, as_of_date) — PJM publishes
+    once per morning, so each (region, forecast_date) has up to 8 vintages
+    with ``lead_days`` 0..7. Default ``lead_days=1`` returns the DA
+    decision-time vintage (the forecast on file at the DA cutoff for the
+    operating day, i.e. ``as_of_date == forecast_date - 1``). Pass
+    ``lead_days=None`` to return all vintages, or another int (0-7) for a
+    different lead. The filter is on the ``lead_days`` column directly
+    (the dbt view computes it), so no date math is needed here.
+    """
+    df = _load_dataset(
+        "outages_forecast_history", path=path, cache_dir=cache_dir, columns=None,
+    )
+    if lead_days is not None and "lead_days" in df.columns:
+        df = df[df["lead_days"] == lead_days].copy()
+    return _apply_column_filter(df, columns)
 
 
 def load_solar_forecast(

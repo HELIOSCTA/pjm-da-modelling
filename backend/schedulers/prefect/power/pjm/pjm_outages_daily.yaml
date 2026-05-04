@@ -13,7 +13,7 @@ deployments:
 
   # ────── PJM Outages Daily ──────
   # Daily umbrella: scrape PJM 7-day outage forecast,
-  # rebuild dbt outage marts (actual + forecast — daily),
+  # rebuild dbt outage marts (actual_daily + forecast_history),
   # then export each mart to parquet for downstream consumers.
   #
   # Upstream cadence: PJM posts the feed daily at 06:00 EPT (04:00 MST).

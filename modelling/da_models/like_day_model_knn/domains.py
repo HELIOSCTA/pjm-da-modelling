@@ -331,19 +331,24 @@ RENEWABLES = FeatureDomain(
 
 # ── outages ──────────────────────────────────────────────────────────────
 
-def _outage_features_from_actuals(df_actual_rto: pd.DataFrame) -> pd.DataFrame:
-    """Build all 7 outage features from a date-keyed RTO actuals frame.
+def _outage_features_from_series(df_rto: pd.DataFrame) -> pd.DataFrame:
+    """Build all 7 outage features from a date-keyed RTO outage series.
 
-    The trend features (7d mean, daily change) are computed as backward
-    rolling stats over the actuals series and used for both pool and query.
+    Input may be either actuals (lead=0 same-day) or DA-decision-time
+    forecasts (lead=1) — same column shape either way. The trend features
+    (7d mean, daily change) are computed as backward rolling stats over
+    whatever series is passed and used for both pool and query, keeping
+    the historical pool and the live query on the same vintage axis.
     """
-    if df_actual_rto is None or len(df_actual_rto) == 0:
+    if df_rto is None or len(df_rto) == 0:
         return pd.DataFrame(columns=["date"] + OUTAGE_COLS)
 
-    df = df_actual_rto[[
-        "date", "total_outages_mw", "planned_outages_mw",
+    date_col = "forecast_date" if "forecast_date" in df_rto.columns else "date"
+    df = df_rto[[
+        date_col, "total_outages_mw", "planned_outages_mw",
         "maintenance_outages_mw", "forced_outages_mw",
     ]].copy()
+    df = df.rename(columns={date_col: "date"})
     df["date"] = _to_date(df["date"])
     for c in ["total_outages_mw", "planned_outages_mw", "maintenance_outages_mw", "forced_outages_mw"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -364,20 +369,22 @@ def _outage_features_from_actuals(df_actual_rto: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_outages_pool(cache_dir: Path | None) -> pd.DataFrame:
-    df = loader.load_outages_actual(cache_dir=cache_dir)
+    """Pool features come from the DA-decision-time vintage (lead=1) of the
+    forecast history — same vintage axis as the query, closing the apples-
+    to-oranges leak from the prior actuals-based pool (lead=0)."""
+    df = loader.load_outages_forecast_history(cache_dir=cache_dir, lead_days=1)
     df = df[df["region"].astype(str) == RTO]
-    return _outage_features_from_actuals(df)
+    return _outage_features_from_series(df)
 
 
 def _build_outages_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:
-    """Query: level cols come from forecast for target_date; trend cols come
-    from actuals leading up to target_date (forecast file has no history)."""
-    fc = loader.load_outages_forecast(cache_dir=cache_dir)
-    fc = fc[fc["region"].astype(str) == RTO].copy()
-    if "forecast_rank" in fc.columns:
-        fc = fc[fc["forecast_rank"] == 1]
-    fc["date"] = _to_date(fc["date"])
-    fc = fc[fc["date"] == target_date]
+    """Query: level cols come from the DA-decision-time vintage (lead=1) for
+    target_date; trend cols come from a backward window of the same lead=1
+    series so pool and query share one vintage axis."""
+    history = loader.load_outages_forecast_history(cache_dir=cache_dir, lead_days=1)
+    history = history[history["region"].astype(str) == RTO].copy()
+    history["date"] = _to_date(history["forecast_date"])
+    fc = history[history["date"] == target_date]
     if len(fc) == 0:
         empty = {"date": target_date, **{c: np.nan for c in OUTAGE_COLS}}
         return pd.DataFrame([empty])
@@ -392,21 +399,15 @@ def _build_outages_query(target_date: date, cache_dir: Path | None) -> pd.DataFr
     total = out["outage_total_mw"]
     out["outage_forced_share"] = (out["outage_forced_mw"] / total) if total and total > 0 else np.nan
 
-    # Trend cols: backward 7d mean and day-over-day change from actuals
-    # leading into target_date.
-    actuals = loader.load_outages_actual(cache_dir=cache_dir)
-    actuals = actuals[actuals["region"].astype(str) == RTO].copy()
-    actuals["date"] = _to_date(actuals["date"])
+    # Trend cols: backward 7d mean and day-over-day change from the same
+    # lead=1 series leading into target_date.
     cutoff_lo = target_date - timedelta(days=8)
-    prior = actuals[(actuals["date"] >= cutoff_lo) & (actuals["date"] < target_date)].sort_values("date")
+    prior = history[(history["date"] >= cutoff_lo) & (history["date"] < target_date)].sort_values("date")
     if len(prior) >= 1:
         last7 = prior.tail(7)["total_outages_mw"]
         out["outage_total_7d_mean"] = float(pd.to_numeric(last7, errors="coerce").mean())
-        if len(prior) >= 1 and not prior.empty:
-            last = float(prior["total_outages_mw"].iloc[-1])
-            out["outage_total_daily_change"] = total - last if pd.notna(total) and pd.notna(last) else np.nan
-        else:
-            out["outage_total_daily_change"] = np.nan
+        last = float(prior["total_outages_mw"].iloc[-1])
+        out["outage_total_daily_change"] = total - last if pd.notna(total) and pd.notna(last) else np.nan
     else:
         out["outage_total_7d_mean"] = np.nan
         out["outage_total_daily_change"] = np.nan

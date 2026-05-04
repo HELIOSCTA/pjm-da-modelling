@@ -14,7 +14,10 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from da_models.common import configs
-from da_models.common.data.loader import load_outages_actual, load_outages_forecast
+from da_models.common.data.loader import (
+    load_outages_actual,
+    load_outages_forecast_history,
+)
 from utils.logging_utils import get_logger
 
 logger = get_logger()
@@ -72,7 +75,7 @@ def build_fragments(
 
 def _build_forecast_sections(cache_dir: Path) -> list[Section]:
     try:
-        df = load_outages_forecast(cache_dir=cache_dir)
+        df = load_outages_forecast_history(cache_dir=cache_dir, lead_days=None)
     except FileNotFoundError as exc:
         logger.warning(f"Outages forecast parquet not found: {exc}")
         return [("Forecast Outages RTO", _empty("No outage forecast data available."), None)]
@@ -83,6 +86,18 @@ def _build_forecast_sections(cache_dir: Path) -> list[Section]:
     df = df[df["region"] == configs.LOAD_REGION].copy()
     if len(df) == 0:
         return [("Forecast Outages RTO", _empty(f"No forecast data for region {configs.LOAD_REGION}."), None)]
+
+    # Heatmap renderer expects a `date` column (forecast target date).
+    if "date" not in df.columns and "forecast_date" in df.columns:
+        df["date"] = df["forecast_date"]
+
+    # Derive forecast_rank locally — newest vintage per forecast_date is rank N.
+    if "forecast_date" in df.columns and "as_of_date" in df.columns:
+        df["forecast_rank"] = (
+            df.groupby("forecast_date")["as_of_date"]
+            .rank(method="dense", ascending=True)
+            .astype(int)
+        )
 
     if "forecast_rank" in df.columns:
         df = df.sort_values("forecast_rank", ascending=False)

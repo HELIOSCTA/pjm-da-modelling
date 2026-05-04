@@ -20,7 +20,7 @@ SCRAPES = [
 # the same source, so one invocation walks the shared ancestors once.
 MARTS = [
     "pjm_outages_actual_daily",
-    "pjm_outages_forecast_daily",
+    "pjm_outages_forecast_history",
 ]
 
 

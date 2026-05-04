@@ -16,7 +16,7 @@ for path in (_APP_ROOT, _MODELLING_ROOT):
 from da_models.common import configs  # noqa: E402
 from da_models.common.data.loader import (  # noqa: E402
     load_outages_actual,
-    load_outages_forecast,
+    load_outages_forecast_history,
 )
 from html_reports.fragments.outages import (  # noqa: E402
     _OUTAGE_TYPES,
@@ -33,8 +33,23 @@ st.caption(
 
 @st.cache_data(show_spinner="Loading outages forecast parquet...")
 def _load_forecast() -> pd.DataFrame:
-    df = load_outages_forecast(cache_dir=configs.CACHE_DIR)
-    return df.copy() if df is not None else pd.DataFrame()
+    # All vintages — page builds a vintage heatmap keyed by
+    # forecast_execution_date x forecast_date.
+    df = load_outages_forecast_history(cache_dir=configs.CACHE_DIR, lead_days=None)
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    df = df.copy()
+    # Heatmap renderer expects a `date` column (forecast target date).
+    if "date" not in df.columns and "forecast_date" in df.columns:
+        df["date"] = df["forecast_date"]
+    # Derive forecast_rank locally — newest vintage per forecast_date is rank N.
+    if "forecast_date" in df.columns and "as_of_date" in df.columns:
+        df["forecast_rank"] = (
+            df.groupby("forecast_date")["as_of_date"]
+            .rank(method="dense", ascending=True)
+            .astype(int)
+        )
+    return df
 
 
 @st.cache_data(show_spinner="Loading outages actuals parquet...")

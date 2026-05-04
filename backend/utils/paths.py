@@ -23,7 +23,7 @@ PARQUETS: dict[str, str] = {
     "lmps_hourly":                   "pjm_lmps_hourly.parquet",
     "fuel_mix":                      "pjm_fuel_mix_hourly.parquet",
     "outages_actual":                "pjm_outages_actual_daily.parquet",
-    "outages_forecast":              "pjm_outages_forecast_daily.parquet",
+    "outages_forecast":              "pjm_outages_forecast_history.parquet",
     "load_forecast":                 "pjm_load_forecast_hourly_da_cutoff_historical.parquet",
     "solar_forecast":                "pjm_solar_forecast_hourly_da_cutoff_historical.parquet",
     "wind_forecast":                 "pjm_wind_forecast_hourly_da_cutoff_historical.parquet",
