@@ -23,7 +23,7 @@ Soft holidays (Good Friday, Easter) suppress load — don't buy DA into them
 
 **TODO**
 
-Document position size limits for DA, RT, and Balweek trading — Edi to send details
+Position size limits documented in [@ICE-Trade-Blotter/MY-LIMITS.md](@ICE-Trade-Blotter/MY-LIMITS.md). Balweek limits still pending from Edi.
 
 ---
 

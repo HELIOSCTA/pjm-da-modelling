@@ -13,6 +13,7 @@ at `helioscta-obsidian/PJM`. Not synced — re-copy to refresh.
 | `TODO/` | Open investigations, one folder per topic (reserves, congestion, weather vs load, ...). |
 | `Daily-Prompt/` | Daily-prompt template + prompt iteration log + supporting SQL. |
 | `PAPER-TRADING/` | Trade journal, review log/template, trade-log CSV. |
+| `@ICE-Trade-Blotter/` | ICE trade blotter screenshots and position-size limits (`MY-LIMITS.md`). |
 | `@Reading/` | Source PDFs that the LOGGED briefs are written from. |
 | `@Images/` | Image attachments referenced by markdown notes. |
 | `PJM-Morning-Fundies.md` | Standing morning fundies note (live in obsidian; this is a snapshot). |

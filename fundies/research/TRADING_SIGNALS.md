@@ -66,6 +66,7 @@ bullish (+), bearish (-), or neutral (=). Update confidence 1-5.
 - [ ] Flat load from data centers (upends typical demand trends)
 - [ ] Solar curtailment risk in Dominion (spring/shoulder)
 - [ ] Month depth: deeper into month = less liquidity, harder to exit
+- [ ] Monday DA startup-cost premium (units offline over weekend bid in no-load/start costs → Monday DA structurally higher than mid-week)
 
 ---
 
