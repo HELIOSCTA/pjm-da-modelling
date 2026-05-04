@@ -15,6 +15,14 @@ if _env_file.exists():
 CACHE_DIR: Path = BASE_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Mirror cache for the modelling code under modelling/data/cache/. Honours
+# DA_MODELS_CACHE_DIR (the env var modelling/da_models/common/configs.py reads)
+# so a single override keeps both sides in agreement.
+_REPO_ROOT = BASE_DIR.parent
+MODELLING_CACHE_DIR: Path = Path(
+    os.getenv("DA_MODELS_CACHE_DIR", str(_REPO_ROOT / "modelling" / "data" / "cache")),
+).expanduser()
+
 DBT_PROJECT_DIR = BASE_DIR / "dbt" / "dbt_azure_postgresql"
 
 DBT_SCHEMA = "pjm_da_modelling_cleaned"

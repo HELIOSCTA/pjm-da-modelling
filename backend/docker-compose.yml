@@ -45,10 +45,12 @@ services:
         condition: service_healthy
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
+      - DA_MODELS_CACHE_DIR=/modelling-cache
     env_file:
       - .env
     volumes:
       - ./cache:/app/cache
+      - ../modelling/data/cache:/modelling-cache
     command:
       - bash
       - -c

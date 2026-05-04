@@ -82,6 +82,12 @@ def write_model_cache(
         published_at.isoformat(),
     )
 
+    mirror_dir = settings.MODELLING_CACHE_DIR
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    mirror_path = mirror_dir / f"{dataset_name}.parquet"
+    df.to_parquet(mirror_path, index=False)
+    logger.info("Mirrored %s to %s", dataset_name, mirror_path)
+
     if not settings.CACHE_BLOB_ENABLED:
         return local_path
 
