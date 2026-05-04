@@ -62,8 +62,8 @@ EXCLUDE_DATES: list[str] = []  # add YYYY-MM-DD strings to drop from the pool
 #   - RECENCY_HALF_LIFE_YEARS: soft exponential decay on the analog weight
 #     post-selection. ``weight *= 0.5 ** (age_years / half_life)``.
 #     Doesn't change pool composition; only how analogs blend in the forecast.
-MAX_AGE_YEARS: int | None = None
-RECENCY_HALF_LIFE_YEARS: float | None = None
+MAX_AGE_YEARS: int | None = 3
+RECENCY_HALF_LIFE_YEARS: float | None = 2.0
 
 # Saturday/Sunday narrow the window and tighten DOW matching.
 # Only knobs that exist on KnnModelConfig are listed here — no feature_group

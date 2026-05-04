@@ -69,9 +69,15 @@ def print_config(
     print(f"  Spec          {spec.name}")
     print(f"  Description   {spec.description}")
 
+    half_life = config.recency_half_life_years
+    if half_life is not None and float(half_life) > 0:
+        weight_method = f"inverse_distance + age_decay (half-life={float(half_life):g}y)"
+    else:
+        weight_method = "inverse_distance"
+
     print(f"\n  --- Analog Selection {'-' * 28}")
     print(f"  N analogs          {config.n_analogs}")
-    print(f"  Weight method      inverse_distance + age_decay")
+    print(f"  Weight method      {weight_method}")
     print(f"  flt_radius         {spec.flt_radius}")
 
     print(f"\n  --- Pre-Filtering {'-' * 30}")
