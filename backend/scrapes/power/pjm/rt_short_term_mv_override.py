@@ -38,9 +38,10 @@ def _pull() -> pd.DataFrame:
     url: str = (
         "https://api.pjm.com/api/v1/rt_short_term_mv_override"
         "?rowCount=50000&startRow=1&format=csv"
-        "&subscription-key=0e3e44aa6bde4d5da1699fda4511235e"
+        f"&subscription-key={credentials.PJM_API_KEY}"
     )
     response = requests.get(url)
+    response.raise_for_status()
 
     # return empty DataFrame if API returns no data
     if not response.text.strip():

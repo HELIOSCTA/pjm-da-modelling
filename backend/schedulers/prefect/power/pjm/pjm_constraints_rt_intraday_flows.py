@@ -12,15 +12,19 @@ from backend.utils import logging_utils, pipeline_run_logger
 logger = logging.getLogger(__name__)
 
 
-# RT-side feeds for the binding-constraints pivot. All use the scrapes/
-# rolling-window variants: continuous publication, 7-day backfill catches
-# any gaps without needing the poll-and-land pattern.
+# RT-side feeds for the binding-constraints pivot.
 #   rt_marginal_value         - 5-min shadow prices (aggregated to hourly in
-#                               dbt staging via DATE_TRUNC + AVG)
+#                               dbt staging via DATE_TRUNC + AVG). Uses the
+#                               orchestration poll-and-land wrapper (PJM
+#                               posts daily on business days, 11 AM-12 PM ET);
+#                               the wrapper polls every 60s for up to 2h
+#                               so a fire just before publish is fine.
 #   rt_default_mv_override    - long-running penalty-factor reference table
+#                               (rolling-window scrape; small reference data)
 #   rt_short_term_mv_override - short-term operator override events
+#                               (rolling-window scrape; small reference data)
 SCRAPES = [
-    ("backend.scrapes.power.pjm.rt_marginal_value",         "rt_marginal_value"),
+    ("backend.orchestration.power.pjm.rt_marginal_value",   "rt_marginal_value"),
     ("backend.scrapes.power.pjm.rt_default_mv_override",    "rt_default_mv_override"),
     ("backend.scrapes.power.pjm.rt_short_term_mv_override", "rt_short_term_mv_override"),
 ]
@@ -66,15 +70,15 @@ def run_scrape(module_path: str) -> None:
     mod.main()
 
 
-@flow(name="PJM Constraints RT Intraday")
+@flow(name="PJM Constraints RT Daily")
 def pjm_constraints_rt_intraday():
     """RT-side flow — pull RT binding-constraint shadow prices and override
     reference tables, then rebuild the unified DA/RT/DART pivot mart.
 
-    Runs hourly to provide intra-day freshness on the RT side. Scrapes use
-    the rolling-window variant (7-back / 2-forward) so any gaps from missed
-    runs are covered automatically. Override tables are small reference data;
-    full re-pulls are cheap.
+    Runs once per business day after PJM's 11 AM-12 PM ET publish window.
+    The rt_marginal_value step uses the orchestration poll-and-land wrapper
+    so the run survives a late publish. Override tables are small reference
+    data via rolling-window scrapes; full re-pulls are cheap.
     """
     run = pipeline_run_logger.PipelineRunLogger(
         pipeline_name="pjm_constraints_rt_intraday", source="power",

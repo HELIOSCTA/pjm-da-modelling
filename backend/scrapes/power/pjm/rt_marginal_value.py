@@ -1,7 +1,22 @@
+"""PJM Real-Time Marginal Value (binding-constraint shadow prices).
+
+The PJM API partitions this feed internally on `datetime_beginning_utc`,
+not `_ept`. Filtering with `datetime_beginning_ept=YYYY-MM-DD 00:00 to
+YYYY-MM-DD 23:00` silently drops boundary rows whose UTC bucket has
+rolled to the next day — symptom: HTTP 200 with empty body for "today".
+We therefore convert each EPT day to its covering UTC window and query
+on `datetime_beginning_utc`.
+
+Rolling-window backfill (today-7 -> today+2) keeps gaps from missed runs
+self-healing without polling. The companion orchestration wrapper at
+`backend/orchestration/power/pjm/rt_marginal_value.py` handles the
+poll-and-wait single-day pattern for the hourly Prefect cadence.
+"""
 import requests
 from io import StringIO
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 
 import pandas as pd
@@ -16,6 +31,10 @@ from backend.utils import (
 # SCRAPE
 API_SCRAPE_NAME = "rt_marginal_value"
 
+# Timezone handles
+EPT = ZoneInfo("America/New_York")
+UTC = ZoneInfo("UTC")
+
 # logging
 logger = logging_utils.init_logging(
     name=API_SCRAPE_NAME,
@@ -24,34 +43,48 @@ logger = logging_utils.init_logging(
     delete_if_no_errors=True,
 )
 
-"""
-"""
 
-def _pull(
-        start_date: str = datetime.now().strftime("%Y-%m-%d 00:00"),
-        end_date: str = datetime.now().strftime("%Y-%m-%d 23:00"),
-    ) -> pd.DataFrame:
+def _ept_day_to_utc_window(d: datetime) -> tuple[str, str]:
+    """Convert an EPT calendar day into the UTC window that covers it.
+
+    Returns (start_utc, end_utc) as ``YYYY-MM-DD HH:MM`` strings the PJM
+    API accepts. DST-aware via zoneinfo — EDT shifts to EST automatically.
     """
-        Real-Time Marginal Value (binding-constraint shadow prices)
-        https://dataminer2.pjm.com/feed/rt_marginal_value/definition
+    day_start_ept = datetime.combine(d.date(), time(0, 0), tzinfo=EPT)
+    day_end_ept = datetime.combine(d.date(), time(23, 59), tzinfo=EPT)
+    return (
+        day_start_ept.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
+        day_end_ept.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
+    )
 
-        Posting Frequency: Hourly (RT dispatch interval)
+
+def _pull(start_utc: str, end_utc: str) -> pd.DataFrame:
+    """Real-Time Marginal Value (binding-constraint shadow prices).
+
+    https://dataminer2.pjm.com/feed/rt_marginal_value/definition
+    Posting Frequency: Daily on business days, 11 AM-12 PM ET.
+    Grain: 5-minute intervals (Apr 2018 onward); hourly before that.
     """
 
-    url: str = f"https://api.pjm.com/api/v1/rt_marginal_value?rowCount=50000&startRow=1&datetime_beginning_ept={start_date}%20to%20{end_date}&format=csv&subscription-key=0e3e44aa6bde4d5da1699fda4511235e"
+    url: str = (
+        f"https://api.pjm.com/api/v1/rt_marginal_value"
+        f"?rowCount=50000&startRow=1"
+        f"&datetime_beginning_utc={start_utc} to {end_utc}"
+        f"&format=csv"
+        f"&subscription-key={credentials.PJM_API_KEY}"
+    )
     response = requests.get(url)
+    response.raise_for_status()
 
-    # return empty DataFrame if API returns no data
+    # API returns 200 + empty body when the requested window has no data
     if not response.text.strip():
         return pd.DataFrame()
 
-    # read data
     df = pd.read_csv(StringIO(response.text))
 
-    # Remove unwanted characters from column names
+    # Strip BOM that PJM occasionally injects on the first column
     df.columns = df.columns.str.replace('ï»¿', '')
 
-    # Convert to datetime
     for col in [
         'datetime_beginning_utc',
         'datetime_beginning_ept',
@@ -101,6 +134,8 @@ def main(
     )
     run.start()
 
+    total_rows = 0  # accumulate across the loop so the final metric is truthful
+
     try:
 
         logger.header(f"{API_SCRAPE_NAME}")
@@ -108,31 +143,33 @@ def main(
         current_date = start_date
         while current_date <= end_date:
 
-            # dates
-            params = {
-                "start_date": current_date.strftime("%Y-%m-%d 00:00"),
-                "end_date": current_date.strftime("%Y-%m-%d 23:00"),
-            }
-
-            # pull
-            logger.section(f"Pulling data for {params['start_date']} to {params['end_date']}...")
-            df = _pull(
-                start_date=params['start_date'],
-                end_date=params['end_date'],
+            # EPT calendar day -> UTC bounds (PJM filters on UTC partition)
+            start_utc, end_utc = _ept_day_to_utc_window(current_date)
+            logger.section(
+                f"Pulling EPT day {current_date.date()} "
+                f"(UTC window: {start_utc} -> {end_utc})..."
             )
+            df = _pull(start_utc=start_utc, end_utc=end_utc)
 
             # upsert
             if df.empty:
-                logger.section(f"No data returned for {params['start_date']} to {params['end_date']}, skipping upsert.")
+                logger.section(
+                    f"No data returned for EPT day {current_date.date()}, "
+                    "skipping upsert."
+                )
             else:
                 logger.section(f"Upserting {len(df)} rows...")
                 _upsert(df)
-                logger.success(f"Successfully pulled and upserted data for {params['start_date']} to {params['end_date']}!")
+                total_rows += len(df)
+                logger.success(
+                    f"Successfully pulled and upserted {len(df)} rows "
+                    f"for EPT day {current_date.date()}!"
+                )
 
             # increment
             current_date += delta
 
-        run.success(rows_processed=len(df) if 'df' in locals() else 0)
+        run.success(rows_processed=total_rows)
 
     except Exception as e:
 
@@ -148,8 +185,6 @@ def main(
     if 'df' in locals() and df is not None:
         return df
 
-"""
-"""
 
 if __name__ == "__main__":
     df = main()

@@ -11,29 +11,30 @@ pull:
 
 deployments:
 
-  # ────── PJM Constraints RT Intraday ──────
-  # Hourly flow: pull RT binding-constraint shadow prices (rt_marginal_value)
+  # ────── PJM Constraints RT Daily ──────
+  # Daily flow: pull RT binding-constraint shadow prices (rt_marginal_value)
   # and the two override reference tables (rt_default_mv_override,
   # rt_short_term_mv_override), then rebuild the unified DA/RT/DART pivot
   # mart pjm_constraints_hourly_pivot.
   #
-  # Cadence rationale: PJM publishes RT marginal values continuously through
-  # the day. Hourly cadence provides intra-day freshness for spread analysis
-  # without hammering the API. The DA flow runs the same dbt selection at
-  # clearing time; both sides converge on the same pivot view.
-  # Fires at :25 to stay clear of the LMPs RT intraday flow at :25 — the two
-  # share the same minute slot but tag-separate via Prefect.
+  # Cadence rationale: PJM publishes rt_marginal_value daily on business
+  # days between 11 AM and 12 PM ET. Firing once at 11:30 ET catches the
+  # publish window with minimum waste; the orchestration poll-and-land
+  # wrapper covers a late publish (polls every 60s for up to 2h). The DA
+  # flow runs the same dbt selection at its own clearing time; both sides
+  # converge on the same pivot view.
 
-  - name: PJM Constraints RT Intraday
+  - name: PJM Constraints RT Daily
     entrypoint: schedulers/prefect/power/pjm/pjm_constraints_rt_intraday_flows.py:pjm_constraints_rt_intraday
     work_pool:
       name: default-agent-pool
       work_queue_name: default
-    tags: [pjm, power, constraints_rt, intraday]
+    tags: [pjm, power, constraints_rt, daily]
     schedules:
 
-      # ────── Hourly at :25 ──────
-      # PJM posts RT marginal values shortly after each settlement interval;
-      # :25 gives a buffer past the top of the hour for late publication.
-      - cron: "25 * * * *"
-        timezone: "America/Denver"
+      # ────── Weekday 11:30 AM ET ──────
+      # PJM posts rt_marginal_value between 11 AM and 12 PM ET on business
+      # days. 11:30 ET is just inside the window; the wrapper polls until
+      # data lands or the 2h ceiling hits.
+      - cron: "30 11 * * 1-5"
+        timezone: "America/New_York"
