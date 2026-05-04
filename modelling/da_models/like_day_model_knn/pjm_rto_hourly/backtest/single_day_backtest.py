@@ -1,22 +1,25 @@
-"""Single-day backtest for pjm_rto_hourly.
+"""Single-day multi-scenario backtest for pjm_rto_hourly.
 
-A backtest runs the forecast pipeline for a date with KNOWN actuals and
-surfaces the metrics. Differs from
-``pipelines/forecast_single_day.py`` in two ways:
+Runs many (weight + knob) scenarios against ONE target date with known
+actuals, then ranks them by MAE / rMAE / CRPS and surfaces each
+scenario's forecast OnPeak / OffPeak / Flat alongside the actuals.
 
-  - default target is YESTERDAY (``date.today() - 1d``), not tomorrow.
-  - hard-fails if the target date has no actuals in the pool — a
-    backtest without actuals is meaningless, and silent metric-skipping
-    masks the cause.
+Differs from ``backtest/param_sweep.py``:
 
-Use this when you want a single-date evaluation. Use
-``backtest/param_sweep.py`` when you want to compare scenarios across a
-window of dates.
+  - param_sweep walks across MANY weekday targets and aggregates
+    metrics — used to pick weights that generalize.
+  - single_day_backtest pins ONE target date and shows per-scenario
+    forecast detail — used for "how would each config have done on
+    this specific day?"
 
-Tunable defaults at the top — edit and re-run, no CLI flags. The
-optional ``FEATURE_GROUP_WEIGHTS_OVERRIDE`` constant lets you ask
-"how would yesterday have looked under different weights?" without
-touching ``domains.py``.
+Default target is YESTERDAY (``date.today() - 1d``); edit
+``TARGET_DATE`` at the top to pick any past date.
+
+Hard-fails if the target has no actuals in the pool — a backtest
+without actuals is meaningless.
+
+Tunable defaults at the top — edit and re-run, no CLI flags. Add your
+weight perturbations to ``SCENARIOS``.
 
 Usage::
 
@@ -26,6 +29,8 @@ Usage::
 from __future__ import annotations
 
 import sys
+import time
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -33,78 +38,273 @@ _MODELLING_ROOT = Path(__file__).resolve().parents[4]
 if str(_MODELLING_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODELLING_ROOT))
 
-from da_models.like_day_model_knn import configs  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from da_models.like_day_model_knn import _shared, configs  # noqa: E402
+from da_models.like_day_model_knn.pjm_rto_hourly.builder import (  # noqa: E402
+    build_pool, build_query_row,
+)
+from da_models.like_day_model_knn.pjm_rto_hourly.forecast import (  # noqa: E402
+    actuals_from_pool,
+)
 from da_models.like_day_model_knn.pjm_rto_hourly.pipelines.forecast_single_day import (  # noqa: E402
     run as forecast_run,
 )
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
-TARGET_DATE: date | None = None              # None -> yesterday (date.today() - 1d)
+TARGET_DATE: date | None = date(2026, 4, 30)   # None -> yesterday (date.today() - 1d)
 MODEL_NAME: str = configs.PJM_RTO_HOURLY_SPEC.name
-FLT_RADIUS: int = configs.PJM_RTO_HOURLY_SPEC.flt_radius
-N_ANALOGS: int | None = None                 # None -> configs.DEFAULT_N_ANALOGS
-SEASON_WINDOW_DAYS: int | None = None        # None -> configs.SEASON_WINDOW_DAYS
-MIN_POOL_SIZE: int | None = None             # None -> configs.MIN_POOL_SIZE
 
-# Optional: override the spec's feature-group weights for this backtest only.
-# Useful for "if I'd used these weights yesterday, how would I have done?".
-# None -> use spec defaults. See param_sweep.py for valid keys + examples.
-FEATURE_GROUP_WEIGHTS_OVERRIDE: dict[str, float] | None = None
+# Each scenario:
+#     "<name>": {
+#         "weights": {group: raw_weight, ...} | None,    # None -> spec defaults
+#         "overrides": {run_kwarg: value, ...},          # any forecast_run() kwarg
+#     }
+# Weights are RAW multipliers — renormalized to sum=1.0 inside the engine.
+# Overrides can carry e.g. flt_radius=0, n_analogs=30, season_window_days=90.
+#
+# Valid weight keys (from PJM_RTO_HOURLY_SPEC.feature_groups):
+#   load_overnight, load_morning, load_midday, load_peak, load_evening,
+#   solar_level, wind_level, outage_level, gas_level
+SCENARIOS: dict[str, dict] = {
+    "default": {
+        "weights": None,
+        "overrides": {},
+    },
+    # TODO: add your perturbations. Examples:
+    #
+    # "heavy_load_peak": {
+    #     "weights": {
+    #         "load_peak": 7.0, "load_evening": 2.0, "load_midday": 2.0,
+    #         "load_morning": 1.5, "load_overnight": 1.0,
+    #         "solar_level": 0.5, "wind_level": 0.5,
+    #         "outage_level": 1.0, "gas_level": 0.5,
+    #     },
+    #     "overrides": {},
+    # },
+    # "outage_driven": {
+    #     "weights": {
+    #         "load_peak": 2.0, "load_evening": 1.0, "load_midday": 1.0,
+    #         "load_morning": 1.0, "load_overnight": 0.5,
+    #         "solar_level": 1.0, "wind_level": 1.0,
+    #         "outage_level": 6.0, "gas_level": 1.0,
+    #     },
+    #     "overrides": {},
+    # },
+    # "no_window": {"weights": None, "overrides": {"flt_radius": 0}},
+    # "more_analogs": {"weights": None, "overrides": {"n_analogs": 40}},
+}
+
+_RUN_KWARGS_PASSTHROUGH: tuple[str, ...] = (
+    "flt_radius", "n_analogs", "season_window_days", "min_pool_size",
+)
 
 
 def _resolve_target_date(target_date: date | None) -> date:
     return target_date if target_date is not None else date.today() - timedelta(days=1)
 
 
+def _scenario_overrides_for_run(scenario: dict) -> dict:
+    overrides = scenario.get("overrides") or {}
+    return {k: v for k, v in overrides.items() if k in _RUN_KWARGS_PASSTHROUGH}
+
+
+def _execute_scenario(
+    *,
+    scenario_name: str,
+    scenario: dict,
+    target_date: date,
+    pool: pd.DataFrame,
+    query: pd.Series,
+    dates_meta: pd.DataFrame,
+    model_name: str,
+) -> dict:
+    started = time.perf_counter()
+    base: dict = {
+        "scenario_name": scenario_name,
+        "status": "ok",
+        "error_message": None,
+    }
+    try:
+        result = forecast_run(
+            target_date=target_date,
+            model_name=model_name,
+            pool=pool, query=query, dates_meta=dates_meta,
+            feature_group_weights_override=scenario.get("weights"),
+            quiet=True,
+            write_analog_store=False,
+            **_scenario_overrides_for_run(scenario),
+        )
+    except Exception as exc:
+        base.update({
+            "status": "failed",
+            "error_message": f"{type(exc).__name__}: {exc}",
+            "duration_s": round(time.perf_counter() - started, 3),
+        })
+        return base
+
+    metrics = result.get("metrics") or {}
+    output_table = result.get("output_table")
+    forecast_row = (
+        output_table[output_table["Type"] == "Forecast"].iloc[0]
+        if output_table is not None and len(output_table) else None
+    )
+
+    base.update({
+        "n_analogs_used": result.get("n_analogs_used"),
+        "mae": metrics.get("mae"),
+        "rmse": metrics.get("rmse"),
+        "mape": metrics.get("mape"),
+        "rmae": metrics.get("rmae"),
+        "crps": metrics.get("crps"),
+        "mean_pinball": metrics.get("mean_pinball"),
+        "coverage_80pct": metrics.get("coverage_80pct"),
+        "coverage_90pct": metrics.get("coverage_90pct"),
+        "coverage_98pct": metrics.get("coverage_98pct"),
+        "sharpness_90pct": metrics.get("sharpness_90pct"),
+        "forecast_onpeak": float(forecast_row["OnPeak"]) if forecast_row is not None else None,
+        "forecast_offpeak": float(forecast_row["OffPeak"]) if forecast_row is not None else None,
+        "forecast_flat": float(forecast_row["Flat"]) if forecast_row is not None else None,
+        "duration_s": round(time.perf_counter() - started, 3),
+    })
+    return base
+
+
+def _print_comparison(
+    rows: list[dict], target_date: date, actuals_summary: dict[str, float],
+) -> None:
+    df = pd.DataFrame(rows)
+    ok = df[df["status"] == "ok"].copy()
+    failed = df[df["status"] == "failed"]
+
+    print("\n" + "=" * 110)
+    print(f"  SINGLE-DAY BACKTEST — {target_date} ({target_date.strftime('%a')})  |  Hub: WESTERN HUB")
+    print(f"  Actuals  OnPeak={actuals_summary['onpeak']:>7.2f}  "
+          f"OffPeak={actuals_summary['offpeak']:>7.2f}  "
+          f"Flat={actuals_summary['flat']:>7.2f}  ($/MWh)")
+    print(f"  Scenarios: {len(df)} ({len(ok)} ok, {len(failed)} failed)")
+    print("=" * 110)
+
+    if len(ok) == 0:
+        print("\n  No successful scenarios; nothing to summarize.\n")
+    else:
+        if "default" in ok["scenario_name"].values:
+            default_mae = float(ok.loc[ok["scenario_name"] == "default", "mae"].iloc[0])
+            ok["delta_mae_vs_default"] = ok["mae"] - default_mae
+        else:
+            ok["delta_mae_vs_default"] = None
+
+        ok = ok.sort_values("mae", ascending=True, na_position="last").reset_index(drop=True)
+
+        cols = [
+            "scenario_name", "mae", "rmse", "rmae", "crps",
+            "coverage_90pct", "sharpness_90pct",
+            "forecast_onpeak", "forecast_offpeak", "forecast_flat",
+            "delta_mae_vs_default",
+        ]
+        formatters = {
+            "mae": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
+            "rmse": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
+            "rmae": lambda v: f"{v:>6.3f}" if pd.notna(v) else "   n/a",
+            "crps": lambda v: f"{v:>7.4f}" if pd.notna(v) else "    n/a",
+            "coverage_90pct": lambda v: f"{v:>6.1%}" if pd.notna(v) else "   n/a",
+            "sharpness_90pct": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
+            "forecast_onpeak": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
+            "forecast_offpeak": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
+            "forecast_flat": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
+            "delta_mae_vs_default": lambda v: f"{v:+7.2f}" if pd.notna(v) else "       -",
+        }
+
+        with pd.option_context("display.max_rows", None, "display.width", None):
+            print()
+            print(ok[cols].to_string(index=False, formatters=formatters))
+
+        if len(ok) >= 2:
+            best = ok.iloc[0]
+            print(f"\n  Best by MAE: {best['scenario_name']} "
+                  f"(MAE ${best['mae']:.2f}, rMAE {best['rmae']:.3f})")
+
+    if len(failed) > 0:
+        print("\n  Failed scenarios:")
+        for _, r in failed.iterrows():
+            print(f"    {r['scenario_name']}: {r['error_message']}")
+
+    print()
+
+
 def run(
     target_date: date | None = TARGET_DATE,
+    scenarios: dict | None = None,
     model_name: str = MODEL_NAME,
-    flt_radius: int = FLT_RADIUS,
-    n_analogs: int | None = N_ANALOGS,
-    season_window_days: int | None = SEASON_WINDOW_DAYS,
-    min_pool_size: int | None = MIN_POOL_SIZE,
-    feature_group_weights_override: dict[str, float] | None = FEATURE_GROUP_WEIGHTS_OVERRIDE,
-) -> dict:
-    """Run the forecast for a past date and surface the metrics.
-
-    Returns the same dict as ``forecast_single_day.run()``. Raises
-    ``ValueError`` if the target date is in the future, or
-    ``RuntimeError`` if no actuals are available in the pool.
+) -> list[dict]:
+    """Run every scenario against a single target date, then print a sorted
+    comparison table. Returns the list of result dicts (one per scenario).
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
 
+    if scenarios is None:
+        scenarios = SCENARIOS
+    if not scenarios:
+        raise ValueError("SCENARIOS is empty; add at least one entry.")
+
     resolved_date = _resolve_target_date(target_date)
     if resolved_date >= date.today() + timedelta(days=1):
         raise ValueError(
             f"Backtest needs a past or current date with actuals; got {resolved_date}. "
-            f"Use the live forecast entry point instead: "
-            f"python -m da_models.like_day_model_knn.pjm_rto_hourly.pipelines.forecast_single_day"
+            f"Use forecast_single_day for live/future forecasts."
         )
 
-    result = forecast_run(
-        target_date=resolved_date,
-        model_name=model_name,
-        flt_radius=flt_radius,
-        n_analogs=n_analogs,
-        season_window_days=season_window_days,
-        min_pool_size=min_pool_size,
-        feature_group_weights_override=feature_group_weights_override,
-        write_analog_store=False,        # backtests don't pollute the live run history
-        quiet=False,                     # we want the full four-section report
-    )
+    base_spec = configs.MODEL_REGISTRY[model_name]
+    spec_for_build = replace(base_spec, flt_radius=int(base_spec.flt_radius))
 
-    if not result.get("has_actuals"):
+    print(f"\n[backtest {resolved_date}] building pool + dates_meta...")
+    t0 = time.perf_counter()
+    pool = build_pool(spec=spec_for_build, cache_dir=configs.CACHE_DIR)
+    dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
+    print(f"[backtest {resolved_date}] pool built in {time.perf_counter() - t0:.1f}s "
+          f"({len(pool)} rows)")
+
+    actuals = actuals_from_pool(pool, resolved_date)
+    if actuals is None:
         raise RuntimeError(
             f"No actuals in the pool for target_date={resolved_date}. "
             "The DA LMP cache may not yet cover this date — try an earlier "
             "target_date, or refresh the pjm_lmps_hourly parquet."
         )
+    actuals_summary = {
+        "onpeak": float(sum(actuals[h] for h in range(8, 24)) / 16),
+        "offpeak": float(sum(actuals[h] for h in list(range(1, 8)) + [24]) / 8),
+        "flat": float(sum(actuals.values()) / 24),
+    }
 
-    return result
+    print(f"[backtest {resolved_date}] building query for target...")
+    query = build_query_row(
+        target_date=resolved_date, cache_dir=configs.CACHE_DIR, spec=spec_for_build,
+    )
+
+    print(f"[backtest {resolved_date}] running {len(scenarios)} scenario(s)...")
+    rows: list[dict] = []
+    for scenario_name, scenario in scenarios.items():
+        row = _execute_scenario(
+            scenario_name=scenario_name,
+            scenario=scenario,
+            target_date=resolved_date,
+            pool=pool, query=query, dates_meta=dates_meta,
+            model_name=model_name,
+        )
+        tag = "OK" if row["status"] == "ok" else "FAIL"
+        mae = row.get("mae")
+        mae_str = f"MAE={mae:.2f}" if isinstance(mae, (int, float)) and pd.notna(mae) else "MAE=n/a"
+        print(f"[backtest {resolved_date}]   {scenario_name:<24} {tag:<4} "
+              f"{mae_str}  ({row['duration_s']:.2f}s)")
+        rows.append(row)
+
+    _print_comparison(rows, resolved_date, actuals_summary)
+    return rows
 
 
 if __name__ == "__main__":
