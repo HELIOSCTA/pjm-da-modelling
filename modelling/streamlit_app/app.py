@@ -1,12 +1,13 @@
-"""Streamlit operator console for the like_day_model_knn model family.
+"""Streamlit fundies console (data inspection only).
+
+The like_day_model_knn pages were removed when the model migrated to a
+terminal-only pipeline (see
+``da_models/like_day_model_knn/pjm_rto_hourly/pipelines/forecast_single_day.py``).
+This app now hosts only the fundies (data-inspection) pages.
 
 Run from ``modelling/streamlit_app``::
 
     streamlit run app.py
-
-Optional environment override::
-
-    set KNN_ANALOG_STORE_DIR=<path>
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
 st.set_page_config(
-    page_title="KNN Load-Only Console",
+    page_title="Fundies Console",
     layout="wide",
 )
 
@@ -33,16 +34,7 @@ home = st.Page(
     default=True,
 )
 
-_MODELLING_PAGES = _PAGES_DIR / "modelling"
 _FUNDIES_PAGES = _PAGES_DIR / "fundies"
-
-model_pages = [
-    st.Page(_MODELLING_PAGES / "Data.py",       title="Data",       icon=":material/database:"),
-    st.Page(_MODELLING_PAGES / "Configs.py",    title="Configs",    icon=":material/tune:"),
-    st.Page(_MODELLING_PAGES / "Candidates.py", title="Candidates", icon=":material/search:"),
-    st.Page(_MODELLING_PAGES / "Run.py",        title="Run",        icon=":material/play_arrow:"),
-    st.Page(_MODELLING_PAGES / "Compare.py",    title="Compare",    icon=":material/compare:"),
-]
 
 fundies_pages = [
     # Disabled — re-enable by uncommenting.
@@ -59,7 +51,6 @@ pg = st.navigation(
     {
         "": [home],
         "Fundies": fundies_pages,
-        "Model": model_pages,
     }
 )
 pg.run()

@@ -1,8 +1,7 @@
 """Print the coalesced PJM load loader as a wide table.
 
-Mirrors the Streamlit "Modelling Inputs" card on
-``streamlit_app/pages/modelling/Data.py``: one row per (Date, Region) with
-Source, As of Date, OnPeak / OffPeak / Flat summaries, and HE1..HE24.
+One row per (Date, Region) with Source, As of Date, OnPeak / OffPeak /
+Flat summaries, and HE1..HE24.
 
 Source column flags whether the underlying row came from the DA-cutoff
 forecast parquet (preferred where 24-hour coverage exists) or RT actuals
