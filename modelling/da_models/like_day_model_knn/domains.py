@@ -5,9 +5,12 @@ and a query feature frame (one row for the target delivery date), both keyed
 by ``date``. The variant builders concatenate domains by inner-joining on
 ``date`` and then optionally broadcast across ``hour_ending`` for ``per_hour``.
 
-Asymmetry by design: pool features come from actuals (deep history),
-query features come from forecasts (operational reality at decision time).
-Both share the same column names so the engine treats them uniformly.
+Pool features prefer the historical DA-cutoff forecast where the parquet
+covers all 24 hours of the date, falling back to RT actuals for pre-backfill
+dates (via ``loader.load_load_coalesced``). Query features come from the
+DA-cutoff forecast for ``target_date``. Pool and query therefore share the
+same forecast signal in the overlap window — apples-to-apples at decision
+time — while old history still contributes via RT.
 """
 from __future__ import annotations
 
@@ -155,9 +158,9 @@ def _hourly_load_profile(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
 # ── rto_load_summary ─────────────────────────────────────────────────────
 
 def _build_rto_load_summary_pool(cache_dir: Path | None) -> pd.DataFrame:
-    df = loader.load_load_rt(cache_dir=cache_dir)
+    df = loader.load_load_coalesced(cache_dir=cache_dir)
     df = df[df["region"].astype(str) == RTO]
-    return _hourly_load_aggregations(df, "rt_load_mw")
+    return _hourly_load_aggregations(df, "load_mw")
 
 
 def _build_rto_load_summary_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:
@@ -184,9 +187,9 @@ RTO_LOAD_SUMMARY = FeatureDomain(
 # ── rto_load_profile ─────────────────────────────────────────────────────
 
 def _build_rto_load_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
-    df = loader.load_load_rt(cache_dir=cache_dir)
+    df = loader.load_load_coalesced(cache_dir=cache_dir)
     df = df[df["region"].astype(str) == RTO]
-    return _hourly_load_profile(df, "rt_load_mw")
+    return _hourly_load_profile(df, "load_mw")
 
 
 def _build_rto_load_profile_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:

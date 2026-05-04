@@ -453,6 +453,8 @@ def _normalize_solar_forecast(df: pd.DataFrame) -> pd.DataFrame:
     keep = [date_col, hour_col, solar_col]
     if "solar_forecast_btm" in output.columns:
         keep.append("solar_forecast_btm")
+    if "as_of_date" in output.columns:
+        keep.append("as_of_date")
     normalized = output[keep].rename(
         columns={date_col: "date", hour_col: "hour_ending", solar_col: "solar_forecast"}
     )
@@ -465,6 +467,8 @@ def _normalize_solar_forecast(df: pd.DataFrame) -> pd.DataFrame:
         )
     normalized = normalized.dropna(subset=["date", "hour_ending", "solar_forecast"])
     normalized["hour_ending"] = normalized["hour_ending"].astype(int)
+    if "as_of_date" in normalized.columns:
+        normalized["as_of_date"] = _coerce_date(normalized, "as_of_date")
     return normalized
 
 
@@ -480,7 +484,11 @@ def _normalize_wind_forecast(df: pd.DataFrame) -> pd.DataFrame:
             f"Columns: {list(output.columns)}"
         )
 
-    normalized = output[[date_col, hour_col, wind_col]].rename(
+    keep = [date_col, hour_col, wind_col]
+    if "as_of_date" in output.columns:
+        keep.append("as_of_date")
+
+    normalized = output[keep].rename(
         columns={date_col: "date", hour_col: "hour_ending", wind_col: "wind_forecast"}
     )
     normalized["date"] = _coerce_date(normalized, "date")
@@ -488,6 +496,8 @@ def _normalize_wind_forecast(df: pd.DataFrame) -> pd.DataFrame:
     normalized["wind_forecast"] = pd.to_numeric(normalized["wind_forecast"], errors="coerce")
     normalized = normalized.dropna(subset=["date", "hour_ending", "wind_forecast"])
     normalized["hour_ending"] = normalized["hour_ending"].astype(int)
+    if "as_of_date" in normalized.columns:
+        normalized["as_of_date"] = _coerce_date(normalized, "as_of_date")
     return normalized
 
 
@@ -970,6 +980,52 @@ def load_load_forecast(
     return _apply_column_filter(df, columns)
 
 
+def load_load_coalesced(
+    *,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Forecast-first hourly load — the unified series models should consume.
+
+    For each (region, date), the DA-cutoff forecast (lead_days=1) wins when the
+    historical parquet has all 24 hour_ending values; RT actuals fill every other
+    (region, date), including pre-backfill dates and any forecast day with
+    incomplete hourly coverage. Mirrors the rule the Streamlit "Modelling Inputs"
+    card displays, but with a strict 24-hour completeness gate so daily
+    aggregations (peak / valley / ramps) never compose forecast and RT hours
+    within the same date.
+
+    Returns columns: date, hour_ending, region, load_mw, source ('forecast'|'rt').
+    """
+    fcst = (
+        load_load_forecast(cache_dir=cache_dir)
+        [["date", "hour_ending", "region", "forecast_load_mw"]]
+        .rename(columns={"forecast_load_mw": "load_mw"})
+    )
+    rt = (
+        load_load_rt(cache_dir=cache_dir)
+        [["date", "hour_ending", "region", "rt_load_mw"]]
+        .rename(columns={"rt_load_mw": "load_mw"})
+    )
+
+    # A (region, date) is "forecast-covered" only when all 24 HEs are present.
+    hour_counts = fcst.groupby(["region", "date"])["hour_ending"].nunique()
+    covered_keys = hour_counts[hour_counts >= 24].index
+
+    fcst_idx = pd.MultiIndex.from_arrays([fcst["region"], fcst["date"]])
+    fcst_kept = fcst[fcst_idx.isin(covered_keys)].assign(source="forecast")
+
+    rt_idx = pd.MultiIndex.from_arrays([rt["region"], rt["date"]])
+    rt_fallback = rt[~rt_idx.isin(covered_keys)].assign(source="rt")
+
+    out = (
+        pd.concat([fcst_kept, rt_fallback], ignore_index=True)
+        .sort_values(["region", "date", "hour_ending"])
+        .reset_index(drop=True)
+    )
+    return _apply_column_filter(out, columns)
+
+
 def load_fuel_mix(
     *,
     path: str | Path | None = None,
@@ -1032,6 +1088,64 @@ def load_solar_forecast(
     return _load_dataset("solar_forecast", path=path, cache_dir=cache_dir, columns=columns)
 
 
+def load_solar_coalesced(
+    *,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Forecast-first hourly RTO solar — the unified series models should consume.
+
+    For each date, the PJM DA-cutoff solar forecast (lead_days=1, i.e.
+    as_of_date == forecast_date - 1) wins when the historical parquet has all
+    24 hour_ending values; RT actuals from pjm_net_load_rt_hourly (filtered
+    to region=RTO, solar_gen_mw) fill every other date. Mirrors the strict
+    24-HE rule in load_load_coalesced — daily aggregations never compose
+    forecast and RT hours within the same date.
+
+    PJM solar forecast is system-wide (no region column) and actuals are
+    filtered to RTO, so the output is RTO-only with no region column.
+
+    Pre-2019-04-02 dates have no solar_gen_mw (PJM did not publish solar
+    actuals before that date) and no forecast coverage either, so they are
+    naturally absent from the coalesced series.
+
+    Returns columns: date, hour_ending, solar_mw, source ('forecast'|'rt').
+    """
+    fcst_full = load_solar_forecast(cache_dir=cache_dir)
+    if "as_of_date" in fcst_full.columns:
+        delta = (
+            pd.to_datetime(fcst_full["date"], errors="coerce")
+            - pd.to_datetime(fcst_full["as_of_date"], errors="coerce")
+        ).dt.days
+        fcst_full = fcst_full[delta == 1].copy()
+    fcst = (
+        fcst_full[["date", "hour_ending", "solar_forecast"]]
+        .rename(columns={"solar_forecast": "solar_mw"})
+    )
+
+    rt_full = load_net_load_actuals(cache_dir=cache_dir)
+    rt = (
+        rt_full[rt_full["region"].astype(str) == "RTO"]
+        [["date", "hour_ending", "solar_gen_mw"]]
+        .rename(columns={"solar_gen_mw": "solar_mw"})
+        .dropna(subset=["solar_mw"])
+    )
+
+    # A date is "forecast-covered" only when all 24 HEs are present.
+    hour_counts = fcst.groupby("date")["hour_ending"].nunique()
+    covered_dates = hour_counts[hour_counts >= 24].index
+
+    fcst_kept = fcst[fcst["date"].isin(covered_dates)].assign(source="forecast")
+    rt_fallback = rt[~rt["date"].isin(covered_dates)].assign(source="rt")
+
+    out = (
+        pd.concat([fcst_kept, rt_fallback], ignore_index=True)
+        .sort_values(["date", "hour_ending"])
+        .reset_index(drop=True)
+    )
+    return _apply_column_filter(out, columns)
+
+
 def load_wind_forecast(
     *,
     path: str | Path | None = None,
@@ -1039,6 +1153,62 @@ def load_wind_forecast(
     columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     return _load_dataset("wind_forecast", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_wind_coalesced(
+    *,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Forecast-first hourly RTO wind — the unified series models should consume.
+
+    For each date, the PJM DA-cutoff wind forecast (lead_days=1, i.e.
+    as_of_date == forecast_date - 1) wins when the historical parquet has all
+    24 hour_ending values; RT actuals from pjm_net_load_rt_hourly (filtered
+    to region=RTO, wind_gen_mw) fill every other date, including
+    pre-backfill dates and any forecast day with incomplete hourly coverage.
+    Mirrors the strict 24-HE rule in load_load_coalesced — daily aggregations
+    (daily avg / max / intraday std) never compose forecast and RT hours
+    within the same date.
+
+    PJM wind forecast is system-wide (no region column) and actuals are
+    filtered to RTO, so the output is RTO-only with no region column.
+
+    Returns columns: date, hour_ending, wind_mw, source ('forecast'|'rt').
+    """
+    fcst_full = load_wind_forecast(cache_dir=cache_dir)
+    if "as_of_date" in fcst_full.columns:
+        delta = (
+            pd.to_datetime(fcst_full["date"], errors="coerce")
+            - pd.to_datetime(fcst_full["as_of_date"], errors="coerce")
+        ).dt.days
+        fcst_full = fcst_full[delta == 1].copy()
+    fcst = (
+        fcst_full[["date", "hour_ending", "wind_forecast"]]
+        .rename(columns={"wind_forecast": "wind_mw"})
+    )
+
+    rt_full = load_net_load_actuals(cache_dir=cache_dir)
+    rt = (
+        rt_full[rt_full["region"].astype(str) == "RTO"]
+        [["date", "hour_ending", "wind_gen_mw"]]
+        .rename(columns={"wind_gen_mw": "wind_mw"})
+        .dropna(subset=["wind_mw"])
+    )
+
+    # A date is "forecast-covered" only when all 24 HEs are present.
+    hour_counts = fcst.groupby("date")["hour_ending"].nunique()
+    covered_dates = hour_counts[hour_counts >= 24].index
+
+    fcst_kept = fcst[fcst["date"].isin(covered_dates)].assign(source="forecast")
+    rt_fallback = rt[~rt["date"].isin(covered_dates)].assign(source="rt")
+
+    out = (
+        pd.concat([fcst_kept, rt_fallback], ignore_index=True)
+        .sort_values(["date", "hour_ending"])
+        .reset_index(drop=True)
+    )
+    return _apply_column_filter(out, columns)
 
 
 def load_net_load_forecast(
@@ -1151,6 +1321,69 @@ def load_meteologica_load_forecast(
     )
 
 
+def load_meteologica_load_coalesced(
+    *,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+    lead_days: int | None = 1,
+) -> pd.DataFrame:
+    """Meteologica-first hourly load — strict 24-HE coverage gate.
+
+    For each (region, date), the Meteologica DA-cutoff vintage wins when
+    the parquet covers all 24 hour_ending values; PJM RT actuals fill
+    every other (region, date), including dates with partial Meteologica
+    coverage and pre-Meteologica history. Mirrors ``load_load_coalesced``
+    but uses Meteologica as the forecast source instead of PJM-native.
+
+    The Meteologica historical mart carries multiple vintages per
+    (region, date, hour_ending) keyed by ``as_of_date``. ``lead_days=1``
+    (the default) selects the DA-cutoff vintage (``as_of_date == date - 1``),
+    matching PJM's ``load_load_forecast`` convention. Pass ``lead_days=None``
+    to skip the vintage filter (rare — only useful when the parquet is
+    already a single vintage).
+
+    Designed as an alt-source signal for the model. Streamlit consumes
+    this for visualization; downstream model wiring is opt-in.
+
+    Returns columns: date, hour_ending, region, load_mw,
+    source ('meteologica'|'rt').
+    """
+    fcst_full = load_meteologica_load_forecast(cache_dir=cache_dir)
+    if lead_days is not None and "as_of_date" in fcst_full.columns:
+        delta = (
+            pd.to_datetime(fcst_full["date"], errors="coerce")
+            - pd.to_datetime(fcst_full["as_of_date"], errors="coerce")
+        ).dt.days
+        fcst_full = fcst_full[delta == lead_days].copy()
+
+    fcst = (
+        fcst_full[["date", "hour_ending", "region", "forecast_load_mw"]]
+        .rename(columns={"forecast_load_mw": "load_mw"})
+    )
+    rt = (
+        load_load_rt(cache_dir=cache_dir)
+        [["date", "hour_ending", "region", "rt_load_mw"]]
+        .rename(columns={"rt_load_mw": "load_mw"})
+    )
+
+    # A (region, date) is "Meteologica-covered" only when all 24 HEs are present.
+    hour_counts = fcst.groupby(["region", "date"])["hour_ending"].nunique()
+    covered_keys = hour_counts[hour_counts >= 24].index
+
+    fcst_idx = pd.MultiIndex.from_arrays([fcst["region"], fcst["date"]])
+    fcst_kept = fcst[fcst_idx.isin(covered_keys)].assign(source="meteologica")
+
+    rt_idx = pd.MultiIndex.from_arrays([rt["region"], rt["date"]])
+    rt_fallback = rt[~rt_idx.isin(covered_keys)].assign(source="rt")
+
+    out = (
+        pd.concat([fcst_kept, rt_fallback], ignore_index=True)
+        .sort_values(["region", "date", "hour_ending"])
+        .reset_index(drop=True)
+    )
+    return _apply_column_filter(out, columns)
+
+
 def load_meteologica_solar_forecast(
     *,
     path: str | Path | None = None,
@@ -1162,6 +1395,75 @@ def load_meteologica_solar_forecast(
     )
 
 
+def load_meteologica_solar_coalesced(
+    *,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+    lead_days: int | None = 1,
+) -> pd.DataFrame:
+    """Meteologica-first hourly solar — strict 24-HE coverage gate.
+
+    For each (region, date), the Meteologica DA-cutoff vintage wins when
+    the parquet covers all 24 hour_ending values; PJM RT solar actuals
+    fill every other (region, date), including dates with partial
+    Meteologica coverage and pre-Meteologica history. Mirrors
+    ``load_meteologica_load_coalesced`` but uses Meteologica solar as the
+    forecast source and PJM ``solar_gen_mw`` actuals as the fallback.
+
+    The Meteologica historical mart carries multiple vintages per
+    (region, date, hour_ending) keyed by ``as_of_date``. ``lead_days=1``
+    (the default) selects the DA-cutoff vintage (``as_of_date == date - 1``),
+    matching PJM's DA convention. Pass ``lead_days=None`` to skip the
+    vintage filter.
+
+    PJM did not publish solar generation actuals before 2019-04-02, so
+    rows with NaN ``solar_gen_mw`` are dropped. As a result the RT
+    fallback portion of the output starts at ~2019-04-02 — pre-2019-04-02
+    dates simply have no data on either side.
+
+    Designed as an alt-source signal for the model. Streamlit consumes
+    this for visualization; downstream model wiring is opt-in.
+
+    Returns columns: date, hour_ending, region, solar_mw,
+    source ('meteologica'|'rt').
+    """
+    fcst_full = load_meteologica_solar_forecast(cache_dir=cache_dir)
+    if lead_days is not None and "as_of_date" in fcst_full.columns:
+        delta = (
+            pd.to_datetime(fcst_full["date"], errors="coerce")
+            - pd.to_datetime(fcst_full["as_of_date"], errors="coerce")
+        ).dt.days
+        fcst_full = fcst_full[delta == lead_days].copy()
+
+    fcst = (
+        fcst_full[["date", "hour_ending", "region", "solar_forecast"]]
+        .rename(columns={"solar_forecast": "solar_mw"})
+    )
+    rt = (
+        load_net_load_actuals(cache_dir=cache_dir)
+        [["date", "hour_ending", "region", "solar_gen_mw"]]
+        .rename(columns={"solar_gen_mw": "solar_mw"})
+        .dropna(subset=["solar_mw"])
+    )
+
+    # A (region, date) is "Meteologica-covered" only when all 24 HEs are present.
+    hour_counts = fcst.groupby(["region", "date"])["hour_ending"].nunique()
+    covered_keys = hour_counts[hour_counts >= 24].index
+
+    fcst_idx = pd.MultiIndex.from_arrays([fcst["region"], fcst["date"]])
+    fcst_kept = fcst[fcst_idx.isin(covered_keys)].assign(source="meteologica")
+
+    rt_idx = pd.MultiIndex.from_arrays([rt["region"], rt["date"]])
+    rt_fallback = rt[~rt_idx.isin(covered_keys)].assign(source="rt")
+
+    out = (
+        pd.concat([fcst_kept, rt_fallback], ignore_index=True)
+        .sort_values(["region", "date", "hour_ending"])
+        .reset_index(drop=True)
+    )
+    return _apply_column_filter(out, columns)
+
+
 def load_meteologica_wind_forecast(
     *,
     path: str | Path | None = None,
@@ -1171,6 +1473,77 @@ def load_meteologica_wind_forecast(
     return _load_dataset(
         "meteologica_wind_forecast", path=path, cache_dir=cache_dir, columns=columns,
     )
+
+
+def load_meteologica_wind_coalesced(
+    *,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+    lead_days: int | None = 1,
+) -> pd.DataFrame:
+    """Meteologica-first hourly wind — strict 24-HE coverage gate.
+
+    For each (region, date), the Meteologica DA-cutoff vintage wins when
+    the parquet covers all 24 hour_ending values; PJM RT wind actuals
+    fill every other (region, date), including dates with partial
+    Meteologica coverage and pre-Meteologica history. Mirrors
+    ``load_meteologica_load_coalesced`` but uses Meteologica wind as the
+    forecast source and PJM ``wind_gen_mw`` actuals as the fallback.
+
+    Unlike ``load_wind_coalesced`` (RTO-only, since the PJM-native wind
+    forecast is system-wide), this loader is regional — Meteologica
+    publishes wind per region (RTO/MIDATL/WEST/SOUTH).
+
+    The Meteologica historical mart carries multiple vintages per
+    (region, date, hour_ending) keyed by ``as_of_date``. ``lead_days=1``
+    (the default) selects the DA-cutoff vintage (``as_of_date == date - 1``),
+    matching PJM's DA convention. Pass ``lead_days=None`` to skip the
+    vintage filter.
+
+    Some older dates have NaN ``wind_gen_mw`` actuals; those rows are
+    dropped from the RT fallback so the output never carries NaN values.
+
+    Designed as an alt-source signal for the model. Streamlit consumes
+    this for visualization; downstream model wiring is opt-in.
+
+    Returns columns: date, hour_ending, region, wind_mw,
+    source ('meteologica'|'rt').
+    """
+    fcst_full = load_meteologica_wind_forecast(cache_dir=cache_dir)
+    if lead_days is not None and "as_of_date" in fcst_full.columns:
+        delta = (
+            pd.to_datetime(fcst_full["date"], errors="coerce")
+            - pd.to_datetime(fcst_full["as_of_date"], errors="coerce")
+        ).dt.days
+        fcst_full = fcst_full[delta == lead_days].copy()
+
+    fcst = (
+        fcst_full[["date", "hour_ending", "region", "wind_forecast"]]
+        .rename(columns={"wind_forecast": "wind_mw"})
+    )
+    rt = (
+        load_net_load_actuals(cache_dir=cache_dir)
+        [["date", "hour_ending", "region", "wind_gen_mw"]]
+        .rename(columns={"wind_gen_mw": "wind_mw"})
+        .dropna(subset=["wind_mw"])
+    )
+
+    # A (region, date) is "Meteologica-covered" only when all 24 HEs are present.
+    hour_counts = fcst.groupby(["region", "date"])["hour_ending"].nunique()
+    covered_keys = hour_counts[hour_counts >= 24].index
+
+    fcst_idx = pd.MultiIndex.from_arrays([fcst["region"], fcst["date"]])
+    fcst_kept = fcst[fcst_idx.isin(covered_keys)].assign(source="meteologica")
+
+    rt_idx = pd.MultiIndex.from_arrays([rt["region"], rt["date"]])
+    rt_fallback = rt[~rt_idx.isin(covered_keys)].assign(source="rt")
+
+    out = (
+        pd.concat([fcst_kept, rt_fallback], ignore_index=True)
+        .sort_values(["region", "date", "hour_ending"])
+        .reset_index(drop=True)
+    )
+    return _apply_column_filter(out, columns)
 
 
 def load_meteologica_net_load_forecast(
