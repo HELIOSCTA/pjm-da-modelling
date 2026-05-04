@@ -1,14 +1,11 @@
 """Shared configuration for like_day_model_knn.
 
-Three models live in their own subfolders, each with its own builder, engine,
+The model lives in ``pjm_rto_hourly/`` with its own builder, engine,
 forecast, and single_day backtest:
 
-  per_day_daily_features/   - 6 daily summary features          x day-level matching
-  per_day_hourly_features/  - 24 hourly load features           x day-level matching
-  per_hour/                 - 3-hour window per target HE       x per-hour matching
+  pjm_rto_hourly/           - 3-hour window per target HE       x per-hour matching
 
-This module owns ONLY shared values and the per-model ``ModelSpec`` registry.
-Each per-model builder produces its own features; there is no superset builder.
+This module owns ONLY shared values and the ``ModelSpec`` registry.
 Truly shared parquet/region/label helpers live in ``_shared.py``.
 """
 from __future__ import annotations
@@ -118,24 +115,11 @@ class ModelSpec:
         return resolved_feature_group_weights(self.domains)
 
 
-# ── Baseline (load-only) specs ─────────────────────────────────────────
+# ── Specs ──────────────────────────────────────────────────────────────
 
-PER_DAY_DAILY_FEATURES_SPEC = ModelSpec(
-    name="per_day_daily_features",
-    description="RTO load daily summaries x day-level matching",
-    match_unit="day",
-    domains=("rto_load_summary",),
-)
-
-PER_DAY_HOURLY_FEATURES_SPEC = ModelSpec(
-    name="per_day_hourly_features",
-    description="RTO load 24-hour profile (5 zones) x day-level matching",
-    match_unit="day",
-    domains=("rto_load_profile",),
-)
-
-PER_HOUR_SPEC = ModelSpec(
-    name="per_hour",
+# Load-only baseline: 24-HE RTO load profile through a 3-hour per-HE window.
+PJM_RTO_HOURLY_SPEC = ModelSpec(
+    name="pjm_rto_hourly",
     description="RTO load 3-hour window x per-hour matching (24 matches/day)",
     match_unit="hour",
     domains=("rto_load_profile",),
@@ -149,8 +133,8 @@ PER_HOUR_SPEC = ModelSpec(
 # path. Pool spans 2010+ (load) but solar/wind only fill ~2019+ — pool
 # merge in _shared.build_pool_from_spec uses outer-join so older dates
 # compete on load alone via the engine's NaN-aware RMS-z.
-PER_HOUR_LEVELS_SPEC = ModelSpec(
-    name="per_hour_levels",
+PJM_RTO_HOURLY_LEVELS_SPEC = ModelSpec(
+    name="pjm_rto_hourly_levels",
     description="Load + solar + wind per-HE levels; outages + M3 gas as daily filters.",
     match_unit="hour",
     domains=(
@@ -163,41 +147,12 @@ PER_HOUR_LEVELS_SPEC = ModelSpec(
     flt_radius=1,
 )
 
-# ── All-domains-on specs (RTO load + renewables + outages + gas) ──────
-
-PER_DAY_DAILY_FEATURES_ALL_SPEC = ModelSpec(
-    name="per_day_daily_features__all",
-    description="Daily summaries + renewables + outages + gas x day matching",
-    match_unit="day",
-    domains=("rto_load_summary", "renewables", "outages", "gas"),
-)
-
-PER_DAY_HOURLY_FEATURES_ALL_SPEC = ModelSpec(
-    name="per_day_hourly_features__all",
-    description="Hourly profile + renewables + outages + gas x day matching",
-    match_unit="day",
-    domains=("rto_load_profile", "renewables", "outages", "gas"),
-)
-
-PER_HOUR_ALL_SPEC = ModelSpec(
-    name="per_hour__all",
-    description="Load window + renewables + outages + gas x per-hour matching",
-    match_unit="hour",
-    domains=("rto_load_profile", "renewables", "outages", "gas"),
-    flt_radius=1,
-)
-
 MODEL_REGISTRY: dict[str, ModelSpec] = {
-    PER_DAY_DAILY_FEATURES_SPEC.name: PER_DAY_DAILY_FEATURES_SPEC,
-    PER_DAY_HOURLY_FEATURES_SPEC.name: PER_DAY_HOURLY_FEATURES_SPEC,
-    PER_HOUR_SPEC.name: PER_HOUR_SPEC,
-    PER_HOUR_LEVELS_SPEC.name: PER_HOUR_LEVELS_SPEC,
-    PER_DAY_DAILY_FEATURES_ALL_SPEC.name: PER_DAY_DAILY_FEATURES_ALL_SPEC,
-    PER_DAY_HOURLY_FEATURES_ALL_SPEC.name: PER_DAY_HOURLY_FEATURES_ALL_SPEC,
-    PER_HOUR_ALL_SPEC.name: PER_HOUR_ALL_SPEC,
+    PJM_RTO_HOURLY_SPEC.name: PJM_RTO_HOURLY_SPEC,
+    PJM_RTO_HOURLY_LEVELS_SPEC.name: PJM_RTO_HOURLY_LEVELS_SPEC,
 }
 
-DEFAULT_MODEL: str = PER_DAY_DAILY_FEATURES_SPEC.name
+DEFAULT_MODEL: str = PJM_RTO_HOURLY_SPEC.name
 
 
 def _day_type_for(d: date) -> str:

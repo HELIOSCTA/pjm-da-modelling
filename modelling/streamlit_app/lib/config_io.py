@@ -5,8 +5,9 @@ This module:
   - derives ``DEFAULT_PAYLOAD`` from ``KnnModelConfig()`` so adding a field to
     the dataclass automatically propagates here.
   - provides ``payload_to_config`` and ``config_to_payload`` round-trippers.
-  - serializes the persistable subset of fields plus a ``per_hour.flt_radius``
-    sidecar (which is per-spec, not on the dataclass).
+  - serializes the persistable subset of fields plus a ``pjm_rto_hourly.flt_radius``
+    sidecar (which is per-spec, not on the dataclass). Reads fall back to the
+    legacy ``per_hour`` key for back-compat with pre-rename configs.
 """
 from __future__ import annotations
 
@@ -54,7 +55,7 @@ DEFAULT_PAYLOAD: dict[str, Any] = {
     "description": "",
     **_dataclass_defaults(),
     # flt_radius is per-spec (not on KnnModelConfig); kept as a sidecar.
-    "per_hour": {"flt_radius": 1},
+    "pjm_rto_hourly": {"flt_radius": 1},
 }
 
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -176,7 +177,7 @@ def config_to_payload(
         out[f] = getattr(cfg, f)
     # exclude_dates is mutable; copy so callers can't accidentally mutate the cfg.
     out["exclude_dates"] = list(out["exclude_dates"])
-    out["per_hour"] = {"flt_radius": int(flt_radius)}
+    out["pjm_rto_hourly"] = {"flt_radius": int(flt_radius)}
     return out
 
 
@@ -190,7 +191,7 @@ def save_config(name: str, payload: dict[str, Any]) -> Path:
         cfg,
         name=name,
         description=str(payload.get("description", "")),
-        flt_radius=int(payload.get("per_hour", {}).get("flt_radius", 1)),
+        flt_radius=int((payload.get("pjm_rto_hourly") or payload.get("per_hour") or {}).get("flt_radius", 1)),
     )
     record["updated_at_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     path = _path(name)
@@ -209,13 +210,14 @@ def delete_config(name: str) -> bool:
 def overrides_for(payload: dict[str, Any] | None) -> dict[str, Any]:
     """Return the kwargs to pass to ``single_day.generate()`` for a payload.
 
-    Always includes ``flt_radius`` for downstream callers — non-per_hour
-    callers should pop it themselves.
+    Always includes ``flt_radius`` for downstream callers — non-pjm_rto_hourly
+    callers should pop it themselves. Reads fall back to the legacy ``per_hour``
+    key for back-compat with pre-rename configs.
     """
     if not payload:
         return {}
     cfg = payload_to_config(payload)
     out: dict[str, Any] = {f: getattr(cfg, f) for f in PERSISTED_FIELDS}
     out["exclude_dates"] = list(out["exclude_dates"])
-    out["flt_radius"] = int(payload.get("per_hour", {}).get("flt_radius", 1))
+    out["flt_radius"] = int((payload.get("pjm_rto_hourly") or payload.get("per_hour") or {}).get("flt_radius", 1))
     return out

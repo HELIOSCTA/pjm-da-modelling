@@ -14,8 +14,8 @@ from lib import store  # noqa: E402
 
 st.title("KNN Load-Only Console")
 st.write(
-    "Operator console for the `like_day_model_knn` model family — "
-    "`per_day_daily_features`, `per_day_hourly_features`, `per_hour`."
+    "Operator console for the `like_day_model_knn` model — "
+    "`pjm_rto_hourly`."
 )
 
 st.markdown(
@@ -26,7 +26,7 @@ st.markdown(
     - **Data** — inspect load-forecast and DA-LMP inputs for a target date.
     - **Configs** — save and reuse named `KnnModelConfig` overrides.
     - **Candidates** — preview the eligible candidate pool for a date + config before running.
-    - **Run** — launch backtests for a date and config across the three model variants.
+    - **Run** — launch backtests for a date and config.
     - **Compare** — pick N runs and compare analogs, contributions, and forecast curves side-by-side.
 
     **Fundies**

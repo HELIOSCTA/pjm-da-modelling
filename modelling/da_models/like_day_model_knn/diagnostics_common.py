@@ -3,9 +3,9 @@
 Each model's single_day.py composes a dashboard from the helpers below.
 The helpers are split into:
 
-  * Day-level helpers (used by per_day_daily_features and per_day_hourly_features):
-    consume an analogs DataFrame keyed by day.
-  * Hour-level helpers (used by per_hour): consume an analogs DataFrame
+  * Day-level helpers (currently unused — kept for reference; can be removed
+    if no future per-day variant lands): consume an analogs DataFrame keyed by day.
+  * Hour-level helpers (used by pjm_rto_hourly): consume an analogs DataFrame
     keyed by (hour_ending, date).
   * Common helpers (target hourly values, hourly forecast/error/quantile
     figures): operate on a forecast_table that's identical in shape across
@@ -123,7 +123,7 @@ def hourly_values_fig(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-# ─── day-level analog helpers (per_day_daily_features / per_day_hourly_features) ─
+# ─── day-level analog helpers ───────────────────────────────────────────
 
 
 def analog_weights_fig_day(analogs: pd.DataFrame) -> go.Figure:
@@ -220,11 +220,11 @@ def analog_load_overlay_fig_day(
     return fig
 
 
-# ─────────────────────────── per-hour analog helpers (per_hour) ─────────
+# ─────────────────────────── per-hour analog helpers (pjm_rto_hourly) ─────────
 
 
 def analog_picks_heatmap_hour(analogs: pd.DataFrame) -> go.Figure:
-    """Per-(hour, rank) heatmap of analog dates picked by the per_hour engine.
+    """Per-(hour, rank) heatmap of analog dates picked by the pjm_rto_hourly engine.
 
     Color intensity = analog weight; hover shows the actual analog date.
     Lets you see at a glance whether per-hour picks cluster around the same
@@ -253,7 +253,7 @@ def analog_picks_heatmap_hour(analogs: pd.DataFrame) -> go.Figure:
         hovertemplate="%{y} %{x}<br>%{customdata}<br>weight=%{z:.2f}%<extra></extra>",
     ))
     fig.update_layout(
-        title="per_hour analog picks: rank × HE (color = weight %, hover = analog date)",
+        title="pjm_rto_hourly analog picks: rank × HE (color = weight %, hover = analog date)",
         template=PLOTLY_TEMPLATE,
         height=max(420, 22 * 24 + 140),
         margin=dict(l=70, r=40, t=70, b=60),
@@ -262,7 +262,7 @@ def analog_picks_heatmap_hour(analogs: pd.DataFrame) -> go.Figure:
 
 
 def analog_date_frequency_fig_hour(analogs: pd.DataFrame) -> go.Figure:
-    """Bar chart of how many HEs each candidate date appears in (per_hour only).
+    """Bar chart of how many HEs each candidate date appears in (pjm_rto_hourly only).
 
     For day-level matching, each analog date contributes to all 24 hours by
     construction. For per-hour matching, a candidate date may appear in any
@@ -293,7 +293,7 @@ def analog_date_frequency_fig_hour(analogs: pd.DataFrame) -> go.Figure:
         ),
     ))
     fig.update_layout(
-        title="per_hour analog date frequency: summed weight (across all HEs) per candidate date",
+        title="pjm_rto_hourly analog date frequency: summed weight (across all HEs) per candidate date",
         template=PLOTLY_TEMPLATE,
         height=max(400, 18 * len(summary) + 140),
         margin=dict(l=170, r=80, t=70, b=60),

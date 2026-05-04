@@ -47,7 +47,7 @@ if existing:
             "n_analogs": c.get("n_analogs"),
             "season_window_days": c.get("season_window_days"),
             "min_pool_size": c.get("min_pool_size"),
-            "flt_radius (per_hour)": c.get("per_hour", {}).get("flt_radius"),
+            "flt_radius (pjm_rto_hourly)": c.get("pjm_rto_hourly", {}).get("flt_radius"),
             "updated_at_utc": c.get("updated_at_utc", ""),
         }
         for c in existing
@@ -94,12 +94,12 @@ with st.form("config_form"):
         value=int(payload.get("min_pool_size", 100)),
     )
 
-    st.markdown("**per_hour knobs**")
+    st.markdown("**pjm_rto_hourly knobs**")
     flt_radius = st.number_input(
         "flt_radius",
         min_value=0,
         max_value=6,
-        value=int(payload.get("per_hour", {}).get("flt_radius", 1)),
+        value=int(payload.get("pjm_rto_hourly", payload.get("per_hour", {})).get("flt_radius", 1)),
         help="Half-width of the temporal feature window. Match window is HE±flt_radius.",
     )
 
@@ -116,7 +116,7 @@ if submitted:
             "n_analogs": n_analogs,
             "season_window_days": season_window_days,
             "min_pool_size": min_pool_size,
-            "per_hour": {"flt_radius": flt_radius},
+            "pjm_rto_hourly": {"flt_radius": flt_radius},
         })
         st.success(f"Saved `{path.name}`")
         if is_new:

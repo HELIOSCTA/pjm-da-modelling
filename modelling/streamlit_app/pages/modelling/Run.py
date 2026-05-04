@@ -19,9 +19,7 @@ from lib import config_io, store  # noqa: E402
 from lib.ui import init_target_date_state  # noqa: E402
 
 from da_models.like_day_model_knn import configs as knn_configs  # noqa: E402
-from da_models.like_day_model_knn.per_day_daily_features import single_day as pddf_sd  # noqa: E402
-from da_models.like_day_model_knn.per_day_hourly_features import single_day as pdhf_sd  # noqa: E402
-from da_models.like_day_model_knn.per_hour import single_day as ph_sd  # noqa: E402
+from da_models.like_day_model_knn.pjm_rto_hourly import single_day as ph_sd  # noqa: E402
 
 DEFAULTS_LABEL = "(model defaults)"
 PER_DAY_KEYS = ("n_analogs", "season_window_days", "min_pool_size")
@@ -51,29 +49,15 @@ selected_config: dict[str, Any] | None = (
 all_overrides = config_io.overrides_for(selected_config)
 
 st.sidebar.subheader("Model variants")
-run_pddf = st.sidebar.checkbox("per_day_daily_features", value=True)
-run_pdhf = st.sidebar.checkbox("per_day_hourly_features", value=True)
-run_ph = st.sidebar.checkbox("per_hour", value=True)
+run_ph = st.sidebar.checkbox("pjm_rto_hourly", value=True)
 
 Plan = tuple[str, Callable[..., Path], dict[str, Any]]
 plans: list[Plan] = []
-if run_pddf:
-    plans.append((
-        "per_day_daily_features",
-        pddf_sd.generate,
-        {k: all_overrides[k] for k in PER_DAY_KEYS if k in all_overrides},
-    ))
-if run_pdhf:
-    plans.append((
-        "per_day_hourly_features",
-        pdhf_sd.generate,
-        {k: all_overrides[k] for k in PER_DAY_KEYS if k in all_overrides},
-    ))
 if run_ph:
     ph_kwargs = {k: all_overrides[k] for k in PER_HOUR_KEYS if k in all_overrides}
     if "flt_radius" not in ph_kwargs:
-        ph_kwargs["flt_radius"] = int(knn_configs.PER_HOUR_SPEC.flt_radius)
-    plans.append(("per_hour", ph_sd.generate, ph_kwargs))
+        ph_kwargs["flt_radius"] = int(knn_configs.PJM_RTO_HOURLY_SPEC.flt_radius)
+    plans.append(("pjm_rto_hourly", ph_sd.generate, ph_kwargs))
 
 st.write(f"Target date: **{target_date}**")
 st.write(
@@ -88,7 +72,7 @@ if selected_config is not None:
     cols[0].metric("n_analogs", selected_config.get("n_analogs"))
     cols[1].metric("season_window_days", selected_config.get("season_window_days"))
     cols[2].metric("min_pool_size", selected_config.get("min_pool_size"))
-    cols[3].metric("flt_radius", selected_config.get("per_hour", {}).get("flt_radius"))
+    cols[3].metric("flt_radius", selected_config.get("pjm_rto_hourly", {}).get("flt_radius"))
     if selected_config.get("description"):
         st.caption(selected_config["description"])
 else:

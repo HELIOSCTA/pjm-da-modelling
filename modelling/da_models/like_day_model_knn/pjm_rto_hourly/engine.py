@@ -1,9 +1,8 @@
-"""Engine for per_hour - 3-hour window features x per-hour matching (AnEn-NWP-style).
+"""Engine for pjm_rto_hourly - 3-hour window features x per-hour matching (AnEn-NWP-style).
 
-Key structural difference vs the per_day_* engines: one match per
-(target_date, target_hour), not per (target_date). For each target HE h,
-the feature vector is the load forecast at hours [h - flt_radius, h + flt_radius]
-(clipped to [1, 24]).
+One match per (target_date, target_hour). For each target HE h, the
+feature vector is the windowed cols (load_h*, solar_h*, wind_h*) at
+hours [h - flt_radius, h + flt_radius] (clipped to [1, 24]).
 
 Same-hour-of-day constraint: target HE h is matched only against candidate
 days' HE h. Output is hour-keyed - 24 separate top-N selections produce
@@ -70,12 +69,12 @@ def _candidate_pool(
         if len(candidates) >= min_pool_size:
             work = candidates.copy()
             logger.info(
-                "per_hour season window +/-%dd kept %d candidates",
+                "pjm_rto_hourly season window +/-%dd kept %d candidates",
                 season_window_days, len(work),
             )
         else:
             logger.warning(
-                "per_hour season window kept only %d candidates "
+                "pjm_rto_hourly season window kept only %d candidates "
                 "(< min %d) - falling back to full history (%d)",
                 len(candidates), min_pool_size, len(work),
             )
@@ -157,11 +156,11 @@ def _combined_non_load_distance(
     return distance, sum(w for _, w in non_load_groups)
 
 
-def find_twins_per_hour(
+def find_twins(
     query: pd.Series,
     pool: pd.DataFrame,
     target_date: date,
-    spec: ModelSpec = configs.PER_HOUR_SPEC,
+    spec: ModelSpec = configs.PJM_RTO_HOURLY_SPEC,
     n_analogs: int = configs.DEFAULT_N_ANALOGS,
     season_window_days: int = configs.SEASON_WINDOW_DAYS,
     min_pool_size: int = configs.MIN_POOL_SIZE,
@@ -188,7 +187,7 @@ def find_twins_per_hour(
     )
     if len(work) == 0:
         logger.warning(
-            "per_hour: pool has no rows before target_date=%s", target_date,
+            "pjm_rto_hourly: pool has no rows before target_date=%s", target_date,
         )
         return pd.DataFrame(columns=out_cols)
 

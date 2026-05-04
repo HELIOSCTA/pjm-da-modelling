@@ -16,9 +16,9 @@ The canonical worked example is
 ## Layout pointers
 
 - `modelling/da_models/common/` — shared loaders, configs, calendar.
-- `modelling/da_models/like_day_model_knn/` — current model, with
-  per-variant subpackages (`per_day_daily_features/`,
-  `per_day_hourly_features/`, `per_hour/`).
+- `modelling/da_models/like_day_model_knn/` — current model. Sole
+  variant subpackage: `pjm_rto_hourly/` (3-hour window per target HE,
+  per-hour matching).
 - `modelling/data/cache/` — parquet cache (single source per dataset key
   in `common/data/loader.py::_DEFAULT_PATTERNS`).
 - `modelling/streamlit_app/` — operator console.

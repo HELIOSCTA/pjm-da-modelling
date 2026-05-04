@@ -1,8 +1,7 @@
-"""Hourly forecast aggregation for per_hour - per-hour analogs.
+"""Hourly forecast aggregation for pjm_rto_hourly - per-hour analogs.
 
-Differs from the per_day_* day-analog aggregation: per_hour's analogs are
-per-(date, hour) tuples, so this module groups by hour_ending and computes
-weighted averages within each hour's own ensemble.
+Analogs are per-(date, hour) tuples, so this module groups by hour_ending
+and computes weighted averages within each hour's own ensemble.
 """
 from __future__ import annotations
 

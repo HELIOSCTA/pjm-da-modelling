@@ -1,8 +1,9 @@
-"""Single-day backtest for per_day_daily_features.
+"""Single-day backtest for pjm_rto_hourly - 3-hour window features x per-hour matching.
 
 Usage::
 
-    python -m da_models.like_day_model_knn.per_day_daily_features.single_day --date 2024-08-06
+    python -m da_models.like_day_model_knn.pjm_rto_hourly.single_day --date 2024-08-06
+    python -m da_models.like_day_model_knn.pjm_rto_hourly.single_day --date 2024-08-06 --flt-radius 2
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import argparse
 import contextlib
 import io
 import sys
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -22,12 +24,12 @@ from da_models.like_day_model_knn.analog_store import (  # noqa: E402
     DEFAULT_STORE_DIR,
     write_analog_explainability,
 )
-from da_models.like_day_model_knn.per_day_daily_features.builder import (  # noqa: E402
+from da_models.like_day_model_knn.pjm_rto_hourly.builder import (  # noqa: E402
     build_pool, build_query_row,
 )
-from da_models.like_day_model_knn.per_day_daily_features.engine import find_twins_day  # noqa: E402
-from da_models.like_day_model_knn.per_day_daily_features.forecast import (  # noqa: E402
-    actuals_from_pool, hourly_forecast_from_day_analogs,
+from da_models.like_day_model_knn.pjm_rto_hourly.engine import find_twins  # noqa: E402
+from da_models.like_day_model_knn.pjm_rto_hourly.forecast import (  # noqa: E402
+    actuals_from_pool, hourly_forecast_from_hour_analogs,
 )
 from html_reports.utils.html_dashboard import HTMLDashboardBuilder  # noqa: E402
 from utils.logging_utils import init_logging  # noqa: E402
@@ -35,22 +37,34 @@ from utils.logging_utils import init_logging  # noqa: E402
 REPORT_OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 
+_PJM_RTO_HOURLY_MODELS: tuple[str, ...] = (
+    configs.PJM_RTO_HOURLY_SPEC.name,
+    configs.PJM_RTO_HOURLY_LEVELS_SPEC.name,
+)
+
+
 def generate(
     target_date: date,
     output_dir: Path | None = None,
+    flt_radius: int = configs.PJM_RTO_HOURLY_SPEC.flt_radius,
     n_analogs: int | None = None,
     season_window_days: int | None = None,
     min_pool_size: int | None = None,
     write_analog_store: bool = True,
     analog_store_dir: Path | None = None,
+    model_name: str = configs.PJM_RTO_HOURLY_SPEC.name,
     pl=None,
 ) -> Path:
+    if model_name not in _PJM_RTO_HOURLY_MODELS:
+        raise ValueError(
+            f"model_name='{model_name}' not in pjm_rto_hourly family {_PJM_RTO_HOURLY_MODELS}"
+        )
     output_dir = output_dir or REPORT_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_config = configs.KnnModelConfig(
         forecast_date=str(target_date),
-        model_name=configs.PER_DAY_DAILY_FEATURES_SPEC.name,
+        model_name=model_name,
         n_analogs=configs.DEFAULT_N_ANALOGS if n_analogs is None else int(n_analogs),
         season_window_days=(
             configs.SEASON_WINDOW_DAYS if season_window_days is None
@@ -61,22 +75,25 @@ def generate(
         ),
     )
     config, day_type = base_config.with_day_type_overrides(target_date)
-    spec = config.resolved_spec()
+    base_spec = config.resolved_spec()
+    spec = replace(base_spec, flt_radius=int(flt_radius))
     quantiles = config.resolved_quantiles()
     if pl:
         pl.info(f"day_type={day_type} (same_dow_group={config.same_dow_group}, season_window_days={config.season_window_days})")
 
     if pl:
-        pl.header(f"per_day_daily_features - {target_date}")
-        pl.info(spec.description)
+        pl.header(f"pjm_rto_hourly - {target_date}")
+        pl.info(f"{spec.description}  |  flt_radius={spec.flt_radius}")
 
     with contextlib.redirect_stdout(io.StringIO()):
-        pool = build_pool(schema=config.schema, hub=config.hub, cache_dir=configs.CACHE_DIR)
+        pool = build_pool(
+            schema=config.schema, hub=config.hub, cache_dir=configs.CACHE_DIR, spec=spec,
+        )
         query = build_query_row(
-            target_date=target_date, schema=config.schema, cache_dir=configs.CACHE_DIR,
+            target_date=target_date, schema=config.schema, cache_dir=configs.CACHE_DIR, spec=spec,
         )
         dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
-        analogs = find_twins_day(
+        analogs = find_twins(
             query=query, pool=pool, target_date=target_date, spec=spec,
             n_analogs=config.n_analogs,
             season_window_days=config.season_window_days,
@@ -108,28 +125,28 @@ def generate(
         sections = [("Run Error", dc.empty_fragment("No analogs returned for target date."), None)]
     else:
         target_actuals = actuals_from_pool(pool, target_date)
-        df_forecast = hourly_forecast_from_day_analogs(analogs, quantiles)
+        df_forecast = hourly_forecast_from_hour_analogs(analogs, quantiles)
         forecast_table = dc.hourly_forecast_table(df_forecast, target_actuals)
         hourly_values = dc.hourly_load_table(target_date, hourly_rto)
 
         sections = [
             ("Run Summary", dc.summary_html(
                 target_date=target_date,
-                spec_name=spec.name, spec_description=spec.description,
+                spec_name=f"{spec.name} (flt_radius={spec.flt_radius})",
+                spec_description=spec.description,
                 n_pool=len(pool), n_analogs_total=len(analogs),
                 forecast_table=forecast_table, hub=config.hub,
                 season_window_days=config.season_window_days,
             ), None),
             ("Hourly Values - Chart", dc.hourly_values_fig(hourly_values), None),
-            ("Analogs - Selected Days", dc.analog_weights_fig_day(analogs), None),
-            ("Analogs - Load Curve Overlay",
-             dc.analog_load_overlay_fig_day(analogs, target_date, hourly_rto), None),
+            ("Analogs - Per-Hour Picks Heatmap", dc.analog_picks_heatmap_hour(analogs), None),
+            ("Analogs - Date Frequency", dc.analog_date_frequency_fig_hour(analogs), None),
             ("Hourly Forecast - Chart", dc.forecast_fig(forecast_table, hub=config.hub), None),
             ("Hourly Errors - Chart", dc.hourly_error_fig(forecast_table), None),
         ]
 
     builder = HTMLDashboardBuilder(
-        title=f"Per Day Daily Features - {target_date}", theme="dark",
+        title=f"PJM RTO Hourly - {target_date}", theme="dark",
     )
     current_group = None
     for label, content, icon in sections:
@@ -151,12 +168,15 @@ def _parse_date(s: str) -> date:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Per Day Daily Features single-day backtest.",
-    )
+    parser = argparse.ArgumentParser(description="PJM RTO hourly single-day backtest.")
     parser.add_argument("--date", type=_parse_date, required=True, help="Target date YYYY-MM-DD.")
+    parser.add_argument("--model", type=str, default=configs.PJM_RTO_HOURLY_SPEC.name,
+                        choices=_PJM_RTO_HOURLY_MODELS,
+                        help="pjm_rto_hourly model spec to run (default: %(default)s).")
+    parser.add_argument("--flt-radius", type=int, default=configs.PJM_RTO_HOURLY_SPEC.flt_radius,
+                        help="Half-width of the temporal feature window (default: %(default)d).")
     parser.add_argument("--out-dir", type=Path, default=None,
-                        help="Output directory (default: per_day_daily_features/output).")
+                        help="Output directory (default: pjm_rto_hourly/output).")
     parser.add_argument("--analog-store-dir", type=Path, default=None,
                         help=f"Parquet explainability store directory (default: {DEFAULT_STORE_DIR}).")
     parser.add_argument("--skip-analog-store", action="store_true",
@@ -171,13 +191,14 @@ def main() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
     args = _parse_args()
-    pl = init_logging(name="knn_per_day_daily_features", log_dir=_MODELLING_ROOT / "logs")
+    pl = init_logging(name="knn_pjm_rto_hourly", log_dir=_MODELLING_ROOT / "logs")
     try:
         generate(
-            target_date=args.date,
-            output_dir=args.out_dir,
+            target_date=args.date, output_dir=args.out_dir,
+            flt_radius=args.flt_radius,
             write_analog_store=not args.skip_analog_store,
             analog_store_dir=args.analog_store_dir,
+            model_name=args.model,
             pl=pl,
         )
     finally:
