@@ -10,13 +10,14 @@ import streamlit as st
 
 _APP_ROOT = Path(__file__).resolve().parents[2]
 _MODELLING_ROOT = _APP_ROOT.parent
-for path in (_APP_ROOT, _MODELLING_ROOT):
+_REPO_ROOT = _MODELLING_ROOT.parent
+for path in (_APP_ROOT, _MODELLING_ROOT, _REPO_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
 from da_models.common import configs  # noqa: E402
 from da_models.common.data.loader import load_fuel_mix  # noqa: E402
-from html_reports.fragments._forecast_utils import (  # noqa: E402
+from backend.reports._forecast_utils import (  # noqa: E402
     OFFPEAK_HOURS, ONPEAK_HOURS,
 )
 from html_reports.fragments.fuel_mix import (  # noqa: E402
