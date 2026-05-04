@@ -131,7 +131,7 @@ def load_dates_daily(cache_dir: Path | None) -> pd.DataFrame:
     directly; they already import ``_shared``.
     """
     from da_models.like_day_model_knn import calendar as _calendar
-    return _calendar.load_pjm_dates_daily(cache_dir)
+    return _calendar.load_pjm_dates_daily(cache_dir=cache_dir)
 
 
 def load_hourly_rto(cache_dir: Path | None) -> pd.DataFrame:

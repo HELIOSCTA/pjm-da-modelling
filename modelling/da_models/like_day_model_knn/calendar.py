@@ -23,8 +23,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from da_models.common.data.loader import _resolve_cache_dir
+from da_models.common.data.loader import _resolve_cache_dir, load_pjm_dates_daily
 from da_models.like_day_model_knn import configs
+
+__all__ = [
+    "resolve_day_type",
+    "resolved_dates_daily_path",
+    "load_pjm_dates_daily",
+    "resolve_target_day_metadata",
+    "apply_calendar_filter",
+    "filtered_pool_for_target",
+    "age_years",
+    "age_decay_weights",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -37,55 +48,10 @@ def resolve_day_type(d: date) -> str:
 
 
 # ── Loader ─────────────────────────────────────────────────────────────
-
-_DATES_DAILY_COLS = (
-    "date",
-    "day_of_week_number",
-    "is_weekend",
-    "is_nerc_holiday",
-    "is_federal_holiday",
-    "summer_winter",
-    "holiday_name",
-)
-
+# load_pjm_dates_daily lives in common/data/loader.py and is re-exported above.
 
 def resolved_dates_daily_path(cache_dir: Path | str | None) -> Path:
     return _resolve_cache_dir(cache_dir) / configs.PJM_DATES_DAILY_PARQUET
-
-
-def load_pjm_dates_daily(cache_dir: Path | str | None = None) -> pd.DataFrame:
-    """Load ``pjm_dates_daily.parquet`` and normalize types for filter use.
-
-    Returns a sorted, de-duplicated frame with one row per delivery date.
-    """
-    path = resolved_dates_daily_path(cache_dir)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"pjm_dates_daily parquet not found at {path}. "
-            f"Set DA_MODELS_CACHE_DIR or place the cache file there."
-        )
-
-    df = pd.read_parquet(path)
-    keep = [c for c in _DATES_DAILY_COLS if c in df.columns]
-    df = df[keep].copy()
-
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    if "day_of_week_number" in df.columns:
-        df["day_of_week_number"] = pd.to_numeric(
-            df["day_of_week_number"], errors="coerce",
-        ).astype("Int64")
-    for flag in ("is_weekend", "is_nerc_holiday", "is_federal_holiday"):
-        if flag in df.columns:
-            df[flag] = pd.to_numeric(df[flag], errors="coerce").fillna(0).astype(int)
-    if "summer_winter" in df.columns:
-        df["summer_winter"] = (
-            df["summer_winter"].astype("string").str.upper().fillna("")
-        )
-
-    df = df.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last")
-    df = df.sort_values("date").reset_index(drop=True)
-    logger.info("Loaded pjm_dates_daily: %d rows from %s", len(df), path.name)
-    return df
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -309,7 +275,7 @@ def age_decay_weights(
 # ── Light-weight smoke test ────────────────────────────────────────────
 
 def _self_check() -> None:  # pragma: no cover - run via __main__
-    df = load_pjm_dates_daily(None)
+    df = load_pjm_dates_daily(cache_dir=None)
     assert {"date", "day_of_week_number", "is_nerc_holiday"}.issubset(df.columns)
     target = date(2024, 8, 6)  # Tuesday
     meta = resolve_target_day_metadata(target, df)

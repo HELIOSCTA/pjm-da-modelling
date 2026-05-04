@@ -42,6 +42,7 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
     "net_load_actual":               ("pjm_net_load_rt_hourly",),
     "day_gen_capacity":              ("pjm_day_gen_capacity_daily",),
     "installed_capacity":            ("ea_pjm_installed_capacity_monthly",),
+    "pjm_dates_daily":               ("pjm_dates_daily",),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
@@ -860,6 +861,48 @@ def _normalize_day_gen_capacity(df: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
+_PJM_DATES_DAILY_COLS: tuple[str, ...] = (
+    "date",
+    "day_of_week_number",
+    "is_weekend",
+    "is_nerc_holiday",
+    "is_federal_holiday",
+    "summer_winter",
+    "holiday_name",
+)
+
+
+def _normalize_pjm_dates_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """PJM calendar metadata, one row per delivery date.
+
+    day_of_week_number uses Sun=0..Sat=6 (PJM convention), not Python's Mon=0.
+    """
+    output = df.copy()
+    keep = [c for c in _PJM_DATES_DAILY_COLS if c in output.columns]
+    if "date" not in keep:
+        raise KeyError(
+            "Could not normalize pjm_dates_daily; expected 'date' column. "
+            f"Columns: {list(output.columns)}"
+        )
+    output = output[keep]
+
+    output["date"] = _coerce_date(output, "date")
+    if "day_of_week_number" in output.columns:
+        output["day_of_week_number"] = pd.to_numeric(
+            output["day_of_week_number"], errors="coerce",
+        ).astype("Int64")
+    for flag in ("is_weekend", "is_nerc_holiday", "is_federal_holiday"):
+        if flag in output.columns:
+            output[flag] = pd.to_numeric(output[flag], errors="coerce").fillna(0).astype(int)
+    if "summer_winter" in output.columns:
+        output["summer_winter"] = (
+            output["summer_winter"].astype("string").str.upper().fillna("")
+        )
+
+    output = output.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last")
+    return output.sort_values("date").reset_index(drop=True)
+
+
 _NORMALIZERS = {
     "lmps_da": _normalize_lmps_da,
     "lmps_rt": _normalize_lmps_rt,
@@ -884,6 +927,7 @@ _NORMALIZERS = {
     "net_load_actual": _normalize_net_load_actual,
     "day_gen_capacity": _normalize_day_gen_capacity,
     "installed_capacity": _normalize_installed_capacity,
+    "pjm_dates_daily": _normalize_pjm_dates_daily,
 }
 
 
@@ -1272,6 +1316,21 @@ def load_day_gen_capacity(
     is structural (RPM-cleared, effectively flat day-to-day).
     """
     return _load_dataset("day_gen_capacity", path=path, cache_dir=cache_dir, columns=columns)
+
+
+def load_pjm_dates_daily(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """PJM calendar metadata, one row per delivery date.
+
+    Columns: date, day_of_week_number (Sun=0..Sat=6), is_weekend,
+    is_nerc_holiday, is_federal_holiday, summer_winter, holiday_name.
+    Sorted by date, deduplicated (last write wins per date).
+    """
+    return _load_dataset("pjm_dates_daily", path=path, cache_dir=cache_dir, columns=columns)
 
 
 def load_weather_hourly(
