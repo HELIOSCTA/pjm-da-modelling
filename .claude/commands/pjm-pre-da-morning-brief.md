@@ -1,16 +1,18 @@
 ---
-description: Generate a PJM pre-DA morning trend brief — backward-looking 5-tier funnel from 7-day DA→RT realization through binding-pattern constraints, outage persistence, and trend categories, framing today's setup before DA clears.
+description: Generate a PJM pre-DA morning brief — yesterday-only 3-tier funnel (DA→RT realization, RT $ binders, underlying outages with tenure) framing today's DA clear.
 ---
 
 # PJM Pre-DA Morning Brief
 
-Generate a daily brief that walks the LMP causal chain *backward in time* — pre-DA-release — to surface how the last 7 days of congestion has evolved before today's DA clears (~13:00 ET).
+Generate a tight 1-day settle recap of *yesterday's* PJM market — DA→RT realization by hub, binding constraints by RT $, and underlying outages — framing today's DA clear (~13:00 ET).
 
-> 7-day DA→RT realization (Tier 1) → Worst RT $ binders w/ persistence (Tier 2) → Underlying outages over the window (Tier 3) → Trend signals (Tier 4) → Today's setup (Tier 5)
+> Yesterday's DA→RT realization (Tier 1) → Yesterday's worst RT $ binders (Tier 2) → Outages active during yesterday's binding hours, with tenure (Tier 3) → Today's setup (Tier 4)
 
-Run at 5 AM ET. The brief is the inverse-time companion to `/pjm-da-results-brief` (which runs post-DA-clear and looks forward at *tomorrow's* prices). This one looks back: did DA clear correctly the last 7 days? Where did RT punish DA? Which constraints kept binding? Which outages persisted? What does that pattern say about today's clear?
+Run at 5 AM ET. Backward-looking but **scope is yesterday only** — this is a settle recap, not a trend brief. The companion `/pjm-da-results-brief` runs post-DA-clear (~13:30 ET) and looks forward at *tomorrow's* prices.
 
-Each tier hands a payload to the next so the funnel stays causally tight: worst realized hubs → constraints binding into those hubs → outages on those constraint buses → categorized trend signals → trader synthesis.
+Each tier hands a payload to the next so the funnel stays causally tight: yesterday's worst-realized hubs → yesterday's constraints binding into those hubs → outages overlapping yesterday's binding hours → trader synthesis.
+
+Tenure on each outage (`days_out`) is reported inline, so durable network signatures are still visible without a multi-day window.
 
 ## Pre-flight: always-fresh MCP server
 
@@ -27,27 +29,35 @@ The script kills any process bound to port 8000, spawns a fresh detached uvicorn
 
 Do not call view builders directly via Python under any circumstance. There is no fallback path — if MCP can't be brought up, this command produces no output.
 
+## Anchor date selection
+
+The brief targets **yesterday** in spirit, but the constraints scrape (RT_DART) typically lands 2-3 days behind LMPs. So the implementation must pick the most recent day that has BOTH LMP and constraint data:
+
+1. Start with `candidate = today - 1`.
+2. Query `/views/constraints_rt_dart_network?start_date=<today-7>&end_date=<today-1>&top_n=200` and take `max(row.date for row in matched+ambiguous+unmatched)` — this is the latest day with binder data.
+3. **Anchor date = that latest constraint date**. Tier 1 (LMPs) uses the same date so all three tiers stay aligned.
+4. Surface `lag_days = (today - 1) - anchor_date` in the header. If `lag_days > 4`, abort and warn — the constraint scrape is broken.
+
+Yesterday-no-lag is the typical case. T-2 or T-3 is normal weekend behavior.
+
 ## Data sources
 
-The brief consumes four MCP endpoints from `http://localhost:8000`. Default `target_date` = today − 1 (yesterday); default `lookback_days` = 7.
+The brief consumes three MCP endpoints from `http://localhost:8000`. Brief is single-day; **no rolling window**.
 
-1. `/views/lmps_dart_realization?format=json&target_date=<yesterday>&lookback_days=7` —
-   Tier 1. Per-hub DA-priced vs RT-realized over 7-day window. Hands `worst_realized_hubs` (5 hubs by |mean DART|) → Tier 2.
-2. `/views/constraints_rt_dart_network?format=json&start_date=<yesterday-6>&end_date=<yesterday>&morning_mode=true&top_n=10` —
-   Tier 2 (EXTENDED). Worst binders by RT $ over window, with `binding_day_count`, `binding_he_pattern`, `daily_breakdown` per constraint. Hands `worst_binders` (top-N with `bus_ids` union + binding HE list) → Tier 3.
-3. `/views/historical_outages_for_constraints?format=json&bus_ids=<csv>&start_date=<yesterday-6>&end_date=<yesterday>&binding_hours=<csv>` —
-   Tier 3 (NEW). Outages active during binding hours of 7-day window, with `persistence_days` per outage. Hands `outage_ids_with_persistence` → Tier 4.
-4. *(Optional)* `/views/morning_trend_rollup?format=json&end_date=<yesterday>&lookback_days=7` —
-   Tier 4. Categorizes binders/outages into STRUCTURAL/TRANSIENT/EMERGING/INFLECTION. **For v1: synthesize brief-side from Tier 1/2/3 JSONs.**
+1. `/views/lmps_dart_realization?format=json&target_date=<anchor>&lookback_days=2` —
+   Tier 1. Per-hub DA-priced vs RT-realized for `<anchor>` (lookback=2 is the endpoint minimum; only the `<anchor>` row is consumed). Hands `worst_realized_hubs` (5 hubs by daily |DART cong|) → Tier 2.
+2. `/views/constraints_rt_dart_network?format=json&start_date=<anchor>&end_date=<anchor>&top_n=15` —
+   Tier 2. Anchor day's binders sorted by `|dart_total_price|` desc; each row carries `rt_total_price`, `dart_total_price`, parsed bus pair, `bus_ids`, and binding HE list. **Do not pass `morning_mode=true`** — that flag enables the 7-day roll-up which is out of scope for this brief. Hands `bus_ids` union + binding-HE union → Tier 3.
+3. `/views/historical_outages_for_constraints?format=json&bus_ids=<csv>&start_date=<anchor>&end_date=<anchor>&binding_hours=<repeated>` —
+   Tier 3. Outages whose `[start_datetime, end_datetime]` overlaps `<anchor>` AND whose buses match the Tier-2 bus_ids set. **Tenure** (`days_out`) is the durability signal — long-tenure outages are structural even though we only see one day of binding. Note the endpoint expects `binding_hours` as **repeated query params** (`&binding_hours=1&binding_hours=2&...`), not CSV.
 
 After hitting each endpoint, save the JSON response into per-view subfolders under `backend/mcp_server/briefings/`:
 
 ```
 backend/mcp_server/briefings/
 ├── lmps_dart_realization/<YYYY-MM-DD>.json
-├── constraints_rt_dart_network/<YYYY-MM-DD>.json   (morning_mode payload)
-├── historical_outages_for_constraints/<YYYY-MM-DD>.json
-└── morning_trend_rollup/<YYYY-MM-DD>.json   (optional — only if endpoint exists)
+├── constraints_rt_dart_network/<YYYY-MM-DD>.json
+└── historical_outages_for_constraints/<YYYY-MM-DD>.json
 ```
 
 All gitignored except the README. `<YYYY-MM-DD>` = run date (today), since the brief is backward-looking.
@@ -58,74 +68,67 @@ All gitignored except the README. `<YYYY-MM-DD>` = run date (today), since the b
 
 | | | |
 |---|---:|---|
-| 7-day RT realization spread | `$<min>` – `$<max>` (`<spread>`) | best vs worst hub by mean \|DART\| |
-| Week DART avg (RTO) | `$<dart_avg>` (`<sign>`) | DA `<over\|under>`-priced by `$X` on average |
-| Persistent constraint count | `<n>` constraints bound `≥<k>` of 7 days | top: `<constraint>` (`<days>`d) |
-| Structural outage count | `<n>` outages active `≥5` of 7 days | top: `<facility>` (`<days_out>`d in) |
-| Today's setup signal | `<STRUCTURAL\|TRANSIENT\|EMERGING\|INFLECTION>` | one-line framing |
+| Yesterday's RTO mean DART cong | `$<dart_avg>` | DA `<over\|under>`-priced cong by `$X` |
+| Worst hub by \|DART cong\| | `<hub>` `$<max>` | hub that took the biggest realized hit |
+| Hubs with \|DART cong\| > $10 (yesterday) | `<n>` of 12 | breadth signal |
+| Top binder | `<constraint>` `$<rt_$>` (`<n>` HEs) | facility taking the most RT $ |
+| Active outages on binder buses | `<n>` (longest tenure: `<facility>` `<days>d`) | durable network signature |
+| Today's setup signal | `<one-line>` | what this implies for today's clear |
 
-### 1. DA→RT realization (Tier 1) — 7-day grid
+### 1. Yesterday's DA→RT realization (Tier 1)
 
-From `/views/lmps_dart_realization`. Did DA clear correctly?
+From `/views/lmps_dart_realization` (use the `<yesterday>` row of `daily_summary`).
 
-- One-line frame: `Last 7 days (<start_dow> <start_md> – <end_dow> <end_md>): RTO mean DART $X (DA <over|under>-priced by $X). N of M hubs realized |DART| > $5.`
-- **7-day × hub grid** (rows=date, cols=8 hubs, cell=daily mean DART). Glyph ramp `· . - + #` for $0/<$3/<$10/<$25/≥$25 |DART|. Sign-coded: `+` = DA underpriced (RT > DA), `-` = DA overpriced.
-- **Worst realized hubs table** (top 5 by mean |DART|): Hub | 7d Mean DART | Worst Day | Worst $ | Days |DART|>$10
-- **Hand-off**: 5 hubs in `worst_realized_hubs` → Tier 2 hub filter.
+- One-line frame: `Yesterday (<dow> <md>): RTO mean DART cong $X (DA <over|under>-priced by $X). N of 12 hubs realized |DART cong| > .`
+- **Per-hub table** (12 hubs, sorted by |DART cong| desc):
+  | Hub | DA cong | RT cong | DART cong | Peak HE | Σ\|DART\| (24h) |
+  |---|---:|---:|---:|---:|---:|
 
-### 2. Worst binders by RT $ (Tier 2) — binding-day pattern
+  Sign-coded narrative: `+ DART cong` = DA cong > RT cong (DA over-priced cong premium / under-priced relief); `-` = opposite. Spell out 1–2 hubs with the biggest sign clearly so the reader doesn't have to do convention-math.
+- **Hand-off**: top 5 hubs by |DART cong| → Tier 2 hub filter.
 
-From `/views/constraints_rt_dart_network?morning_mode=true`. Which constraints kept hitting these hubs?
+### 2. Yesterday's worst binders by RT $ (Tier 2)
 
-- **Top-N table** (top 12, sorted by `rt_total_price` over window):
-  | Constraint | kV | Bus Pair | RT $ (7d) | Days Bound | HE Pattern |
-  |---|---:|---|---:|---:|---|
+From `/views/constraints_rt_dart_network` for `<yesterday>` only (single-day window).
 
-  HE pattern: compact 24-glyph histogram `····###···+++++#####···+`. `#` = bound 5+ days at that HE, `+` = 2-4 days, `·` = ≤1 day.
-- **Daily breakdown callout** (top 3 binders): `Mon -$120 / Tue -$180 / Wed -$95 / Thu -$210 / Fri -$300 / Sat -$50 / Sun -$25` — exposes steady-state vs single-day outlier.
+- **Top-N table** (top 12, sorted by `|dart_total_price|` desc):
+  | Constraint | kV | Bus Pair | RT $ | DART $ | Hours | HE Range |
+  |---|---:|---|---:|---:|---:|---|
+
+  HE Range: compact list (e.g. `HE 6-17, 20, 23`).
 - **Voltage tier note**: % of total RT $ at 500+ kV vs 345 kV vs ≤230 kV. Heavy 500 kV = network-backbone story; heavy ≤230 kV = local subtransmission.
+- **Match coverage**: `matched / ambiguous / unmatched of <total>` distinct (constraint, contingency) pairs. Surface unmatched count — those are constraints PSS/E couldn't tag, so Tier 3 is silent on them.
 - **Hand-off**: union of `bus_ids` across top-N + union of binding HEs → Tier 3 input.
 
-### 3. Underlying outages + persistence (Tier 3)
+### 3. Outages active during yesterday's binding hours (Tier 3)
 
-From `/views/historical_outages_for_constraints?bus_ids=<csv>&binding_hours=<csv>`. Why did the binders keep binding?
+From `/views/historical_outages_for_constraints?bus_ids=<csv>&start_date=<yesterday>&end_date=<yesterday>&binding_hours=...`.
 
-- **Persistence table**:
-  | Persistence | kV | Facility | Constraints Hit | Dates × HEs | State |
-  |---|---:|---|---|---|---|
-  Persistence: `7/7 sustained` / `4/7 intermittent` / `1/7 transient`.
-- **Structural cluster callout**: when ≥2 outages share a substation OR sit on adjacent buses of the same constraint, name the cluster — multi-week network signature.
-- **Returning-this-week note**: outages with `days_to_return ≤ 3` — relief is imminent, expect that constraint's contribution to fade.
-- **Network gaps**: count of Tier-2 constraints with NO matching outage. High = load/weather/model-driven, not maintenance.
+- **Outage table**:
+  | Tenure (days_out) | kV | Facility | Constraints Hit | Started | ETR | State |
+  |---:|---:|---|---|---|---|---|
 
-### 4. Trend signals (Tier 4) — categorize the week
+  Sort by `days_out` desc — durable / multi-month outages float to the top. Each row tags whether the outage is still active or just returned (`outage_state`, `still_active_at_run`).
+- **Long-tenure cluster callout**: when ≥2 outages share a substation OR sit on adjacent buses of the same constraint AND `days_out >= 5`, name the cluster.
+- **Returning-soon note**: outages with `days_to_return <= 3` (relief imminent — that constraint's contribution likely fades into today's DA).
+- **Network gaps**: count of Tier-2 binders with NO matching outage. High = load/weather/native-contingency-driven, not maintenance.
 
-Synthesize brief-side from Tiers 1-3 (or fetch from `/views/morning_trend_rollup` if endpoint exists). Categorization rules:
+### 4. Today's setup (Tier 4) — trader lens
 
-- **STRUCTURAL** — `binding_day_count >= 5` AND has matching outage with `persistence_days >= 5`. "Set it and forget it" multi-week stories. State: which way (DEC/INC) and which hours.
-- **TRANSIENT** — `binding_day_count <= 2` AND `total_rt_$ > $500`. Weather/load/single-day forced outage. Don't extrapolate.
-- **EMERGING** — bound only days 5-7 of the window AND a new outage started in those days. **This is today's positioning candidate** — pattern hasn't fully priced in.
-- **INFLECTION** *(optional)* — bound days 1-4 then went quiet 5-7, with an outage that returned. Watch whether DA un-priced the relief.
+3–5 bullets framing what to look for in today's DA based on yesterday's settle:
 
-For each item: `<category> · <constraint or facility> · <hub region> · <one-line rationale>`.
-
-### 5. Today's setup (Tier 5) — trader lens
-
-3-5 bullets framing what to look for in today's DA based on the week's pattern:
-
-- **Carry-over thesis**: which STRUCTURAL story is most likely to repeat in today's DA. Name hub(s), direction (INC/DEC), HE block. Cite supporting outage and ETA-to-return.
-- **Fade thesis**: which TRANSIENT or returning-INFLECTION story is most likely to *not* repeat. If DA hasn't un-priced it, there's a fade trade.
-- **Fresh-money thesis**: the EMERGING bucket — what's not yet baked into the curve. Highest-conviction directional position of the day if backed by a confirmed outage.
-- **Risk flag**: any hub where week's mean |DART| > $15 — signals a regime DA is consistently mispricing. Position size accordingly.
-- **Caveat**: surface RT settle timing, snapshot age, PSS/E coverage if degraded.
+- **Carry-over thesis**: which Tier-2 binder is most likely to repeat today, given a long-tenure outage on its buses still active. Name hub(s), direction (INC/DEC), HE block.
+- **Fade thesis**: which binder had its supporting outage just return (or no underlying outage at all + a single-day pattern) — likely won't repeat. If DA hasn't un-priced it, there's a fade trade.
+- **Risk flag**: any hub where yesterday's |DART cong| > $20 — DA materially mispriced and may carry into today. Position size accordingly.
+- **Caveat**: surface RT settle timing for `<yesterday>`, PSS/E match rate, and any coverage degradation.
 
 ## Style notes
 
 - Match `fundies/research/PJM-Morning-Fundies.md` and the `transmission_outages_*.md` brief tone — tight bullets, **bold** for numbers, day-of-week on every date, "TODAY" framing for the setup section.
 - ASCII-only in tables. `→` arrows in narrative prose only — not in Python output capture (cp1252 issues on Windows).
-- Money formatting: `$1,234` no decimals for shadow-price totals; `$XX.XX` (2 decimals) for LMP/DART scalars.
-- Header carries `run_date` (today) and `window` (`<start_date> – <end_date>`).
-- Save synthesized markdown to `backend/mcp_server/briefings/morning_brief_<YYYY-MM-DD>.md` — filename uses **run date** (today), since brief is backward-looking. Overwrite if regenerated same day.
+- Money formatting: `,234` no decimals for shadow-price totals; `$XX.XX` (2 decimals) for LMP/DART scalars.
+- Header carries `run_date` (today), `settle_date` (anchor — date of the data shown), and `lag_days` (how many days behind today-1 the anchor is — typically 0, 2, or 3).
+- Save synthesized markdown to `backend/mcp_server/briefings/morning_brief_<YYYY-MM-DD>.md` — filename uses **run date** (today). Overwrite if regenerated same day.
 - Offer to:
   - Prepend to `fundies/research/PJM-Pre-DA-Morning.md` (newest first, create if absent)
   - Or append a "5 AM Pre-DA Brief" section under today's `PJM-Morning-Fundies.md` entry
@@ -133,12 +136,10 @@ For each item: `<category> · <constraint or facility> · <hub region> · <one-l
 ## Caveats to surface in-brief
 
 - **RT settle timing**: `pjm_lmps_hourly` RT rows for yesterday land progressively through the night; full 24h RT for `<yesterday>` should be in by 4 AM ET but isn't guaranteed. Tier 1 must surface "RT coverage: H of 24 hours for `<yesterday>`" — abort the day's row if <20.
-- **DA constraint scrape lag**: previous DA day (target=yesterday, scraped ~13:00 ET 2 days ago) is the latest fully-settled DA. Spot-check `as_of` timestamp on RT-DART payload.
-- **SCD2 disabled**: `transmission_outages_changes_24h_snapshot` is 503-disabled until ~2026-05-08. Tier 3 may miss CLEARED outages from late in the window. Surface "outage coverage: ACTIVE-only" until enabled.
-- **Hub-grain LMP**: only ~12-15 PJM aggregate hubs in the mart; no zone or nodal LMP.
 - **PSS/E model age**: 2021. New substations won't match — Tier 2 surfaces unmatched count, Tier 3 silently misses them.
-- **No today-DA visibility**: this brief deliberately runs *before* today's DA clears. The "today's setup" section is a *prior* — verify with `/pjm-da-results-brief` after 13:30 ET.
+- **Outage tenure is the only durability signal**: this brief deliberately doesn't compute persistence across multiple days. A binder bound only yesterday with a 169-day-old underlying outage *is* structural — the tenure column carries that. A binder bound only yesterday with no matching outage is single-day load/weather noise.
+- **No today-DA visibility**: this brief deliberately runs *before* today's DA clears. Tier 4's setup is a *prior* — verify with `/pjm-da-results-brief` after 13:30 ET.
 
 ## Reference
 
-The companion `/pjm-da-results-brief` covers the forward-looking, post-DA-clear funnel for tomorrow's prices. When both run the same day, this is the morning lead (5 AM, backward); the DA-results brief is the afternoon update (1:30 PM, forward).
+The companion `/pjm-da-results-brief` covers the forward-looking, post-DA-clear funnel for tomorrow's prices. When both run the same day, this is the morning lead (5 AM, looking back at yesterday); the DA-results brief is the afternoon update (1:30 PM, looking forward to tomorrow).

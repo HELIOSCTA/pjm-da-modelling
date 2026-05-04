@@ -78,22 +78,40 @@ One table at the top:
 
 ### 1. Network context
 
-- **Substation hotspots**: substations with ≥2 concurrent active outages,
-  max kV ≥ 345. Show as a table: substation, # outages, max kV, risk
-  count, types.
+- **Substation hotspots**: substations with ≥2 concurrent active outages
+  meeting *either* (a) max kV ≥ 345, OR (b) any risk-flagged ticket
+  regardless of voltage. The risk-flag escape hatch matters because
+  some of the most important constraints are 230 kV double-circuit
+  events on tie corridors (e.g., GRACETON-MANOR). Show as a table:
+  substation, # outages, max kV, risk count, types.
 - **Implicit hotspots**: when outages at *different* substations all
   converge on the same other bus (e.g., multiple lines into ELMONT4).
   Look for shared `to_bus_psse` across active 500 kV outages.
 - **Topology framing**: 2-3 bullets identifying where redundancy is
   *thin* vs *rich*, using the `neighbors` list per matched outage.
-- **Network gaps**: count of unmatched ≥345 kV outages and a
-  representative list (5-7 substations).
+- **Network gaps**: count of unmatched outages and a representative
+  list. Two sub-counts: ≥345 kV unmatched (model-newness gap), AND
+  any-kV unmatched with `risk_flag=True` (these must be surfaced
+  even though we can't compute their topology). Don't drop unmatched
+  risk-flagged outages from the brief just because they aren't in
+  PSS/E — list them by name with their schedule.
 
 ### 2. Active — currently in effect
 
-Top 8-10 outages by `rating_mva`, ≥500 kV. For each, include a brief
-"key alternates" note pulled from the `neighbors` list of the network
-endpoint — what's parallel to the outage, with rating.
+**Two sub-tables, in this order:**
+
+**2a. Top 8-10 outages by `rating_mva`, ≥500 kV.** For each, include a
+brief "key alternates" note pulled from the `neighbors` list of the
+network endpoint — what's parallel to the outage, with rating.
+
+**2b. Risk-flagged outages below 500 kV (separate table, do not skip).**
+Any active outage with `risk_flag=True` and `kV < 500` belongs here —
+this is the catch for 230 kV / 345 kV tie-line risks that the rating
+sort would otherwise hide. Common examples: GRACETON-MANOR (230 kV,
+BC zone), DPL-zone double-circuit work. Include any concurrent
+follow-on tickets at the same facility (search the planned/Received
+window for the same `from_station/to_station` pair) so a 4/27 → 5/10
+event isn't missed when its 5/8 → 6/6 follow-on is also booked.
 
 Filter: `days_out >= 0` AND (`days_to_return` is None or `days_to_return > 0`)
 
@@ -162,6 +180,23 @@ substation).
   ~2026-05-08). Don't rely on its output until then.
 - The PSS/E model is from Sept 2021. Substations newer than that
   (e.g., MARS2 in DOM-N) won't match. Surface unmatched count.
+- **Consecutive ticket chains**: a single physical outage can be
+  represented as a sequence of back-to-back tickets at the same
+  facility (e.g., GRACETON-MANOR 4/27 → 5/10 followed by 5/8 → 6/6).
+  When summarizing, dedupe-by-facility and report the *combined*
+  effective window, plus call out any short overlap windows where
+  both tickets are simultaneously active (double-circuit risk).
+
+## Lessons learned
+
+- **2026-05-04 GRACETON miss.** Original brief omitted GRACETON-MANOR
+  entirely because (a) hotspot threshold was kV ≥ 345, (b) the line is
+  unmatched in PSS/E (model gap), and (c) the Active section was
+  capped at ≥500 kV. Fix: hotspot threshold now drops to 230 kV when
+  any concurrent ticket is risk-flagged; Active section now includes
+  a separate "risk-flagged below 500 kV" sub-table; unmatched
+  risk-flagged outages are surfaced by name in Network gaps even when
+  topology is unknown.
 
 ## Reference example
 
