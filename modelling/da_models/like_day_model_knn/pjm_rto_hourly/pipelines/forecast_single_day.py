@@ -96,12 +96,30 @@ def run(
     analog_store_dir: Path | None = ANALOG_STORE_DIR,
     quantiles: tuple[float, ...] | list[float] | None = None,
     display_quantiles: tuple[float, ...] | list[float] | None = None,
+    pool: pd.DataFrame | None = None,
+    query: pd.Series | None = None,
+    dates_meta: pd.DataFrame | None = None,
+    feature_group_weights_override: dict[str, float] | None = None,
+    quiet: bool = False,
 ) -> dict:
     """Run the forecast and print the four-section terminal report.
 
     Returns a dict with: ``output_table``, ``quantiles_table``, ``analogs``,
     ``metrics``, ``forecast_date``, ``day_type``, ``has_actuals``, ``n_pool``,
     ``n_analogs_used``, ``scenario``, ``df_forecast``.
+
+    Reusable artefacts (``pool``, ``query``, ``dates_meta``) — when
+    provided, skip the corresponding build step. Used by the param_sweep
+    backtest harness to amortize the ~5-10s pool build across many
+    scenarios. ``query`` is target-date-specific so callers reusing pool
+    across multiple target dates must rebuild it per date.
+
+    ``feature_group_weights_override`` — passed through to ``find_twins``
+    to override the spec's default group weights for this run only.
+    Validated and renormalized inside the engine.
+
+    ``quiet`` — suppresses the four ``print_*`` calls (used by the sweep
+    harness which prints its own cross-scenario summary).
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -136,14 +154,17 @@ def run(
     base_spec = config.resolved_spec()
     spec = replace(base_spec, flt_radius=int(flt_radius))
 
-    pool = build_pool(
-        schema=config.schema, hub=config.hub, cache_dir=configs.CACHE_DIR, spec=spec,
-    )
-    query = build_query_row(
-        target_date=resolved_date, schema=config.schema,
-        cache_dir=configs.CACHE_DIR, spec=spec,
-    )
-    dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
+    if pool is None:
+        pool = build_pool(
+            schema=config.schema, hub=config.hub, cache_dir=configs.CACHE_DIR, spec=spec,
+        )
+    if query is None:
+        query = build_query_row(
+            target_date=resolved_date, schema=config.schema,
+            cache_dir=configs.CACHE_DIR, spec=spec,
+        )
+    if dates_meta is None:
+        dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
 
     analogs = find_twins(
         query=query, pool=pool, target_date=resolved_date, spec=spec,
@@ -156,6 +177,7 @@ def run(
         exclude_dates=config.exclude_dates,
         max_age_years=config.max_age_years,
         recency_half_life_years=config.recency_half_life_years,
+        feature_group_weights_override=feature_group_weights_override,
     )
 
     if write_analog_store:
@@ -190,10 +212,11 @@ def run(
                 y_naive = naive_full[merged["hour_ending"].astype(int).values - 1]
             metrics = evaluate_forecast(y_true, merged, quantiles, y_naive=y_naive)
 
-    print_config(config, spec, resolved_date, day_type)
-    print_analogs(analogs, resolved_date, config.hub)
-    print_forecast(output_table, metrics if metrics else None)
-    print_quantiles(quantiles_table)
+    if not quiet:
+        print_config(config, spec, resolved_date, day_type)
+        print_analogs(analogs, resolved_date, config.hub)
+        print_forecast(output_table, metrics if metrics else None)
+        print_quantiles(quantiles_table)
 
     return {
         "output_table": output_table,

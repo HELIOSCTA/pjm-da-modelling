@@ -106,8 +106,37 @@ def _window_columns(target_hour: int, flt_radius: int) -> list[str]:
     return [f"{stem}_h{h}" for stem in _WINDOWED_COL_STEMS for h in range(lo, hi + 1)]
 
 
+def _effective_weights(
+    spec: ModelSpec,
+    override: dict[str, float] | None,
+) -> dict[str, float]:
+    """Resolved feature-group weights for this run.
+
+    With ``override=None``, returns the spec-derived (already-renormalized)
+    weights. With an override dict, validates that every key is a valid
+    spec group, fills missing keys with 0, then renormalizes to sum to 1.0
+    — same convention as ``domains.resolved_feature_group_weights``.
+    Raises ``ValueError`` on unknown keys or zero/negative total.
+    """
+    if override is None:
+        return spec.feature_group_weights
+    valid = set(spec.feature_groups.keys())
+    bad = set(override) - valid
+    if bad:
+        raise ValueError(
+            f"Unknown weight-override keys: {sorted(bad)}. "
+            f"Valid: {sorted(valid)}"
+        )
+    raw = {g: float(override.get(g, 0.0)) for g in valid}
+    total = sum(raw.values())
+    if total <= 0:
+        raise ValueError(f"Weight override sums to {total}; need > 0.")
+    return {k: v / total for k, v in raw.items()}
+
+
 def _combined_non_load_distance(
     spec: ModelSpec, pool: pd.DataFrame, query: pd.Series,
+    weights: dict[str, float],
 ) -> tuple[np.ndarray | None, float]:
     """Weighted-average per-group RMS-z distance over broadcast (non-windowed) groups.
 
@@ -118,9 +147,9 @@ def _combined_non_load_distance(
     when the spec has no broadcast groups.
     """
     non_load_groups = [
-        (g, float(spec.feature_group_weights.get(g, 0.0)))
+        (g, float(weights.get(g, 0.0)))
         for g in spec.feature_groups
-        if not _is_windowed_group(g) and float(spec.feature_group_weights.get(g, 0.0)) > 0
+        if not _is_windowed_group(g) and float(weights.get(g, 0.0)) > 0
     ]
     if not non_load_groups:
         return None, 0.0
@@ -170,12 +199,19 @@ def find_twins(
     exclude_dates: list[str] | None = None,
     max_age_years: int | None = None,
     recency_half_life_years: float | None = None,
+    feature_group_weights_override: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Per-hour analog table. Shape: 24 * n_analogs rows.
 
     Columns: hour_ending, rank, date, distance, weight, lmp.
+
+    ``feature_group_weights_override`` (when given) replaces the
+    spec-derived weights for this call only. Validated and renormalized
+    via ``_effective_weights``.
     """
     out_cols = ["hour_ending", "rank", "date", "distance", "weight", "lmp"]
+
+    weights = _effective_weights(spec, feature_group_weights_override)
 
     work = _candidate_pool(
         pool, target_date, season_window_days, min_pool_size,
@@ -197,9 +233,9 @@ def find_twins(
     # Pre-compute broadcast (non-windowed) groups' combined distance (constant
     # across hours). Windowed groups (load/solar/wind) are evaluated per HE
     # below.
-    non_load_dist, non_load_weight = _combined_non_load_distance(spec, work, query)
+    non_load_dist, non_load_weight = _combined_non_load_distance(spec, work, query, weights)
     load_weight = sum(
-        float(w) for g, w in spec.feature_group_weights.items() if _is_windowed_group(g)
+        float(w) for g, w in weights.items() if _is_windowed_group(g)
     )
     if load_weight <= 0:
         # No windowed groups in the spec; treat the dynamic window as the full
