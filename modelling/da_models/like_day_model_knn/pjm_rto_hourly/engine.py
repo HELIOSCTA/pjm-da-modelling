@@ -125,17 +125,31 @@ def _candidate_pool(
 
 # Group prefixes whose features participate in the per-HE dynamic window
 # (vs. the broadcast non-load path). Each prefix corresponds to a column
-# stem of the form ``{stem}_h{HE}`` (load_h1..load_h24, solar_h1..solar_h24,
-# wind_h1..wind_h24). Adding a new windowed feature family means: define
-# domain cols as ``{stem}_h{HE}``, name groups ``{stem}_*``, and add the
-# stem here.
+# stem of the form ``{stem}_h{HE}``. Adding a new windowed feature family
+# means: define domain cols as ``{stem}_h{HE}``, name groups so they
+# start with ``{stem}_`` (or ARE ``{stem}``), and add the stem here.
+#
+# Note on naming: groups like ``load_ramp_1h`` and ``load_ramp_3h`` start
+# with ``load_`` so they pass the prefix check below — but their stems
+# are the full ``load_ramp_1h`` / ``load_ramp_3h`` strings. The
+# ``_WINDOWED_COL_STEMS`` list determines what cols ``_window_columns``
+# emits per HE; the prefix list only gates ``_is_windowed_group``.
 _WINDOWED_GROUP_PREFIXES: tuple[str, ...] = (
     "load_",
     "solar_",
     "wind_",
     "net_load_",
+    "temp_",
 )
-_WINDOWED_COL_STEMS: tuple[str, ...] = ("load", "solar", "wind", "net_load")
+_WINDOWED_COL_STEMS: tuple[str, ...] = (
+    "load",
+    "load_ramp_1h",
+    "load_ramp_3h",
+    "solar",
+    "wind",
+    "net_load",
+    "temp",
+)
 
 
 def _is_windowed_group(group_name: str) -> bool:

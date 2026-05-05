@@ -15,6 +15,7 @@ time — while old history still contributes via RT.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -30,11 +31,15 @@ RTO = "RTO"
 
 # Column names produced per domain (kept stable so engine/spec can reference).
 LOAD_HOURLY_COLS = [f"load_h{h}" for h in range(1, 25)]
+LOAD_RAMP_1H_HOURLY_COLS = [f"load_ramp_1h_h{h}" for h in range(1, 25)]
+LOAD_RAMP_3H_HOURLY_COLS = [f"load_ramp_3h_h{h}" for h in range(1, 25)]
 SOLAR_HOURLY_COLS = [f"solar_h{h}" for h in range(1, 25)]
 WIND_HOURLY_COLS = [f"wind_h{h}" for h in range(1, 25)]
 NET_LOAD_HOURLY_COLS = [f"net_load_h{h}" for h in range(1, 25)]
+TEMP_HOURLY_COLS = [f"temp_h{h}" for h in range(1, 25)]
 OUTAGE_LEVEL_COLS = ["outage_total_mw", "outage_planned_mw", "outage_forced_mw"]
 GAS_LEVEL_COLS = ["gas_m3_avg"]
+CALENDAR_LEVEL_COLS = ["dow_sin", "dow_cos", "is_weekend"]
 
 
 @dataclass(frozen=True)
@@ -145,7 +150,7 @@ RTO_LOAD_PROFILE = FeatureDomain(
     # Euclidean as before. Retune separately if migrating toward sunny's
     # weight profile (load_at_hour=3.0).
     feature_group_weights={
-        "load_level": 5.5,
+        "load_level": 3,
     },
     pool_builder=_build_rto_load_profile_pool,
     query_builder=_build_rto_load_profile_query,
@@ -179,7 +184,7 @@ SOLAR_PROFILE = FeatureDomain(
     name="solar_profile",
     description="Solar — 24 hourly level cols (solar_h1..solar_h24).",
     feature_groups={"solar_level": SOLAR_HOURLY_COLS},
-    feature_group_weights={"solar_level": 1.0},
+    feature_group_weights={"solar_level": 1.5},
     pool_builder=_build_solar_profile_pool,
     query_builder=_build_solar_profile_query,
 )
@@ -209,7 +214,7 @@ WIND_PROFILE = FeatureDomain(
     name="wind_profile",
     description="Wind — 24 hourly level cols (wind_h1..wind_h24).",
     feature_groups={"wind_level": WIND_HOURLY_COLS},
-    feature_group_weights={"wind_level": 1.0},
+    feature_group_weights={"wind_level": 1.5},
     pool_builder=_build_wind_profile_pool,
     query_builder=_build_wind_profile_query,
 )
@@ -330,7 +335,7 @@ OUTAGES_LEVEL = FeatureDomain(
     name="outages_level",
     description="RTO outages — 3 daily level cols (total/planned/forced MW). Broadcast across HEs.",
     feature_groups={"outage_level": OUTAGE_LEVEL_COLS},
-    feature_group_weights={"outage_level": 4.0},
+    feature_group_weights={"outage_level": 1.5},
     pool_builder=_build_outages_level_pool,
     query_builder=_build_outages_level_query,
 )
@@ -372,9 +377,165 @@ GAS_LEVEL = FeatureDomain(
     name="gas_level",
     description="Gas — 1 daily level col (M3 cash daily mean). Broadcast across HEs.",
     feature_groups={"gas_level": GAS_LEVEL_COLS},
-    feature_group_weights={"gas_level": 1.0},
+    feature_group_weights={"gas_level": 2.0},
     pool_builder=_build_gas_level_pool,
     query_builder=_build_gas_level_query,
+)
+
+
+# ── load_ramps_profile (derived from rto_load_profile, windowed) ─────────
+# Intra-day load ramps captured as a peer of the load level. Mirrors
+# sunny's ``load_ramp_1h_at_hour`` and ``load_ramp_3h_at_hour`` features
+# but at the wide-format level: we materialize 24 ramp values per date
+# (one per HE), and the per-HE windowed Euclidean picks the relevant
+# subset. HE=1 1h-ramp and HE<=3 3h-ramp are NaN (no in-day predecessor) —
+# the engine's NaN-aware mask drops them from per-HE distance.
+
+
+def _compute_load_ramps_wide(load_wide: pd.DataFrame) -> pd.DataFrame:
+    out = load_wide[["date"]].copy()
+    for h in range(1, 25):
+        if h > 1:
+            out[f"load_ramp_1h_h{h}"] = (
+                load_wide[f"load_h{h}"] - load_wide[f"load_h{h - 1}"]
+            )
+        else:
+            out[f"load_ramp_1h_h{h}"] = np.nan
+        if h > 3:
+            out[f"load_ramp_3h_h{h}"] = (
+                load_wide[f"load_h{h}"] - load_wide[f"load_h{h - 3}"]
+            )
+        else:
+            out[f"load_ramp_3h_h{h}"] = np.nan
+    return out
+
+
+def _build_load_ramps_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_pjm_supply_demand_coalesced(cache_dir=cache_dir, region=RTO)
+    load = _hourly_value_profile(df, "load_mw", output_prefix="load")
+    return _compute_load_ramps_wide(load)
+
+
+def _build_load_ramps_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_load_forecast(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO].copy()
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    load = _hourly_load_profile(df, "forecast_load_mw")
+    return _compute_load_ramps_wide(load)
+
+
+LOAD_RAMPS_PROFILE = FeatureDomain(
+    name="load_ramps_profile",
+    description=(
+        "Derived intra-day load ramps — load_ramp_1h_h{HE} = load_h{HE} - "
+        "load_h{HE-1}, load_ramp_3h_h{HE} = load_h{HE} - load_h{HE-3}. "
+        "Mirrors sunny's load_ramp_1h_at_hour / load_ramp_3h_at_hour. "
+        "HE=1 1h ramp and HE<=3 3h ramp are NaN (no in-day predecessor)."
+    ),
+    feature_groups={
+        "load_ramp_1h": LOAD_RAMP_1H_HOURLY_COLS,
+        "load_ramp_3h": LOAD_RAMP_3H_HOURLY_COLS,
+    },
+    feature_group_weights={
+        "load_ramp_1h": 1.5,
+        "load_ramp_3h": 1.5,
+    },
+    pool_builder=_build_load_ramps_profile_pool,
+    query_builder=_build_load_ramps_profile_query,
+)
+
+
+# ── temperature_profile (windowed) ───────────────────────────────────────
+# RTO-wide hourly temperature from ``load_weather_coalesced`` (observed
+# wins for dates with all 24 HEs present; forecast fills the rest,
+# including the future target date). Mirrors sunny's weather_at_hour but
+# at the wide-format level.
+
+
+def _build_temperature_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_weather_coalesced(cache_dir=cache_dir)
+    return _hourly_value_profile(df, "temp", output_prefix="temp")
+
+
+def _build_temperature_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_weather_coalesced(cache_dir=cache_dir).copy()
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    return _hourly_value_profile(df, "temp", output_prefix="temp")
+
+
+TEMPERATURE_PROFILE = FeatureDomain(
+    name="temperature_profile",
+    description=(
+        "RTO-wide hourly temperature — 24 cols (temp_h1..temp_h24). "
+        "Sourced from load_weather_coalesced (observed-first, forecast "
+        "fallback) so historical pool uses observed actuals and the "
+        "query for a future date uses the forecast vintage."
+    ),
+    feature_groups={"temp_level": TEMP_HOURLY_COLS},
+    feature_group_weights={"temp_level": 2.0},
+    pool_builder=_build_temperature_profile_pool,
+    query_builder=_build_temperature_profile_query,
+)
+
+
+# ── calendar_level (broadcast, derived from date) ────────────────────────
+# Soft DOW similarity in the distance metric — pairs with
+# FILTER_SAME_DOW_GROUP=False to keep day-of-week signal in the model
+# without hard filtering. Mirrors sunny's calendar group.
+
+
+def _calendar_features_from_date(d: date) -> dict[str, float]:
+    weekday_mon0 = d.weekday()  # Mon=0..Sun=6 (Python)
+    dow_num = (weekday_mon0 + 1) % 7  # Sun=0..Sat=6 (PJM/sunny convention)
+    return {
+        "dow_sin": float(math.sin(2 * math.pi * dow_num / 7.0)),
+        "dow_cos": float(math.cos(2 * math.pi * dow_num / 7.0)),
+        "is_weekend": 1.0 if dow_num in (0, 6) else 0.0,
+    }
+
+
+def _build_calendar_level_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_pjm_dates_daily(cache_dir=cache_dir)
+    if df is None or len(df) == 0 or "date" not in df.columns:
+        return pd.DataFrame(columns=["date"] + CALENDAR_LEVEL_COLS)
+    work = df[["date"]].copy()
+    work["date"] = _to_date(work["date"])
+    work = work.dropna(subset=["date"]).drop_duplicates("date").reset_index(drop=True)
+    feats = pd.DataFrame(
+        [_calendar_features_from_date(d) for d in work["date"]],
+        columns=CALENDAR_LEVEL_COLS,
+    )
+    return pd.concat([work, feats], axis=1)[["date"] + CALENDAR_LEVEL_COLS]
+
+
+def _build_calendar_level_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    feats = _calendar_features_from_date(target_date)
+    return pd.DataFrame([{"date": target_date, **feats}])[
+        ["date"] + CALENDAR_LEVEL_COLS
+    ]
+
+
+CALENDAR_LEVEL = FeatureDomain(
+    name="calendar_level",
+    description=(
+        "Calendar features (dow_sin, dow_cos, is_weekend) derived from the "
+        "date. Broadcast across HEs (single value per date). Soft DOW "
+        "similarity in the distance metric — pairs with "
+        "FILTER_SAME_DOW_GROUP=False default to keep day-of-week signal "
+        "without hard filtering."
+    ),
+    feature_groups={"calendar_level": CALENDAR_LEVEL_COLS},
+    feature_group_weights={"calendar_level": 1.0},
+    pool_builder=_build_calendar_level_pool,
+    query_builder=_build_calendar_level_query,
 )
 
 
@@ -382,11 +543,14 @@ GAS_LEVEL = FeatureDomain(
 
 DOMAIN_REGISTRY: dict[str, FeatureDomain] = {
     RTO_LOAD_PROFILE.name: RTO_LOAD_PROFILE,
+    LOAD_RAMPS_PROFILE.name: LOAD_RAMPS_PROFILE,
     SOLAR_PROFILE.name: SOLAR_PROFILE,
     WIND_PROFILE.name: WIND_PROFILE,
     RTO_NET_LOAD_PROFILE.name: RTO_NET_LOAD_PROFILE,
+    TEMPERATURE_PROFILE.name: TEMPERATURE_PROFILE,
     OUTAGES_LEVEL.name: OUTAGES_LEVEL,
     GAS_LEVEL.name: GAS_LEVEL,
+    CALENDAR_LEVEL.name: CALENDAR_LEVEL,
 }
 
 

@@ -200,9 +200,37 @@ PJM_RTO_HOURLY_FULL_SPEC = ModelSpec(
     flt_radius=1,
 )
 
+# Sunny-aligned spec: adds load ramps (1h, 3h), temperature, and the
+# soft calendar features (dow_sin, dow_cos, is_weekend). Mirrors the
+# feature set of like_day_model_knn_sunny's PJM_RTO_HOURLY_SUNNY_SPEC,
+# but kept on this package's per-HE windowed Euclidean engine. Use this
+# spec for ablation/comparison against ``pjm_rto_hourly_full``.
+PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC = ModelSpec(
+    name="pjm_rto_hourly_sunny_aligned",
+    description=(
+        "Sunny feature set on the per-HE windowed engine: load + load_ramp_1h "
+        "+ load_ramp_3h + solar + wind + net_load + temperature (windowed) "
+        "and outage + gas + calendar (broadcast)."
+    ),
+    match_unit="hour",
+    domains=(
+        "rto_load_profile",
+        "load_ramps_profile",
+        "solar_profile",
+        "wind_profile",
+        "rto_net_load_profile",
+        "temperature_profile",
+        "outages_level",
+        "gas_level",
+        "calendar_level",
+    ),
+    flt_radius=1,
+)
+
 MODEL_REGISTRY: dict[str, ModelSpec] = {
     PJM_RTO_HOURLY_SPEC.name: PJM_RTO_HOURLY_SPEC,
     PJM_RTO_HOURLY_FULL_SPEC.name: PJM_RTO_HOURLY_FULL_SPEC,
+    PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name: PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC,
 }
 
 DEFAULT_MODEL: str = PJM_RTO_HOURLY_SPEC.name

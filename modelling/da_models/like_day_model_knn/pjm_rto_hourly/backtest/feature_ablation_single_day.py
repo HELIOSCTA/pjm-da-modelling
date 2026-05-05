@@ -121,17 +121,28 @@ HUB: str = configs.HUB
 # Windowed features must use nan_cols; broadcast features must use
 # zero_weight_groups (see module docstring for why).
 _LOAD_COLS: list[str] = [f"load_h{h}" for h in range(1, 25)]
+_LOAD_RAMP_1H_COLS: list[str] = [f"load_ramp_1h_h{h}" for h in range(1, 25)]
+_LOAD_RAMP_3H_COLS: list[str] = [f"load_ramp_3h_h{h}" for h in range(1, 25)]
 _SOLAR_COLS: list[str] = [f"solar_h{h}" for h in range(1, 25)]
 _WIND_COLS: list[str] = [f"wind_h{h}" for h in range(1, 25)]
 _NET_LOAD_COLS: list[str] = [f"net_load_h{h}" for h in range(1, 25)]
+_TEMP_COLS: list[str] = [f"temp_h{h}" for h in range(1, 25)]
 
+# Includes ablations for the sunny-aligned spec's added features
+# (ramps/temperature/calendar) — entries are silently no-ops when run
+# against a spec that doesn't include those domains, so this dict can
+# stay populated regardless of which spec is selected.
 ABLATIONS: dict[str, dict] = {
     "load": {"nan_cols": _LOAD_COLS},
+    "load_ramp_1h": {"nan_cols": _LOAD_RAMP_1H_COLS},
+    "load_ramp_3h": {"nan_cols": _LOAD_RAMP_3H_COLS},
     "solar": {"nan_cols": _SOLAR_COLS},
     "wind": {"nan_cols": _WIND_COLS},
     "net_load": {"nan_cols": _NET_LOAD_COLS},
+    "temp": {"nan_cols": _TEMP_COLS},
     "outage": {"zero_weight_groups": ["outage_level"]},
     "gas": {"zero_weight_groups": ["gas_level"]},
+    "calendar": {"zero_weight_groups": ["calendar_level"]},
 }
 
 _DOW_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -308,7 +319,18 @@ def _run_scenario(
 # ── Output ─────────────────────────────────────────────────────────────────
 
 
-_WINDOWED_STEMS_ORDERED: tuple[str, ...] = ("net_load", "load", "solar", "wind")
+# Ordered longest-prefix-first so e.g. ``load_ramp_1h`` matches before
+# ``load`` and ``net_load`` matches before ``load``. Required by
+# ``_stem_of`` below to assign each group to its most specific stem.
+_WINDOWED_STEMS_ORDERED: tuple[str, ...] = (
+    "load_ramp_1h",
+    "load_ramp_3h",
+    "net_load",
+    "load",
+    "solar",
+    "wind",
+    "temp",
+)
 
 
 def _effective_column_weights(spec) -> list[dict]:
@@ -330,9 +352,12 @@ def _effective_column_weights(spec) -> list[dict]:
     total_raw = float(sum(raw.values())) or 1.0
 
     def _stem_of(group: str) -> str | None:
-        # Longest-prefix match so net_load_* is recognized before load_*.
+        # Longest-prefix match so ``load_ramp_1h`` and ``net_load_*`` are
+        # both recognized before ``load_*``. Match either ``group == stem``
+        # (a group whose name IS the stem, e.g. ``load_ramp_1h``) or
+        # ``group.startswith(f"{stem}_")`` (e.g. ``load_level``).
         for stem in _WINDOWED_STEMS_ORDERED:
-            if group.startswith(f"{stem}_"):
+            if group == stem or group.startswith(f"{stem}_"):
                 return stem
         return None
 
@@ -1192,18 +1217,32 @@ def run(
             f"({last['duration_s']:.1f}s)"
         )
 
+        spec_groups = set(spec_for_build.feature_groups.keys())
+        spec_cols = {c for cols in spec_for_build.feature_groups.values() for c in cols}
         for name, payload in ablations.items():
             scenario_name = f"ablate_{name}"
             if "nan_cols" in payload:
-                pool_run, query_run = _apply_nan_ablation(
-                    pool, query, payload["nan_cols"]
-                )
+                cols_in_spec = [c for c in payload["nan_cols"] if c in spec_cols]
+                if not cols_in_spec:
+                    print(
+                        f"[ablate]   {scenario_name:<20} "
+                        f"SKIP (no matching cols in spec)"
+                    )
+                    continue
+                pool_run, query_run = _apply_nan_ablation(pool, query, cols_in_spec)
                 override = None
             elif "zero_weight_groups" in payload:
+                groups_in_spec = [
+                    g for g in payload["zero_weight_groups"] if g in spec_groups
+                ]
+                if not groups_in_spec:
+                    print(
+                        f"[ablate]   {scenario_name:<20} "
+                        f"SKIP (no matching groups in spec)"
+                    )
+                    continue
                 pool_run, query_run = pool, query
-                override = _zero_weight_override(
-                    spec_for_build, payload["zero_weight_groups"]
-                )
+                override = _zero_weight_override(spec_for_build, groups_in_spec)
             else:
                 raise ValueError(
                     f"Ablation '{name}' has no recognised payload "
