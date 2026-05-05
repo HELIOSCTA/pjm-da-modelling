@@ -17,9 +17,10 @@ missing renewables as zero is defensible pre-2019 (small share of stack)
 and a non-issue for recent dates.
 
 Correlation interpretation: this is a **within-day shape correlation** —
-``pearson(feature_h{1..24}, lmp_h{1..24})`` for the single target date.
-It tells you whether the feature's daily shape matches LMP's daily shape
-on this date. It is NOT a per-hour cross-day correlation.
+``corr(feature_h{1..24}, lmp_h{1..24})`` for the single target date.
+Both Pearson and Spearman (rank) are reported. Pearson measures linear
+shape match; Spearman is robust to single-hour LMP spikes that can
+dominate Pearson on n=24. Neither is a per-hour cross-day correlation.
 
 Broadcast features (outages, gas) have no within-day shape and are
 excluded from this diagnostic.
@@ -52,6 +53,8 @@ from da_models.common.forecast.output import (  # noqa: E402
     actuals_from_pool,
     add_summary_cols,
 )
+from da_models.common.stats.correlation import pearson as _pearson  # noqa: E402
+from da_models.common.stats.correlation import spearman as _spearman  # noqa: E402
 from da_models.like_day_model_knn import configs  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.builder import build_pool  # noqa: E402
 from utils.logging_utils import (  # noqa: E402
@@ -71,7 +74,7 @@ _RS: str = Colors.RESET if _COLOR_ON else ""
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
 # None -> most recent date in pool with full LMP actuals (typically yesterday).
-TARGET_DATE: date | None = None
+TARGET_DATE: date | None = date(2026, 5, 6)
 # Defaults to the FULL spec so the pool includes net_load_h{1..24} columns
 # from rto_net_load_profile (which reads from the unified supply-demand
 # coalescer). All four supply-demand features therefore share a single
@@ -166,18 +169,6 @@ def _lmp_profile(row: pd.Series) -> np.ndarray | None:
     return np.array([row[c] for c in _LMP_COLS], dtype=float)
 
 
-def _pearson(x: np.ndarray, y: np.ndarray) -> float | None:
-    """NaN-safe Pearson on two length-24 arrays. Returns None if <3 finite
-    pairs or either side has zero variance."""
-    mask = np.isfinite(x) & np.isfinite(y)
-    if mask.sum() < 3:
-        return None
-    xv, yv = x[mask], y[mask]
-    if np.std(xv) == 0 or np.std(yv) == 0:
-        return None
-    return float(np.corrcoef(xv, yv)[0, 1])
-
-
 def _profile_table(
     row: pd.Series,
     lmp: np.ndarray,
@@ -213,10 +204,15 @@ def _correlations(
     profile: pd.DataFrame,
     features: tuple[str, ...],
     has_sep: bool,
+    corr_fn=_pearson,
 ) -> pd.DataFrame:
     """Per-feature within-day correlation against ``lmp_total`` (always)
     and ``sep`` (when ``has_sep``), broken out by OnPk / OffPk / Flat hour
-    buckets. Sorted by |corr_lmp_flat| desc."""
+    buckets. Sorted by |corr_lmp_flat| desc.
+
+    ``corr_fn`` selects the correlation method: ``_pearson`` (default,
+    linear) or ``_spearman`` (rank; robust to single-hour LMP spikes).
+    """
     lmp_row = profile[profile["Type"] == "lmp"].iloc[0]
     sep_row = profile[profile["Type"] == "sep"].iloc[0] if has_sep else None
 
@@ -228,10 +224,10 @@ def _correlations(
             b = bucket.lower()
             prof = np.array([feat_row[f"HE{h}"] for h in hours], dtype=float)
             lmp_v = np.array([lmp_row[f"HE{h}"] for h in hours], dtype=float)
-            rec[f"corr_lmp_{b}"] = _pearson(prof, lmp_v)
+            rec[f"corr_lmp_{b}"] = corr_fn(prof, lmp_v)
             if sep_row is not None:
                 sep_v = np.array([sep_row[f"HE{h}"] for h in hours], dtype=float)
-                rec[f"corr_sep_{b}"] = _pearson(prof, sep_v)
+                rec[f"corr_sep_{b}"] = corr_fn(prof, sep_v)
             rec[f"n_{b}"] = int((np.isfinite(prof) & np.isfinite(lmp_v)).sum())
         rows.append(rec)
     df = pd.DataFrame(rows)
@@ -252,6 +248,99 @@ def _format_cell(val: float | None, width: int, is_price: bool) -> str:
     if is_price:
         return f" {val:>+{width}.2f}"
     return f" {val:>{width},.0f}"
+
+
+_DOW_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _print_config(
+    target_date: date,
+    hub: str,
+    model_name: str,
+    n_pool: int,
+    features: tuple[str, ...],
+    has_sep: bool,
+    width: int = 120,
+) -> None:
+    """Configuration block — surfaces what was actually measured at a glance.
+
+    Lists the spec / pool source, target date, hub, features under test,
+    and targets so anyone reading the output can tell exactly which
+    features came from which pool, what they were correlated against, and
+    on what date — without having to read the script.
+    """
+    from utils.logging_utils import print_divider, print_header
+
+    spec = configs.MODEL_REGISTRY.get(model_name)
+    domain_list = ", ".join(spec.domains) if spec is not None else "?"
+    target_dow = _DOW_ABBR[target_date.weekday()]
+    targets_str = "lmp_total, sep" if has_sep else "lmp_total"
+
+    print()
+    print_header("FEATURE -> LMP CORRELATION CONFIGURATION", "=", width)
+    print()
+    print(f"  Target date     {target_date}  ({target_dow})")
+    print(f"  Hub             {hub}  (used to filter SEP rows)")
+    print(f"  Spec            {model_name}")
+    print(f"  Domains         {domain_list}")
+    print(
+        "  Pool source     load_pjm_supply_demand_coalesced  "
+        "(RTO; single source decision per date)"
+    )
+    print(f"  Pool size       {n_pool:,} rows")
+    print(f"  Features        {', '.join(features)}")
+    print(
+        "                  (within-day shape features only "
+        "-- outages/gas excluded as broadcast)"
+    )
+    print(f"  Targets         {targets_str}")
+    print()
+    print_divider("=", width, dim=False)
+
+
+def _print_scope(
+    features: tuple[str, ...],
+    has_sep: bool,
+    model_name: str,
+) -> None:
+    """Scope block — explicitly names what's under correlation analysis.
+
+    Distinct from the configuration block (which lists what's in the
+    spec). This block answers: 'of all the spec's groups, which N
+    features are THIS diagnostic actually correlating against LMP/SEP,
+    and which are excluded?' Surfaces the windowed/broadcast distinction.
+
+    Spec feature-group weights are NOT used here — this diagnostic
+    computes raw (unweighted) Pearson/Spearman against LMP/SEP. Weights
+    drive the KNN engine's analog selection, not within-day correlation.
+    """
+    from utils.logging_utils import print_section
+
+    spec = configs.MODEL_REGISTRY.get(model_name)
+    feature_prefixes = tuple(f"{f}_" for f in features)
+    excluded: list[str] = []
+    if spec is not None:
+        for g in spec.feature_groups:
+            if not any(g.startswith(p) for p in feature_prefixes):
+                excluded.append(g)
+    excluded_str = ", ".join(sorted(set(excluded))) if excluded else "(none)"
+
+    n_features = len(features)
+    n_targets = 2 if has_sep else 1
+    targets = "lmp_total, sep" if has_sep else "lmp_total"
+
+    print_section(f"Correlation scope: {n_features} features x {n_targets} target(s)")
+    print(f"  Features under test    {', '.join(features)}")
+    print(f"  Targets                {targets}")
+    print(
+        "  Buckets                OnPk (HE8..HE23, 16h)"
+        " | OffPk (HE1..HE7 + HE24, 8h) | Flat (24h)"
+    )
+    print(f"  Excluded broadcasts    {excluded_str}")
+    print("                         (single daily value, no within-day shape;")
+    print(
+        "                         within-day Pearson is undefined against a constant)"
+    )
 
 
 def _print_profile(profile: pd.DataFrame, target_date: date, hub: str) -> None:
@@ -297,22 +386,33 @@ def _print_correlations(
     corr_df: pd.DataFrame,
     target_date: date,
     has_sep: bool,
+    method: str = "Pearson",
 ) -> None:
-    """Correlation table + comparison summary blocks.
+    """Correlation table only — no comparison/leader callouts.
 
-    Uses the printers.py-style banner / section helpers; bolds the leader
-    row in the corr table; color-codes verdicts (green = win, red = loss).
+    Uses the printers.py-style banner / section helpers; bolds the
+    leader row in the corr table. ``method`` is the label printed in
+    the banner ("Pearson" / "Spearman").
     """
-    from utils.logging_utils import print_divider, print_header, print_section
+    from utils.logging_utils import print_divider, print_header
 
     width = 130 if has_sep else 100
 
     print()
-    print_header(f"FEATURE -> LMP CORRELATION  --  {target_date}", "=", width)
+    print_header(
+        f"FEATURE -> LMP CORRELATION ({method.upper()})  --  {target_date}",
+        "=",
+        width,
+    )
     print(
-        "  Pearson within-day shape match across the HEs in each bucket "
+        f"  {method} within-day shape match across the HEs in each bucket "
         "(this date only; not cross-day)."
     )
+    if method == "Spearman":
+        print(
+            "  Rank correlation; robust to single-hour LMP spikes that can "
+            "dominate Pearson on n=24."
+        )
     if has_sep:
         print(
             "  Compares features against lmp_total AND lmp_system_energy_price (SEP)."
@@ -389,70 +489,6 @@ def _print_correlations(
         print(line)
     print_divider("-", width, dim=False)
 
-    # ---- Leader callout ----
-    if leader_feature is not None:
-        leader = corr_df.iloc[0]
-        print_section(f"Strongest |corr_lmp_flat|: {leader_feature}")
-        print(
-            f"  vs lmp_total:  flat={leader['corr_lmp_flat']:+.3f}   "
-            f"onpk={leader['corr_lmp_onpk']:+.3f}   "
-            f"offpk={leader['corr_lmp_offpk']:+.3f}"
-        )
-        if has_sep and pd.notna(leader.get("corr_sep_flat")):
-            print(
-                f"  vs SEP:        flat={leader['corr_sep_flat']:+.3f}   "
-                f"onpk={leader['corr_sep_onpk']:+.3f}   "
-                f"offpk={leader['corr_sep_offpk']:+.3f}"
-            )
-
-    # ---- net_load vs load ----
-    if {"net_load", "load"}.issubset(set(corr_df["feature"])):
-        load_row = corr_df[corr_df["feature"] == "load"].iloc[0]
-        net_row = corr_df[corr_df["feature"] == "net_load"].iloc[0]
-        print_section("net_load vs load (vs lmp_total)")
-        for bucket in ("onpk", "offpk", "flat"):
-            l_c = load_row[f"corr_lmp_{bucket}"]
-            n_c = net_row[f"corr_lmp_{bucket}"]
-            if pd.notna(l_c) and pd.notna(n_c):
-                delta = n_c - l_c
-                if abs(n_c) > abs(l_c):
-                    verdict = f"{_HL_WIN}net_load wins{_RS}"
-                else:
-                    verdict = f"{_HL_DIM}load wins or ties{_RS}"
-                print(
-                    f"  {bucket:<6}  net={n_c:+.3f}   load={l_c:+.3f}   "
-                    f"delta={delta:+.3f}   --  {verdict}"
-                )
-
-    # ---- Per-feature SEP vs LMP_total ----
-    if has_sep:
-        print_section("SEP vs lmp_total per feature (flat bucket)")
-        print(f"  {_HL_DIM}positive |sep|-|lmp| -> SEP shape matches better{_RS}")
-        for _, r in corr_df.iterrows():
-            l_c = r.get("corr_lmp_flat")
-            s_c = r.get("corr_sep_flat")
-            if pd.notna(l_c) and pd.notna(s_c):
-                delta = abs(s_c) - abs(l_c)
-                if delta > 0.01:
-                    verdict = f"{_HL_WIN}SEP wins{_RS}"
-                elif delta < -0.01:
-                    verdict = f"{_HL_LOSS}lmp_total wins{_RS}"
-                else:
-                    verdict = f"{_HL_DIM}tie{_RS}"
-                print(
-                    f"  {r['feature']:<10}  sep={s_c:+.3f}   lmp={l_c:+.3f}   "
-                    f"|sep|-|lmp|={delta:+.3f}   --  {verdict}"
-                )
-
-        print_section("corr(sep, lmp_total) -- how much of LMP shape is SEP")
-        sep_row = profile[profile["Type"] == "sep"].iloc[0]
-        lmp_row = profile[profile["Type"] == "lmp"].iloc[0]
-        for bucket, hours in _HOUR_BUCKETS.items():
-            s_arr = np.array([sep_row[f"HE{h}"] for h in hours], dtype=float)
-            l_arr = np.array([lmp_row[f"HE{h}"] for h in hours], dtype=float)
-            c = _pearson(s_arr, l_arr)
-            if c is not None:
-                print(f"  {bucket.lower():<6}  corr={c:+.3f}")
     print()
 
 
@@ -512,12 +548,33 @@ def run(
     profile = _profile_table(row, lmp, sep, features, resolved)
     corr_df = _correlations(profile, features, has_sep=sep is not None)
 
+    _print_config(
+        target_date=resolved,
+        hub=HUB,
+        model_name=model_name,
+        n_pool=len(pool),
+        features=features,
+        has_sep=sep is not None,
+    )
+    _print_scope(features=features, has_sep=sep is not None, model_name=model_name)
     _print_profile(profile, resolved, HUB)
     _print_correlations(profile, corr_df, resolved, has_sep=sep is not None)
+
+    spearman_df = _correlations(
+        profile, features, has_sep=sep is not None, corr_fn=_spearman
+    )
+    _print_correlations(
+        profile,
+        spearman_df,
+        resolved,
+        has_sep=sep is not None,
+        method="Spearman",
+    )
 
     return {
         "profile": profile,
         "correlations": corr_df,
+        "correlations_spearman": spearman_df,
         "target_date": resolved,
     }
 
