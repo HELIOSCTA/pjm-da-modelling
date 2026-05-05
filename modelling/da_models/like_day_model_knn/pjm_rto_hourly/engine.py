@@ -288,39 +288,80 @@ def find_twins(
     rows: list[dict] = []
 
     # Pre-compute broadcast (non-windowed) groups' combined distance (constant
-    # across hours). Windowed groups (load/solar/wind) are evaluated per HE
-    # below.
+    # across hours). Windowed groups (load/solar/wind/net_load) are evaluated
+    # per HE below via a per-group weighted RMS-z so spec.feature_group_weights
+    # actually controls each group's share of the windowed distance — the
+    # prior implementation pooled all windowed cols into one RMS-z, which
+    # discarded within-windowed group weights and gave wind/solar a column-
+    # count-driven share (~3.2x their spec-intended weight on the FULL spec).
     non_load_dist, non_load_weight = _combined_non_load_distance(
         spec, work, query, weights
     )
-    load_weight = sum(float(w) for g, w in weights.items() if _is_windowed_group(g))
+    # Snapshot spec weights before the per-HE loop reassigns ``weights`` to
+    # the analog inverse-distance weights at the bottom of each iteration.
+    # (Renamed the analog vector to ``analog_weights`` below; the snapshot
+    # remains for safety against future refactors.)
+    group_weights: dict[str, float] = dict(weights)
+    load_weight = sum(
+        float(w) for g, w in group_weights.items() if _is_windowed_group(g)
+    )
     if load_weight <= 0:
         # No windowed groups in the spec; treat the dynamic window as the full
         # remaining weight so distances stay finite.
         load_weight = max(0.0, 1.0 - non_load_weight)
 
     for h in HOURS:
-        cols = _window_columns(h, flt_radius)
-        cols_present = [c for c in cols if c in work.columns and c in query.index]
-        if not cols_present:
-            continue
+        window_cols_set = set(_window_columns(h, flt_radius))
 
-        pool_vals = work[cols_present].to_numpy(dtype=float)
-        query_vals = query[cols_present].to_numpy(dtype=float)
+        # Per-group weighted RMS-z. Each windowed group computes a NaN-aware
+        # RMS-z over the intersection of its cols with the per-HE window
+        # (z-fit per group → scale-invariant per group), then groups combine
+        # via spec weights. The windowed-vs-broadcast outer combine below is
+        # unchanged.
+        weighted_d = np.zeros(len(work), dtype=float)
+        contributed = np.zeros(len(work), dtype=float)
 
-        means = np.nanmean(pool_vals, axis=0)
-        stds = np.nanstd(pool_vals, axis=0)
-        stds = np.where(stds == 0, 1.0, stds)
-        pool_z = (pool_vals - means) / stds
-        query_z = ((query_vals - means) / stds).reshape(-1)
+        for group_name, group_cols in spec.feature_groups.items():
+            if not _is_windowed_group(group_name):
+                continue
+            w = float(group_weights.get(group_name, 0.0))
+            if w <= 0:
+                continue
+            windowed = [c for c in group_cols if c in window_cols_set]
+            cols_present = [
+                c for c in windowed if c in work.columns and c in query.index
+            ]
+            if not cols_present:
+                continue
 
-        diff = query_z - pool_z
-        mask = ~np.isnan(diff)
-        sq = np.where(mask, diff**2, 0.0)
-        n_valid = mask.sum(axis=1)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.inf)
-        d = np.where(np.isfinite(d), d, np.inf)
+            pool_vals = work[cols_present].to_numpy(dtype=float)
+            query_vals = query[cols_present].to_numpy(dtype=float)
+
+            means = np.nanmean(pool_vals, axis=0)
+            stds = np.nanstd(pool_vals, axis=0)
+            stds = np.where(stds == 0, 1.0, stds)
+            pool_z = (pool_vals - means) / stds
+            query_z = ((query_vals - means) / stds).reshape(-1)
+
+            diff = query_z - pool_z
+            mask = ~np.isnan(diff)
+            sq = np.where(mask, diff**2, 0.0)
+            n_valid = mask.sum(axis=1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                d_group = np.where(
+                    n_valid > 0,
+                    np.sqrt(sq.sum(axis=1) / n_valid),
+                    np.nan,
+                )
+
+            finite = np.isfinite(d_group)
+            weighted_d[finite] += w * d_group[finite]
+            contributed[finite] += w
+
+        # Combine groups: weighted average over groups that had any finite
+        # contribution. Rows with no windowed group contribution get inf.
+        denom = np.where(contributed > 0, contributed, 1.0)
+        d = np.where(contributed > 0, weighted_d / denom, np.inf)
 
         if non_load_dist is not None:
             total_w = load_weight + non_load_weight
@@ -351,12 +392,14 @@ def find_twins(
         )
         raw = inv_dist * decay
         if raw.sum() <= 0:
-            weights = np.full(len(d_top), 1.0 / max(1, len(d_top)))
+            analog_weights = np.full(len(d_top), 1.0 / max(1, len(d_top)))
         else:
-            weights = raw / raw.sum()
+            analog_weights = raw / raw.sum()
 
         lmp_col = f"lmp_h{h}"
-        for rank, (idx_arr, dist, w) in enumerate(zip(order, d_top, weights), start=1):
+        for rank, (idx_arr, dist, w) in enumerate(
+            zip(order, d_top, analog_weights), start=1
+        ):
             row = work.iloc[int(idx_arr)]
             rows.append(
                 {

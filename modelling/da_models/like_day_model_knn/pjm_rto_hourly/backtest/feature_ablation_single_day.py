@@ -306,6 +306,67 @@ def _run_scenario(
 # ── Output ─────────────────────────────────────────────────────────────────
 
 
+_WINDOWED_STEMS_ORDERED: tuple[str, ...] = ("net_load", "load", "solar", "wind")
+
+
+def _effective_column_weights(spec) -> list[dict]:
+    """Per-feature spec weight share (with column counts).
+
+    Engine (post per-group weighted RMS-z fix) honors spec weights for
+    both windowed and broadcast groups: each group's spec weight
+    literally controls its share of the distance, modulo per-HE
+    applicability — groups whose cols don't fall in the target HE's
+    window contribute 0 at that HE and their weight redistributes to
+    applicable groups via the per-HE weighted average.
+
+    Returns one dict per row::
+
+        {"feature": str, "n_cols": int, "share_pct": float,
+         "kind": "windowed"|"broadcast"}
+    """
+    raw = spec.raw_feature_group_weights
+    total_raw = float(sum(raw.values())) or 1.0
+
+    def _stem_of(group: str) -> str | None:
+        # Longest-prefix match so net_load_* is recognized before load_*.
+        for stem in _WINDOWED_STEMS_ORDERED:
+            if group.startswith(f"{stem}_"):
+                return stem
+        return None
+
+    cols_by_stem: dict[str, set[str]] = {}
+    raw_by_stem: dict[str, float] = {}
+    broadcast_groups: list[tuple[str, list[str], float]] = []
+    for group, cols in spec.feature_groups.items():
+        stem = _stem_of(group)
+        if stem is not None:
+            cols_by_stem.setdefault(stem, set()).update(cols)
+            raw_by_stem[stem] = raw_by_stem.get(stem, 0.0) + float(raw.get(group, 0.0))
+        else:
+            broadcast_groups.append((group, list(cols), float(raw.get(group, 0.0))))
+
+    rows: list[dict] = []
+    for stem, raw_sum in sorted(raw_by_stem.items(), key=lambda kv: -kv[1]):
+        rows.append(
+            {
+                "feature": stem,
+                "n_cols": len(cols_by_stem[stem]),
+                "share_pct": raw_sum / total_raw,
+                "kind": "windowed",
+            }
+        )
+    for group, cols, raw_w in sorted(broadcast_groups, key=lambda t: -t[2]):
+        rows.append(
+            {
+                "feature": group,
+                "n_cols": len(cols),
+                "share_pct": raw_w / total_raw,
+                "kind": "broadcast",
+            }
+        )
+    return rows
+
+
 def _print_config(
     target_date: date,
     n_pool: int,
@@ -340,6 +401,22 @@ def _print_config(
         else:
             mech = "?"
         print(f"    ablate_{name:<10} {mech}")
+
+    if spec is not None:
+        rows = _effective_column_weights(spec)
+        print()
+        print(
+            "  Feature weight shares  (engine honors spec via per-group"
+            " weighted RMS-z; see engine.py find_twins):"
+        )
+        print(f"    {'feature':<14} {'n_cols':>7} {'share':>8}  {'kind'}")
+        for r in rows:
+            line = (
+                f"    {r['feature']:<14} {r['n_cols']:>7d} "
+                f"{r['share_pct'] * 100:>7.1f}%  {r['kind']}"
+            )
+            print(line)
+
     print()
     print_divider("=", width, dim=False)
 
