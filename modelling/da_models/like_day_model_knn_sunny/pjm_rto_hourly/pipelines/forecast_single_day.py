@@ -101,6 +101,7 @@ def run(
     pool: pd.DataFrame | None = None,
     quiet: bool = False,
     y_naive_override: np.ndarray | None = None,
+    feature_group_weights_override: dict[str, float] | None = None,
 ) -> dict:
     """Run the Sunny single-day forecast and print the five-section report.
 
@@ -112,6 +113,9 @@ def run(
     ``quiet`` - suppress prints, still return the dict.
     ``y_naive_override`` - length-24 array to use as the rMAE
     denominator instead of the default same-day-last-week persistence.
+    ``feature_group_weights_override`` - patch onto the spec's raw
+    weights (missing keys keep their spec value). Common ablation:
+    ``{"outage_daily": 0.0}`` to zero out outages.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -166,6 +170,7 @@ def run(
         config=base_cfg,
         cache_dir=configs.CACHE_DIR,
         pool=pool,
+        feature_group_weights_override=feature_group_weights_override,
     )
 
     analogs = result["analogs"]
@@ -211,7 +216,13 @@ def run(
             spec=spec,
         )
 
-        printers.print_config(resolved_cfg, spec, resolved_date, day_type)
+        printers.print_config(
+            resolved_cfg,
+            spec,
+            resolved_date,
+            day_type,
+            effective_weights=result.get("feature_weights"),
+        )
         printers.print_pool_summary(
             pool, analogs, resolved_cfg, resolved_date, day_type
         )

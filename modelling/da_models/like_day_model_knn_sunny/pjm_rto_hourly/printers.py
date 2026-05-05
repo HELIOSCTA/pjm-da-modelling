@@ -77,10 +77,21 @@ def print_config(
     spec: ModelSpec,
     target_date: date,
     day_type: str,
+    effective_weights: dict[str, float] | None = None,
 ) -> None:
-    """Forecast configuration block (90-char banner)."""
+    """Forecast configuration block (90-char banner).
+
+    ``effective_weights`` (when given) replaces the spec's renormalized
+    weights for the ``norm`` column — used when a caller passes
+    ``feature_group_weights_override`` to ``run_forecast`` so the
+    printed weights match what the engine actually used.
+    """
     target_dow = DAY_ABBR[target_date.weekday()]
-    weights = spec.feature_group_weights
+    weights = (
+        effective_weights
+        if effective_weights is not None
+        else spec.feature_group_weights
+    )
 
     window = config.season_window_days
     win_start = target_date - timedelta(days=window)
@@ -124,19 +135,37 @@ def print_config(
     print(f"  Max age years      {config.max_age_years}")
     print(f"  Half-life days     {config.recency_half_life_days}")
 
+    from da_models.like_day_model_knn_sunny import (
+        configs as _configs_module,
+    )
+    from da_models.like_day_model_knn_sunny.domains import (
+        feature_group_weight_locations,
+    )
+
     raw_weights = spec.raw_feature_group_weights
     active = {k: v for k, v in sorted(weights.items()) if v > 0}
     disabled = [k for k, v in sorted(weights.items()) if v == 0]
-    raw_total = sum(raw_weights.get(k, 0.0) for k in active)
+    raw_for_print = {k: raw_weights.get(k, 0.0) for k in active}
+    raw_total = sum(raw_for_print.values())
+    locations = feature_group_weight_locations()
 
     print_section("Feature Group Weights")
+    print(f"  Spec: {_configs_module.__file__}")
+    loc_strs = {
+        k: f"{locations[k][0]}:{locations[k][1]}" for k in active if k in locations
+    }
+    loc_w = max((len(s) for s in loc_strs.values()), default=0)
     bar_w = max((int(w * 40) for w in active.values()), default=0)
-    print(f"  {'group':<28} {'raw':>6} {'norm':>6}  {'bar':<{bar_w}}")
+    print(
+        f"  {'group':<32} {'raw':>6} {'norm':>6}  "
+        f"{'bar':<{bar_w}}  {'defined at':<{loc_w}}"
+    )
     for name, w in sorted(active.items(), key=lambda x: -x[1]):
         bar = "#" * int(w * 40)
-        raw = raw_weights.get(name, 0.0)
-        print(f"  {name:<28} {raw:>6.3f} {w:>6.3f}  {bar:<{bar_w}}")
-    print(f"  {'(sum)':<28} {raw_total:>6.3f} {1.0:>6.3f}")
+        raw = raw_for_print.get(name, 0.0)
+        loc_str = loc_strs.get(name, "-")
+        print(f"  {name:<32} {raw:>6.3f} {w:>6.3f}  {bar:<{bar_w}}  {loc_str:<{loc_w}}")
+    print(f"  {'(sum)':<32} {raw_total:>6.3f} {1.0:>6.3f}")
 
     if disabled:
         print_section("Disabled Groups")

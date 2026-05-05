@@ -290,6 +290,7 @@ def run_forecast(
     config: configs.KnnModelConfig | None = None,
     cache_dir: Path | None = None,
     pool: pd.DataFrame | None = None,
+    feature_group_weights_override: dict[str, float] | None = None,
 ) -> dict:
     cfg = config or configs.KnnModelConfig()
     if target_date is None:
@@ -310,7 +311,12 @@ def run_forecast(
         )
     query = build_query_row(target_date=target_date, cache_dir=cache_dir, spec=spec)
     dates_meta = load_pjm_dates_daily(cache_dir=cache_dir)
-    weights = spec.feature_group_weights
+
+    from da_models.like_day_model_knn_sunny.pjm_rto_hourly.engine import (
+        _effective_weights,
+    )
+
+    weights = _effective_weights(spec, feature_group_weights_override)
 
     funnel = FunnelCounts()
     analogs = find_twins(
@@ -328,6 +334,7 @@ def run_forecast(
         exclude_holidays=cfg.exclude_holidays,
         exclude_dates=cfg.exclude_dates,
         recency_half_life_days=cfg.recency_half_life_days,
+        feature_group_weights_override=feature_group_weights_override,
         funnel=funnel,
     )
 

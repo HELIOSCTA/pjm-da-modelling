@@ -68,6 +68,15 @@ def _effective_weights(
     spec: ModelSpec,
     override: dict[str, float] | None,
 ) -> dict[str, float]:
+    """Resolve final feature-group weights.
+
+    Patch semantics: ``override`` PATCHES onto the spec's raw weights —
+    keys missing from the override keep their spec value; keys present
+    replace the spec value. Total is then renormalized to 1.0.
+
+    Pass ``{"outage_daily": 0.0}`` to zero out outages while leaving the
+    other 8 groups at their spec defaults — common ablation pattern.
+    """
     if override is None:
         return spec.feature_group_weights
     valid = set(spec.feature_groups.keys())
@@ -76,7 +85,8 @@ def _effective_weights(
         raise ValueError(
             f"Unknown weight-override keys: {sorted(bad)}. Valid: {sorted(valid)}"
         )
-    raw = {g: float(override.get(g, 0.0)) for g in valid}
+    raw = dict(spec.raw_feature_group_weights)
+    raw.update({k: float(v) for k, v in override.items()})
     total = sum(raw.values())
     if total <= 0:
         raise ValueError(f"Weight override sums to {total}; need > 0.")
@@ -197,9 +207,9 @@ def find_twins(
         chosen_local = chosen_local[np.isfinite(chosen_local["distance"])]
         if len(chosen_local) == 0:
             continue
-        chosen_local = chosen_local.sort_values(
-            ["distance", "date"], ascending=[True, False]
-        ).head(int(n_analogs))
+        chosen_local = chosen_local.sort_values(["distance", "date"]).head(
+            int(n_analogs)
+        )
         if len(chosen_local) == 0:
             continue
 

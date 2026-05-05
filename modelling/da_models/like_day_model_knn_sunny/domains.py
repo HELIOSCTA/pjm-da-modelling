@@ -889,3 +889,33 @@ def all_feature_cols(domain_names: tuple[str, ...]) -> list[str]:
             if c not in seen:
                 seen.append(c)
     return seen
+
+
+def feature_group_weight_locations() -> dict[str, tuple[str, int]]:
+    """Map each feature-group name to the (file, line) of its weight literal.
+
+    Parses this module's source to find every ``FeatureDomain(...)``
+    construction and returns the line number of each key in its
+    ``feature_group_weights={...}`` dict literal — i.e. the exact line
+    where you'd edit the raw weight.
+    """
+    import ast as _ast
+
+    src_file = __file__
+    with open(src_file, encoding="utf-8") as f:
+        tree = _ast.parse(f.read())
+    out: dict[str, tuple[str, int]] = {}
+    for node in _ast.walk(tree):
+        if not (
+            isinstance(node, _ast.Call)
+            and isinstance(node.func, _ast.Name)
+            and node.func.id == "FeatureDomain"
+        ):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "feature_group_weights" or not isinstance(kw.value, _ast.Dict):
+                continue
+            for k in kw.value.keys:
+                if isinstance(k, _ast.Constant) and isinstance(k.value, str):
+                    out[k.value] = (src_file, k.lineno)
+    return out
