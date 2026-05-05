@@ -15,6 +15,7 @@ analog weighting normalized within each hour.
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import date
 
 import numpy as np
@@ -226,8 +227,21 @@ def _combined_non_load_distance(
             continue
         pool_vals = pool[cols_present].to_numpy(dtype=float)
         query_vals = query[cols_present].to_numpy(dtype=float)
-        means = np.nanmean(pool_vals, axis=0)
-        stds = np.nanstd(pool_vals, axis=0)
+        # Same all-NaN-column suppression as the windowed per-group block:
+        # broadcast features can have fully missing cols for old pool dates
+        # (e.g. outage parquet starts later than load) and the NaN-aware
+        # mask below handles them — silence the cosmetic warnings.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=RuntimeWarning, message="Mean of empty slice"
+            )
+            warnings.filterwarnings(
+                "ignore",
+                category=RuntimeWarning,
+                message="Degrees of freedom <= 0",
+            )
+            means = np.nanmean(pool_vals, axis=0)
+            stds = np.nanstd(pool_vals, axis=0)
         stds = np.where(stds == 0, 1.0, stds)
         pool_z = (pool_vals - means) / stds
         query_z = (query_vals - means) / stds
@@ -365,8 +379,25 @@ def find_twins(
             pool_vals = work[cols_present].to_numpy(dtype=float)
             query_vals = query[cols_present].to_numpy(dtype=float)
 
-            means = np.nanmean(pool_vals, axis=0)
-            stds = np.nanstd(pool_vals, axis=0)
+            # Per-group nanmean/nanstd fire ``RuntimeWarning: Mean of empty
+            # slice`` and ``Degrees of freedom <= 0`` when a column is
+            # entirely NaN within the pool — happens at structurally-NaN
+            # edges (load_ramp_1h_h1, load_ramp_3h_h{1..3}) and for old
+            # pool dates outside the temperature parquet's coverage. The
+            # NaN-aware mask below handles them correctly downstream
+            # (those cols drop out of n_valid for each row); suppress the
+            # cosmetic warnings here so stdout stays readable.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=RuntimeWarning, message="Mean of empty slice"
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=RuntimeWarning,
+                    message="Degrees of freedom <= 0",
+                )
+                means = np.nanmean(pool_vals, axis=0)
+                stds = np.nanstd(pool_vals, axis=0)
             stds = np.where(stds == 0, 1.0, stds)
             pool_z = (pool_vals - means) / stds
             query_z = ((query_vals - means) / stds).reshape(-1)
