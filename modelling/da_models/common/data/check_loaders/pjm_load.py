@@ -16,6 +16,7 @@ Usage::
     python -m da_models.common.data.check_loaders.pjm_load
     python modelling/da_models/common/data/check_loaders/pjm_load.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -41,20 +42,30 @@ HE_COLS: list[str] = [f"HE{h}" for h in range(1, 25)]
 ONPEAK_HE_COLS: list[str] = [f"HE{h}" for h in range(8, 24)]
 OFFPEAK_HE_COLS: list[str] = [c for c in HE_COLS if c not in ONPEAK_HE_COLS]
 ORDERED_COLS: list[str] = [
-    "Source", "As of Date", "Date", "Region",
-    "OnPeak", "OffPeak", "Flat", *HE_COLS,
+    "Source",
+    "Forecast Executed",
+    "As of Date",
+    "Date",
+    "Region",
+    "OnPeak",
+    "OffPeak",
+    "Flat",
+    *HE_COLS,
 ]
 
 _NUMERIC_COLS: list[str] = ["OnPeak", "OffPeak", "Flat", *HE_COLS]
 _FORMATTERS: dict = {
-    col: (lambda v: "" if pd.isna(v) else f"{v:>10,.0f}")
-    for col in _NUMERIC_COLS
+    col: (lambda v: "" if pd.isna(v) else f"{v:>10,.0f}") for col in _NUMERIC_COLS
 }
 _FORMATTERS["As of Date"] = lambda v: "" if pd.isna(v) else str(v)
+_FORMATTERS["Forecast Executed"] = lambda v: (
+    "" if pd.isna(v) else pd.Timestamp(v).strftime("%Y-%m-%d %H:%M")
+)
 
 
 def _pjm_load_wide_for_region(
-    coalesced: pd.DataFrame, region: str,
+    coalesced: pd.DataFrame,
+    region: str,
 ) -> pd.DataFrame:
     """Pivot the coalesced PJM load frame to wide for a single region.
 
@@ -64,20 +75,22 @@ def _pjm_load_wide_for_region(
     if df.empty:
         return pd.DataFrame(columns=ORDERED_COLS)
 
-    pivot = (
-        df.pivot_table(
-            index=["date", "region", "source"],
-            columns="hour_ending",
-            values="load_mw",
-            aggfunc="mean",
-        )
-        .reindex(columns=range(1, 25))
-    )
+    pivot = df.pivot_table(
+        index=["date", "region", "source"],
+        columns="hour_ending",
+        values="load_mw",
+        aggfunc="mean",
+    ).reindex(columns=range(1, 25))
     pivot.columns = [f"HE{h}" for h in pivot.columns]
     pivot["OnPeak"] = pivot[ONPEAK_HE_COLS].mean(axis=1)
     pivot["OffPeak"] = pivot[OFFPEAK_HE_COLS].mean(axis=1)
     pivot["Flat"] = pivot[HE_COLS].mean(axis=1)
     pivot = pivot.reset_index()
+
+    fc_dt = df[
+        ["date", "region", "source", "forecast_execution_datetime_local"]
+    ].drop_duplicates(subset=["date", "region", "source"], keep="first")
+    pivot = pivot.merge(fc_dt, on=["date", "region", "source"], how="left")
 
     date_ts = pd.to_datetime(pivot["date"])
     pivot["As of Date"] = date_ts - pd.Timedelta(days=1)
@@ -85,14 +98,17 @@ def _pjm_load_wide_for_region(
     pivot["As of Date"] = pivot["As of Date"].dt.date
 
     pivot = pivot.rename(
-        columns={"date": "Date", "region": "Region", "source": "Source"}
+        columns={
+            "date": "Date",
+            "region": "Region",
+            "source": "Source",
+            "forecast_execution_datetime_local": "Forecast Executed",
+        }
     )
     pivot["Source"] = pivot["Source"].map({"forecast": "Forecast", "rt": "RT"})
 
     return (
-        pivot[ORDERED_COLS]
-        .sort_values("Date", ascending=False)
-        .reset_index(drop=True)
+        pivot[ORDERED_COLS].sort_values("Date", ascending=False).reset_index(drop=True)
     )
 
 
@@ -148,9 +164,12 @@ def _print_pjm_load_region_block(
         )
 
     with pd.option_context(
-        "display.max_rows", None,
-        "display.max_columns", None,
-        "display.width", None,
+        "display.max_rows",
+        None,
+        "display.max_columns",
+        None,
+        "display.width",
+        None,
     ):
         print(table.to_string(index=False, formatters=_FORMATTERS))
 
