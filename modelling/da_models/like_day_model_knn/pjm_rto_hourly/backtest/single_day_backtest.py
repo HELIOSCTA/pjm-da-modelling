@@ -38,8 +38,9 @@ _MODELLING_ROOT = Path(__file__).resolve().parents[4]
 if str(_MODELLING_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODELLING_ROOT))
 
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-from colorama import Fore, Style, init as colorama_init  # noqa: E402
+from colorama import Back, Fore, Style, init as colorama_init  # noqa: E402
 
 colorama_init()
 
@@ -50,8 +51,9 @@ from da_models.like_day_model_knn.pjm_rto_hourly.backtest.scenarios import (  # 
 from da_models.like_day_model_knn.pjm_rto_hourly.builder import (  # noqa: E402
     build_pool, build_query_row,
 )
-from da_models.like_day_model_knn.pjm_rto_hourly.forecast import (  # noqa: E402
-    actuals_from_pool,
+from da_models.common.forecast.output import actuals_from_pool  # noqa: E402
+from da_models.like_day_model_knn.pjm_rto_hourly.metrics import (  # noqa: E402
+    evaluate_shape,
 )
 from da_models.like_day_model_knn.pjm_rto_hourly.pipelines.forecast_single_day import (  # noqa: E402
     run as forecast_run,
@@ -59,7 +61,7 @@ from da_models.like_day_model_knn.pjm_rto_hourly.pipelines.forecast_single_day i
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
-TARGET_DATE: date | None = date(2026, 4, 30)   # None -> yesterday (date.today() - 1d)
+TARGET_DATE: date | None = date(2026, 5, 6)   # None -> yesterday (date.today() - 1d)
 MODEL_NAME: str = configs.PJM_RTO_HOURLY_SPEC.name
 # Scenarios live in scenarios.py (shared with param_sweep). Edit there
 # to add/remove perturbations; both backtest scripts pick up the change.
@@ -250,159 +252,224 @@ def _print_comparison(
 
 _HL_FORECAST_LOCAL = Style.BRIGHT + Fore.RED
 _RS_LOCAL = Style.RESET_ALL
+# Cell highlights for per-scenario hourly tables. Background-only so the
+# Forecast row's bright-red FG persists through the highlighted cells.
+_HL_PEAK = Back.YELLOW
+_HL_VALLEY = Back.CYAN
+_RESET_BG = Back.RESET
+# Error-row sign coloring: forecast under actual = red, over = green.
+_FG_NEG = Fore.RED
+_FG_POS = Fore.GREEN
+_RESET_FG = Fore.RESET
 
-
-# Shape windows — narrow, anchor-point HEs used for ramps and valley.
-_SHAPE_WINDOWS: dict[str, tuple[int, ...]] = {
-    "overnight":     (3, 4, 5),
-    "morning_peak":  (7, 8, 9),
-    "midday_valley": (12, 13, 14, 15),
-    "evening_peak":  (19, 20, 21),
-    "late":          (23, 24),
+# Adaptive 4-regime classification. Both early-day and late-day flat
+# regions share the 'offpeak' label so the regime row reads
+# off ... mramp ... valley ... eramp ... off, matching the typical
+# PJM daily price-shape vocabulary.
+_REGIME_LABEL: dict[str, str] = {
+    "offpeak":      "off",
+    "morning_ramp": "m.ramp",
+    "valley":       "valley",
+    "evening_ramp": "e.ramp",
 }
 
-# Window-MAE windows — broader, capture transition zones too.
-_MAE_WINDOWS: dict[str, tuple[int, ...]] = {
-    "overnight     (HE1-6)":     tuple(range(1, 7)),
-    "morning_ramp  (HE6-9)":     (6, 7, 8, 9),
-    "midday_valley (HE10-16)":   tuple(range(10, 17)),
-    "evening_ramp  (HE16-21)":   tuple(range(16, 22)),
-    "late          (HE22-24)":   (22, 23, 24),
-}
+
+def _classify_hours(actual: np.ndarray) -> list[str]:
+    """Label each of 24 hours with one of {'offpeak', 'morning_ramp',
+    'valley', 'evening_ramp'} based on the actual price profile shape.
+
+    Anchors are derived from the data, not the clock:
+      1. ``argmax(actual)`` is the evening peak — last hour of
+         evening_ramp.
+      2. Walk back from the peak: hour ``h`` is in the ramp iff the
+         rise *into* hour h (``diffs[h - 1]``) >= an adaptive threshold
+         (max of $2/MWh and 30% of the 75-percentile abs diff). The
+         hour where the rise breaks is **not** in the ramp — that hour
+         is the flat *base* before the climb, semantically still
+         offpeak. So ``ramp_start = h`` (the first rising hour), not
+         ``h - 1`` (its flat predecessor).
+      3. Midday valley = ``argmin(actual)`` restricted to
+         ``[HE6, evening_ramp_start)`` so the overnight low isn't
+         picked.
+      4. Morning peak = ``argmax(actual[HE3:valley_h])``, kept only if
+         at least $3/MWh above the valley. Winter-style flat days with
+         no distinct morning peak skip the morning_ramp regime entirely.
+      5. Same backward-walk from morning peak → morning_ramp_start.
+
+    Robust to flat days (no morning peak → daytime hours before the
+    evening ramp are 'valley') and spiky days (threshold scales).
+    """
+    n = 24
+    diffs = np.diff(actual)
+    abs_nonzero = np.abs(diffs)[np.abs(diffs) > 0.01]
+    ramp_thr = max(
+        2.0,
+        0.30 * (float(np.percentile(abs_nonzero, 75)) if len(abs_nonzero) else 5.0),
+    )
+
+    peak_h = int(np.argmax(actual))
+
+    evening_ramp_start = peak_h
+    for h in range(peak_h, 0, -1):
+        if diffs[h - 1] >= ramp_thr:
+            evening_ramp_start = h
+        else:
+            break
+
+    lo, hi = 5, max(6, evening_ramp_start)  # HE6..evening_ramp_start
+    valley_h = lo + int(np.argmin(actual[lo:hi]))
+
+    morning_peak_h: int | None = None
+    if valley_h > 4:
+        cand = 2 + int(np.argmax(actual[2:valley_h]))  # HE3..valley
+        if actual[cand] - actual[valley_h] >= 3.0:
+            morning_peak_h = cand
+
+    morning_ramp_start: int | None = None
+    if morning_peak_h is not None:
+        morning_ramp_start = morning_peak_h
+        for h in range(morning_peak_h, 0, -1):
+            if diffs[h - 1] >= ramp_thr:
+                morning_ramp_start = h
+            else:
+                break
+
+    labels: list[str] = ["offpeak"] * n
+    for h in range(n):
+        if h > peak_h:
+            labels[h] = "offpeak"
+        elif h >= evening_ramp_start:
+            labels[h] = "evening_ramp"
+        elif morning_peak_h is not None and h > morning_peak_h:
+            labels[h] = "valley"
+        elif morning_ramp_start is not None and h >= morning_ramp_start:
+            labels[h] = "morning_ramp"
+        elif morning_peak_h is None and h >= 5:
+            labels[h] = "valley"
+    return labels
 
 
-def _window_mean(values: list[float | None], hes: tuple[int, ...]) -> float | None:
-    vals = [values[h - 1] for h in hes if values[h - 1] is not None]
-    return (sum(vals) / len(vals)) if vals else None
+def _summarize_regime_windows(labels: list[str]) -> str:
+    """Compact summary like
+    'off=HE1-5,HE22-24  m.ramp=HE6-7  valley=HE8-17  e.ramp=HE18-21'.
+    """
+    runs: dict[str, list[tuple[int, int]]] = {r: [] for r in _REGIME_LABEL}
+    i = 0
+    while i < 24:
+        regime = labels[i]
+        j = i
+        while j < 24 and labels[j] == regime:
+            j += 1
+        runs[regime].append((i + 1, j))  # 1-indexed, inclusive end
+        i = j
+    parts = []
+    for regime in ("offpeak", "morning_ramp", "valley", "evening_ramp"):
+        if not runs[regime]:
+            continue
+        ranges = ",".join(
+            f"HE{s}-{e}" if s != e else f"HE{s}" for s, e in runs[regime]
+        )
+        parts.append(f"{_REGIME_LABEL[regime]}={ranges}")
+    return "  ".join(parts)
 
 
-def _window_abs_err_mean(
-    forecast: list[float | None], actual: list[float | None], hes: tuple[int, ...],
-) -> float | None:
-    pairs = [
-        (forecast[h - 1], actual[h - 1])
-        for h in hes
-        if forecast[h - 1] is not None and actual[h - 1] is not None
-    ]
-    if not pairs:
-        return None
-    return sum(abs(f - a) for f, a in pairs) / len(pairs)
+def _regime_mae(
+    actual: np.ndarray, forecast: np.ndarray, labels: list[str],
+) -> dict[str, float]:
+    """Mean absolute error within each regime. NaN for empty regimes."""
+    out: dict[str, float] = {}
+    for regime in ("offpeak", "morning_ramp", "valley", "evening_ramp"):
+        idxs = [i for i, label in enumerate(labels) if label == regime]
+        if not idxs:
+            out[regime] = float("nan")
+        else:
+            out[regime] = float(np.mean(np.abs(forecast[idxs] - actual[idxs])))
+    return out
 
 
-def _print_shape_metrics(rows: list[dict], target_date: date) -> None:
-    """Shape-aware metrics: overnight / morning_peak / valley / evening_peak
-    means, derived morning + evening ramps, and per-window MAE.
+def _print_metric_breakdown(rows: list[dict], target_date: date) -> None:
+    """Per-scenario shape + regime-MAE breakdown — one row per scenario.
 
-    Two tables. The first shows mean prices within shape windows + ramp
-    magnitudes per scenario, with the error vs actual in parens. The
-    second shows per-window MAE so you can see where each scenario wins
-    or loses by region of the day. Best per row marked with '*'.
+    Combines the hour-agnostic shape metrics from
+    ``evaluate_shape`` with MAE within each adaptively-detected regime
+    (off / m.ramp / valley / e.ramp). Regime windows come from
+    ``_classify_hours(actual)`` so they shift with the season instead
+    of being pinned to fixed clock hours.
+
+    Sorted by ``variogm`` ascending. Pair with the SCENARIOS COMPARISON
+    table for level metrics — variogram is translation-invariant and
+    must never be the standalone ranking objective.
     """
     ok = [r for r in rows if r["status"] == "ok"]
     if not ok:
         return
-    actual = ok[0].get("hourly_actual")
-    if actual is None or all(v is None for v in actual):
+    actual_list = ok[0].get("hourly_actual")
+    if actual_list is None or any(v is None for v in actual_list):
         return
+    actual = np.asarray(actual_list, dtype=float)
+    regime_labels = _classify_hours(actual)
 
-    actual_means = {w: _window_mean(actual, hes) for w, hes in _SHAPE_WINDOWS.items()}
-    a_overnight = actual_means["overnight"]
-    a_morning_peak = actual_means["morning_peak"]
-    a_midday_valley = actual_means["midday_valley"]
-    a_evening_peak = actual_means["evening_peak"]
-    actual_morning_ramp = (
-        (a_morning_peak - a_overnight)
-        if (a_morning_peak is not None and a_overnight is not None) else None
-    )
-    actual_evening_ramp = (
-        (a_evening_peak - a_midday_valley)
-        if (a_evening_peak is not None and a_midday_valley is not None) else None
-    )
-
-    name_w = max(16, max(len(r["scenario_name"]) for r in ok))
-    metric_w = 28
-    cell_w = max(name_w, 16)
-
-    print("=" * (metric_w + 10 + (cell_w + 2) * len(ok)))
-    print(f"  SHAPE METRICS — {target_date}  ($/MWh, error in parens vs actual)")
-    print(f"  windows: overnight=HE3-5  morning_peak=HE7-9  midday_valley=HE12-15  evening_peak=HE19-21")
-    print("=" * (metric_w + 10 + (cell_w + 2) * len(ok)))
-
-    header = f"{'metric':<{metric_w}}  {'actual':>8}"
+    metric_rows: list[dict] = []
     for r in ok:
-        header += f"  {r['scenario_name']:>{cell_w}}"
-    print(header)
-    print("-" * len(header))
+        forecast_list = r.get("hourly_forecast") or [None] * 24
+        if any(v is None for v in forecast_list):
+            metric_rows.append({"scenario_name": r["scenario_name"]})
+            continue
+        forecast = np.asarray(forecast_list, dtype=float)
+        shape = evaluate_shape(actual, forecast)
+        regime = _regime_mae(actual, forecast, regime_labels)
+        metric_rows.append({
+            "scenario_name": r["scenario_name"],
+            "variogm":  shape["variogram_score_p05"],
+            "pkErr":    shape["peak_height_err"],
+            "vlErr":    shape["valley_height_err"],
+            "tPk":      shape["time_of_peak_err"],
+            "tVl":      shape["time_of_valley_err"],
+            "pkWinMAE": shape["peak_window_mae"],
+            "fdMAE":    shape["first_diff_mae"],
+            "off":      regime["offpeak"],
+            "mramp":    regime["morning_ramp"],
+            "valley":   regime["valley"],
+            "eramp":    regime["evening_ramp"],
+        })
 
-    def _fmt_value_with_err(forecast_val: float | None, actual_val: float | None) -> str:
-        if forecast_val is None or actual_val is None:
-            return f"{'n/a':>{cell_w}}"
-        delta = forecast_val - actual_val
-        return f"{forecast_val:>6.1f} ({delta:+6.1f})".rjust(cell_w)
+    df = pd.DataFrame(metric_rows).sort_values(
+        "variogm", ascending=True, na_position="last",
+    ).reset_index(drop=True)
 
-    # Window-mean rows
-    for label, key in [
-        ("overnight      (mean HE3-5)",  "overnight"),
-        ("morning_peak   (mean HE7-9)",  "morning_peak"),
-        ("midday_valley  (mean HE12-15)", "midday_valley"),
-        ("evening_peak   (mean HE19-21)", "evening_peak"),
-        ("late           (mean HE23-24)", "late"),
-    ]:
-        a = actual_means[key]
-        line = f"{label:<{metric_w}}  "
-        line += f"{a:>8.1f}" if a is not None else f"{'n/a':>8}"
-        for r in ok:
-            f = _window_mean(r.get("hourly_forecast") or [None] * 24, _SHAPE_WINDOWS[key])
-            line += f"  {_fmt_value_with_err(f, a)}"
-        print(line)
+    cols = [
+        "scenario_name",
+        "variogm", "pkErr", "vlErr", "tPk", "tVl", "pkWinMAE", "fdMAE",
+        "off", "mramp", "valley", "eramp",
+    ]
+    formatters = {
+        "variogm":  lambda v: f"{v:>7.4f}" if pd.notna(v) else "    n/a",
+        "pkErr":    lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
+        "vlErr":    lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
+        "tPk":      lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
+        "tVl":      lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
+        "pkWinMAE": lambda v: f"{v:>8.2f}" if pd.notna(v) else "     n/a",
+        "fdMAE":    lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "off":      lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "mramp":    lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "valley":   lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "eramp":    lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+    }
 
-    # Derived ramp rows
+    a_max = float(np.max(actual))
+    a_min = float(np.min(actual))
+    a_argmax = int(np.argmax(actual))
+    a_argmin = int(np.argmin(actual))
+
+    print("=" * 140)
+    print(f"  METRIC BREAKDOWN — {target_date}  (signed err = forecast - actual; sorted by variogram ascending)")
+    print(f"  Actuals: peak ${a_max:.2f} at HE{a_argmax + 1}   valley ${a_min:.2f} at HE{a_argmin + 1}")
+    print(f"  Regime windows (auto-detected from actual): {_summarize_regime_windows(regime_labels)}")
+    print(f"  variogm = shape KPI; *MAE = $/MWh within window; t* = signed timing err in hours")
+    print("=" * 140)
     print()
-    for label, anchor_actual, peak_key, low_key in [
-        ("morning_ramp   (peak - on)",   actual_morning_ramp, "morning_peak", "overnight"),
-        ("evening_ramp   (peak - val)",  actual_evening_ramp, "evening_peak", "midday_valley"),
-    ]:
-        line = f"{label:<{metric_w}}  "
-        line += f"{anchor_actual:>8.1f}" if anchor_actual is not None else f"{'n/a':>8}"
-        for r in ok:
-            forecast = r.get("hourly_forecast") or [None] * 24
-            peak = _window_mean(forecast, _SHAPE_WINDOWS[peak_key])
-            low = _window_mean(forecast, _SHAPE_WINDOWS[low_key])
-            ramp = (peak - low) if (peak is not None and low is not None) else None
-            line += f"  {_fmt_value_with_err(ramp, anchor_actual)}"
-        print(line)
-
-    # ── Window MAE table ──────────────────────────────────────────────
-    print()
-    print("=" * (metric_w + 10 + (cell_w + 2) * len(ok)))
-    print(f"  WINDOW MAE — {target_date}  ($/MWh; best per row marked *)")
-    print("=" * (metric_w + 10 + (cell_w + 2) * len(ok)))
-    header2 = f"{'window':<{metric_w}}  {'':>8}"
-    for r in ok:
-        header2 += f"  {r['scenario_name']:>{cell_w}}"
-    print(header2)
-    print("-" * len(header2))
-
-    for label, hes in _MAE_WINDOWS.items():
-        per_scenario_mae: list[tuple[str, float | None]] = []
-        for r in ok:
-            forecast = r.get("hourly_forecast") or [None] * 24
-            per_scenario_mae.append((
-                r["scenario_name"],
-                _window_abs_err_mean(forecast, actual, hes),
-            ))
-        valid = [m for _, m in per_scenario_mae if m is not None]
-        min_mae = min(valid) if valid else None
-
-        line = f"{label:<{metric_w}}  {'':>8}"
-        for name, mae in per_scenario_mae:
-            if mae is None:
-                cell = f"{'n/a':>{cell_w}}"
-            else:
-                marker = "*" if min_mae is not None and abs(mae - min_mae) < 0.01 else " "
-                cell = f"{mae:>{cell_w - 2}.1f}{marker} ".rjust(cell_w)
-            line += f"  {cell}"
-        print(line)
+    with pd.option_context("display.max_rows", None, "display.width", None):
+        print(df[cols].to_string(index=False, formatters=formatters))
     print()
 
 
@@ -412,10 +479,24 @@ def _print_per_scenario_detail(rows: list[dict], target_date: date) -> None:
     Mirrors the per-run table that ``forecast_single_day.print_forecast``
     prints (Date | Type | HE1..HE24 | OnPk | OffPk | Flat). Forecast row
     is colorized bright red — same visual cue as the live forecast.
+
+    Highlights the actual peak/valley cells in the Actual row and the
+    forecast peak/valley cells in the Forecast row (yellow bg = peak,
+    cyan bg = valley) so the eye can link the footer's shape KPIs back
+    to the chart cells they describe.
     """
     ok = [r for r in rows if r["status"] == "ok"]
     if not ok:
         return
+
+    actual_list = ok[0].get("hourly_actual")
+    have_actual = (
+        actual_list is not None and not any(v is None for v in actual_list)
+    )
+    actual_arr = np.asarray(actual_list, dtype=float) if have_actual else None
+    actual_argmax = int(np.argmax(actual_arr)) if have_actual else None
+    actual_argmin = int(np.argmin(actual_arr)) if have_actual else None
+    regime_labels = _classify_hours(actual_arr) if have_actual else None
 
     header = f"{'Date':<12} {'Type':<10}"
     for h in range(1, 25):
@@ -423,10 +504,32 @@ def _print_per_scenario_detail(rows: list[dict], target_date: date) -> None:
     header += f" {'OnPk':>7} {'OffPk':>7} {'Flat':>7}"
     sep_len = len(header)
 
+    regime_row = None
+    if regime_labels is not None:
+        rline = f"{'':<12} {'Regime':<10}"
+        for h in range(1, 25):
+            rline += f" {_REGIME_LABEL[regime_labels[h - 1]]:>6}"
+        rline += f" {'':>7} {'':>7} {'':>7}"
+        regime_row = rline
+
     for r in ok:
         table = r.get("output_table")
         if table is None or len(table) == 0:
             continue
+
+        forecast_list = r.get("hourly_forecast")
+        have_forecast = (
+            forecast_list is not None and not any(v is None for v in forecast_list)
+        )
+        forecast_arr = (
+            np.asarray(forecast_list, dtype=float) if have_forecast else None
+        )
+        forecast_argmax = int(np.argmax(forecast_arr)) if have_forecast else None
+        forecast_argmin = int(np.argmin(forecast_arr)) if have_forecast else None
+        shape = (
+            evaluate_shape(actual_arr, forecast_arr)
+            if have_actual and have_forecast else None
+        )
 
         print("=" * 120)
         print(f"  HOURLY DETAIL: {r['scenario_name']}  —  Western Hub ($/MWh) — {target_date}")
@@ -435,20 +538,90 @@ def _print_per_scenario_detail(rows: list[dict], target_date: date) -> None:
         print("=" * 120)
         print(header)
         print("-" * sep_len)
+        if regime_row is not None:
+            print(regime_row)
 
         for _, row in table.iterrows():
-            line = f"{str(row['Date']):<12} {row['Type']:<10}"
+            row_type = row["Type"]
+            line = f"{str(row['Date']):<12} {row_type:<10}"
             for h in range(1, 25):
                 val = row.get(f"HE{h}")
-                line += f" {val:>6.1f}" if pd.notna(val) else f" {'':>6}"
+                cell = f"{val:>6.1f}" if pd.notna(val) else f"{'':>6}"
+                idx = h - 1
+
+                bg = ""
+                fg = ""
+                if row_type == "Actual":
+                    if actual_argmax is not None and idx == actual_argmax:
+                        bg = _HL_PEAK
+                    elif actual_argmin is not None and idx == actual_argmin:
+                        bg = _HL_VALLEY
+                elif row_type == "Forecast":
+                    if forecast_argmax is not None and idx == forecast_argmax:
+                        bg = _HL_PEAK
+                    elif forecast_argmin is not None and idx == forecast_argmin:
+                        bg = _HL_VALLEY
+                elif row_type == "Error" and pd.notna(val):
+                    if val < 0:
+                        fg = _FG_NEG
+                    elif val > 0:
+                        fg = _FG_POS
+
+                if bg and fg:
+                    line += f" {bg}{fg}{cell}{_RESET_FG}{_RESET_BG}"
+                elif bg:
+                    line += f" {bg}{cell}{_RESET_BG}"
+                elif fg:
+                    line += f" {fg}{cell}{_RESET_FG}"
+                else:
+                    line += f" {cell}"
+
             for col in ("OnPeak", "OffPeak", "Flat"):
                 v = row.get(col)
-                line += f" {v:>7.2f}" if pd.notna(v) else f" {'':>7}"
-            if row["Type"] == "Forecast":
+                if not pd.notna(v):
+                    line += f" {'':>7}"
+                    continue
+                cell = f"{v:>7.2f}"
+                if row_type == "Error":
+                    if v < 0:
+                        line += f" {_FG_NEG}{cell}{_RESET_FG}"
+                    elif v > 0:
+                        line += f" {_FG_POS}{cell}{_RESET_FG}"
+                    else:
+                        line += f" {cell}"
+                else:
+                    line += f" {cell}"
+            if row_type == "Forecast":
                 line = f"{_HL_FORECAST_LOCAL}{line}{_RS_LOCAL}"
             print(line)
 
         print("-" * sep_len)
+
+        if shape is not None:
+            a_pk_he, a_vl_he = actual_argmax + 1, actual_argmin + 1
+            f_pk_he, f_vl_he = forecast_argmax + 1, forecast_argmin + 1
+            a_pk, a_vl = float(actual_arr.max()), float(actual_arr.min())
+            f_pk, f_vl = float(forecast_arr.max()), float(forecast_arr.min())
+            print(
+                f"  Peak    actual {_HL_PEAK}HE{a_pk_he:<2} ${a_pk:>6.2f}{_RESET_BG}  "
+                f"forecast {_HL_PEAK}HE{f_pk_he:<2} ${f_pk:>6.2f}{_RESET_BG}  "
+                f"time {int(shape['time_of_peak_err']):+3d}h  "
+                f"height ${shape['peak_height_err']:+6.2f}  "
+                f"err@actual ${shape['peak_at_actual_hour_err']:+6.2f}"
+            )
+            print(
+                f"  Valley  actual {_HL_VALLEY}HE{a_vl_he:<2} ${a_vl:>6.2f}{_RESET_BG}  "
+                f"forecast {_HL_VALLEY}HE{f_vl_he:<2} ${f_vl:>6.2f}{_RESET_BG}  "
+                f"time {int(shape['time_of_valley_err']):+3d}h  "
+                f"height ${shape['valley_height_err']:+6.2f}  "
+                f"err@actual ${shape['valley_at_actual_hour_err']:+6.2f}"
+            )
+            print(
+                f"  Shape   variogram(p=0.5) {shape['variogram_score_p05']:>7.4f}  "
+                f"first-diff MAE {shape['first_diff_mae']:>5.2f}  "
+                f"peak-window MAE {shape['peak_window_mae']:>5.2f}"
+            )
+
         print()
 
 
@@ -523,7 +696,7 @@ def run(
         rows.append(row)
 
     _print_comparison(rows, resolved_date, actuals_summary)
-    _print_shape_metrics(rows, resolved_date)
+    _print_metric_breakdown(rows, resolved_date)
     _print_per_scenario_detail(rows, resolved_date)
     return rows
 

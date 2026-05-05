@@ -29,6 +29,7 @@ _MODELLING_ROOT = Path(__file__).resolve().parents[4]
 if str(_MODELLING_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODELLING_ROOT))
 
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from da_models.like_day_model_knn import _shared, configs  # noqa: E402
@@ -38,11 +39,13 @@ from da_models.like_day_model_knn.pjm_rto_hourly.backtest.scenarios import (  # 
 from da_models.like_day_model_knn.pjm_rto_hourly.builder import (  # noqa: E402
     build_pool, build_query_row,
 )
-from da_models.like_day_model_knn.pjm_rto_hourly.forecast import (  # noqa: E402
-    actuals_from_pool,
-)
+from da_models.common.forecast.output import actuals_from_pool  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.pipelines.forecast_single_day import (  # noqa: E402
     run as forecast_run,
+)
+from da_models.naive_baselines.pjm_rto_hourly.forecast import (  # noqa: E402
+    forecast_d7,
+    forecast_epf_naive,
 )
 
 
@@ -53,8 +56,18 @@ BACKTEST_WINDOW_DAYS: int = 14               # walk back N calendar days from
                                              # targets that have full actuals
 SWEEP_OUTPUT_DIR: Path = Path(__file__).resolve().parent / "output"
 MODEL_NAME: str = configs.PJM_RTO_HOURLY_SPEC.name
+# rMAE denominator. "d7" = same-hour-last-week (legacy default; preserves
+# historical leaderboard numbers). "epf" = Lago/Nogales/Conejo
+# DOW-conditional persistence (d-1 Tue-Fri, d-7 otherwise). Switching only
+# changes the rMAE column in the leaderboard, never the model's MAE/RMSE.
+NAIVE_BASELINE: str = "d7"
 # Scenarios live in scenarios.py (shared with single_day_backtest). Edit
 # there to add/remove perturbations; both backtest scripts pick up the change.
+
+_NAIVE_FORECASTERS = {
+    "d7": forecast_d7,
+    "epf": forecast_epf_naive,
+}
 
 _RUN_KWARGS_PASSTHROUGH: tuple[str, ...] = (
     "flt_radius", "n_analogs", "season_window_days", "min_pool_size",
@@ -92,6 +105,38 @@ def _scenario_overrides_for_run(scenario: dict) -> dict:
     return {k: v for k, v in overrides.items() if k in _RUN_KWARGS_PASSTHROUGH}
 
 
+def _load_naive_table(
+    target_dates: list[date],
+    baseline: str,
+    pool: pd.DataFrame,
+) -> dict[date, np.ndarray | None]:
+    """Pre-compute the naive rMAE denominator profile for every target.
+
+    Returns a date -> length-24 ``np.ndarray`` mapping (or ``None`` when
+    the lag source row is missing). Reuses the pool already built by
+    the sweep; no extra IO.
+    """
+    if baseline not in _NAIVE_FORECASTERS:
+        raise ValueError(
+            f"NAIVE_BASELINE={baseline!r} not in {tuple(_NAIVE_FORECASTERS.keys())}"
+        )
+    forecaster = _NAIVE_FORECASTERS[baseline]
+    table: dict[date, np.ndarray | None] = {}
+    for td in target_dates:
+        df = forecaster(pool, td)
+        if len(df) == 0:
+            table[td] = None
+            continue
+        arr = df["point_forecast"].to_numpy(dtype=float)
+        # Match the legacy _naive_last_week contract: return None if any
+        # hour is NaN so rMAE stays null rather than poisoned.
+        if np.isnan(arr).any():
+            table[td] = None
+            continue
+        table[td] = arr
+    return table
+
+
 def _execute_scenario(
     *,
     scenario_name: str,
@@ -100,6 +145,7 @@ def _execute_scenario(
     pool: pd.DataFrame,
     query: pd.Series,
     dates_meta: pd.DataFrame,
+    y_naive_override: np.ndarray | None = None,
 ) -> dict:
     """Run one (target_date, scenario) cell. Captures metrics + status."""
     started = time.perf_counter()
@@ -118,6 +164,7 @@ def _execute_scenario(
             feature_group_weights_override=scenario.get("weights"),
             quiet=True,
             write_analog_store=False,
+            y_naive_override=y_naive_override,
             **_scenario_overrides_for_run(scenario),
         )
     except Exception as exc:
@@ -161,6 +208,7 @@ def _execute_scenario(
     overrides = scenario.get("overrides") or {}
     for k in _RUN_KWARGS_PASSTHROUGH:
         base[f"override_{k}"] = overrides.get(k)
+    base["naive_baseline"] = NAIVE_BASELINE
     return base
 
 
@@ -282,6 +330,11 @@ def run(
     sweep_id = _sweep_id()
     anchor = _resolve_target_date(target_date)
 
+    print("\n" + "*" * 100)
+    print(f"  rMAE denominator: NAIVE_BASELINE = {NAIVE_BASELINE!r}  "
+          f"({'same-hour-last-week' if NAIVE_BASELINE == 'd7' else 'EPF DOW-conditional persistence'})")
+    print("*" * 100)
+
     # Build pool / dates_meta ONCE — both are target-date-independent. Spec
     # carries the domain set, so build_pool needs the spec to know which
     # feature columns to include.
@@ -306,6 +359,13 @@ def run(
     print(f"[sweep {sweep_id}] {len(scenarios)} scenarios x {len(target_dates)} dates "
           f"= {len(scenarios) * len(target_dates)} cells")
 
+    naive_table = _load_naive_table(target_dates, NAIVE_BASELINE, pool)
+    n_naive_missing = sum(1 for v in naive_table.values() if v is None)
+    if n_naive_missing:
+        print(f"[sweep {sweep_id}] naive '{NAIVE_BASELINE}' lag missing for "
+              f"{n_naive_missing}/{len(target_dates)} target(s) — those cells "
+              f"will report rMAE=null")
+
     rows: list[dict] = []
     for td in target_dates:
         try:
@@ -324,6 +384,7 @@ def run(
                 pool=pool,
                 query=query,
                 dates_meta=dates_meta,
+                y_naive_override=naive_table.get(td),
             )
             tag = "OK" if row["status"] == "ok" else "FAIL"
             mae = row.get("mae")
