@@ -8,6 +8,7 @@ forecast, and single_day backtest:
 This module owns ONLY shared values and the ``ModelSpec`` registry.
 Truly shared parquet/region/label helpers live in ``_shared.py``.
 """
+
 from __future__ import annotations
 
 import copy
@@ -29,7 +30,6 @@ CACHE_DIR: Path = Path(os.getenv("DA_MODELS_CACHE_DIR", str(DEFAULT_SHARED_CACHE
 
 # ── Data source parquets ───────────────────────────────────────────────
 PJM_DATES_DAILY_PARQUET: str = "pjm_dates_daily.parquet"
-LMP_DA_PARQUET: str = "pjm_lmps_hourly.parquet"
 LOAD_FORECAST_PARQUETS: list[str] = ["pjm_load_forecast_hourly_da_cutoff.parquet"]
 
 # ── Forecast defaults ──────────────────────────────────────────────────
@@ -41,10 +41,10 @@ SEASON_WINDOW_DAYS: int = 60
 # ── Calendar / day-type pre-filtering ──────────────────────────────────
 # Sun=0..Sat=6 numbering matches pjm_dates_daily.day_of_week_number.
 DOW_GROUPS: dict[str, list[int]] = {
-    "early_week": [1, 2, 3],   # Mon, Tue, Wed
-    "late_week":  [4, 5],      # Thu, Fri (structural Thu/Fri price premium)
-    "saturday":   [6],
-    "sunday":     [0],
+    "early_week": [1, 2, 3],  # Mon, Tue, Wed
+    "late_week": [4, 5],  # Thu, Fri (structural Thu/Fri price premium)
+    "saturday": [6],
+    "sunday": [0],
 }
 
 DAY_TYPE_WEEKDAY: str = "weekday"
@@ -83,13 +83,12 @@ DAY_TYPE_SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
-# ── Hours / quantiles ──────────────────────────────────────────────────
-HOURS: list[int] = list(range(1, 25))
+# ── Quantiles ──────────────────────────────────────────────────────────
 QUANTILES: list[float] = [0.10, 0.25, 0.50, 0.75, 0.90]
-LMP_LABEL_COLUMNS: list[str] = [f"lmp_h{h}" for h in HOURS]
 
 
 # ── Per-model spec ─────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -99,6 +98,7 @@ class ModelSpec:
     enabled domains; weights are renormalized to sum to 1.0. ``per_hour``
     additionally uses ``flt_radius`` for the dynamic load window.
     """
+
     name: str
     description: str
     match_unit: str  # "day" | "hour"
@@ -108,12 +108,22 @@ class ModelSpec:
     @property
     def feature_groups(self) -> dict[str, list[str]]:
         from da_models.like_day_model_knn.domains import resolved_feature_groups
+
         return resolved_feature_groups(self.domains)
 
     @property
     def feature_group_weights(self) -> dict[str, float]:
         from da_models.like_day_model_knn.domains import resolved_feature_group_weights
+
         return resolved_feature_group_weights(self.domains)
+
+    @property
+    def raw_feature_group_weights(self) -> dict[str, float]:
+        from da_models.like_day_model_knn.domains import (
+            resolved_raw_feature_group_weights,
+        )
+
+        return resolved_raw_feature_group_weights(self.domains)
 
 
 # ── Specs ──────────────────────────────────────────────────────────────
@@ -139,8 +149,36 @@ PJM_RTO_HOURLY_SPEC = ModelSpec(
     flt_radius=1,
 )
 
+# All six features (the five above plus net_load) for ablation experiments.
+# Net_load reads from the unified supply-demand coalescer, so the identity
+# `net_load = load - solar - wind` holds within each pool row by
+# construction. Default weights mirror rto_load_profile so net_load and the
+# component triple contribute equally — natural baseline for Method-B
+# ablation backtests where weight overrides isolate each feature in turn.
+# For production forecasts continue to use ``pjm_rto_hourly`` (the 5-feature
+# spec) until ablation results justify a default change.
+PJM_RTO_HOURLY_FULL_SPEC = ModelSpec(
+    name="pjm_rto_hourly_full",
+    description=(
+        "Load + solar + wind + net_load per-HE levels; outages + M3 gas as "
+        "daily filters. For ablation experiments — net_load alongside its "
+        "components."
+    ),
+    match_unit="hour",
+    domains=(
+        "rto_load_profile",
+        "solar_profile",
+        "wind_profile",
+        "rto_net_load_profile",
+        "outages_level",
+        "gas_level",
+    ),
+    flt_radius=1,
+)
+
 MODEL_REGISTRY: dict[str, ModelSpec] = {
     PJM_RTO_HOURLY_SPEC.name: PJM_RTO_HOURLY_SPEC,
+    PJM_RTO_HOURLY_FULL_SPEC.name: PJM_RTO_HOURLY_FULL_SPEC,
 }
 
 DEFAULT_MODEL: str = PJM_RTO_HOURLY_SPEC.name
@@ -210,7 +248,8 @@ class KnnModelConfig:
         return base
 
     def with_day_type_overrides(
-        self, target_date: date,
+        self,
+        target_date: date,
     ) -> tuple["KnnModelConfig", str]:
         """Return a config copy with the Saturday/Sunday profile applied.
 

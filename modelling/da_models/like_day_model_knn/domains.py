@@ -12,9 +12,10 @@ DA-cutoff forecast for ``target_date``. Pool and query therefore share the
 same forecast signal in the overlap window — apples-to-apples at decision
 time — while old history still contributes via RT.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -31,6 +32,7 @@ RTO = "RTO"
 LOAD_HOURLY_COLS = [f"load_h{h}" for h in range(1, 25)]
 SOLAR_HOURLY_COLS = [f"solar_h{h}" for h in range(1, 25)]
 WIND_HOURLY_COLS = [f"wind_h{h}" for h in range(1, 25)]
+NET_LOAD_HOURLY_COLS = [f"net_load_h{h}" for h in range(1, 25)]
 OUTAGE_LEVEL_COLS = ["outage_total_mw", "outage_planned_mw", "outage_forced_mw"]
 GAS_LEVEL_COLS = ["gas_m3_avg"]
 
@@ -43,6 +45,7 @@ class FeatureDomain:
     ``query_builder``: returns one row of features for ``target_date``.
     Both produce identical column sets so the engine sees a uniform schema.
     """
+
     name: str
     description: str
     feature_groups: dict[str, list[str]]
@@ -62,6 +65,7 @@ class FeatureDomain:
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+
 def _to_date(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s).dt.date
 
@@ -72,7 +76,9 @@ def _hourly_load_profile(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
 
 
 def _hourly_value_profile(
-    df: pd.DataFrame, value_col: str, output_prefix: str,
+    df: pd.DataFrame,
+    value_col: str,
+    output_prefix: str,
 ) -> pd.DataFrame:
     """Generic wide pivot: one col per HE, named ``{output_prefix}_h1..{output_prefix}_h24``."""
     out_cols = [f"{output_prefix}_h{h}" for h in range(1, 25)]
@@ -80,7 +86,9 @@ def _hourly_value_profile(
         return pd.DataFrame(columns=["date"] + out_cols)
     work = df[["date", "hour_ending", value_col]].copy()
     work["date"] = _to_date(work["date"])
-    work["hour_ending"] = pd.to_numeric(work["hour_ending"], errors="coerce").astype("Int64")
+    work["hour_ending"] = pd.to_numeric(work["hour_ending"], errors="coerce").astype(
+        "Int64"
+    )
     work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
     work = work.dropna(subset=["date", "hour_ending", value_col])
     if len(work) == 0:
@@ -88,7 +96,10 @@ def _hourly_value_profile(
     work["hour_ending"] = work["hour_ending"].astype(int)
 
     pivot = work.pivot_table(
-        index="date", columns="hour_ending", values=value_col, aggfunc="mean",
+        index="date",
+        columns="hour_ending",
+        values=value_col,
+        aggfunc="mean",
     ).reindex(columns=range(1, 25))
     pivot = pivot.rename(columns={h: f"{output_prefix}_h{h}" for h in range(1, 25)})
     return pivot.reset_index()
@@ -96,13 +107,19 @@ def _hourly_value_profile(
 
 # ── rto_load_profile ─────────────────────────────────────────────────────
 
+
 def _build_rto_load_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
-    df = loader.load_load_coalesced(cache_dir=cache_dir)
-    df = df[df["region"].astype(str) == RTO]
-    return _hourly_load_profile(df, "load_mw")
+    # Reads from the unified supply-demand coalescer so load shares a single
+    # forecast-vs-RT decision per (region, date) with the sibling solar/wind/
+    # net_load pool builders. Cross-series source consistency in the pool
+    # eliminates vintage skew between sibling features.
+    df = loader.load_pjm_supply_demand_coalesced(cache_dir=cache_dir, region=RTO)
+    return _hourly_value_profile(df, "load_mw", output_prefix="load")
 
 
-def _build_rto_load_profile_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:
+def _build_rto_load_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
     df = loader.load_load_forecast(cache_dir=cache_dir)
     df = df[df["region"].astype(str) == RTO].copy()
     df["date"] = _to_date(df["date"])
@@ -115,10 +132,10 @@ RTO_LOAD_PROFILE = FeatureDomain(
     description="RTO load — 24 hourly cols (load_h1..load_h24) in 5 zones.",
     feature_groups={
         "load_overnight": [f"load_h{h}" for h in range(1, 7)],
-        "load_morning":   [f"load_h{h}" for h in range(7, 12)],
-        "load_midday":    [f"load_h{h}" for h in range(12, 17)],
-        "load_peak":      [f"load_h{h}" for h in range(17, 21)],
-        "load_evening":   [f"load_h{h}" for h in range(21, 25)],
+        "load_morning": [f"load_h{h}" for h in range(7, 12)],
+        "load_midday": [f"load_h{h}" for h in range(12, 17)],
+        "load_peak": [f"load_h{h}" for h in range(17, 21)],
+        "load_evening": [f"load_h{h}" for h in range(21, 25)],
     },
     # Tuned 2026-05-04 from the `outage_driven` scenario — see
     # backtest/scenarios.py and the 28-day param_sweep result that beat
@@ -127,10 +144,10 @@ RTO_LOAD_PROFILE = FeatureDomain(
     # groups proportionally smaller (~39% combined, was ~62%).
     feature_group_weights={
         "load_overnight": 0.5,
-        "load_morning":   1.0,
-        "load_midday":    1.0,
-        "load_peak":      2.0,
-        "load_evening":   1.0,
+        "load_morning": 1.0,
+        "load_midday": 1.0,
+        "load_peak": 2.0,
+        "load_evening": 1.0,
     },
     pool_builder=_build_rto_load_profile_pool,
     query_builder=_build_rto_load_profile_query,
@@ -139,17 +156,20 @@ RTO_LOAD_PROFILE = FeatureDomain(
 
 # ── solar_profile (per-HE level) ─────────────────────────────────────────
 # Designed for per_hour matching: 24 hourly cols participate in the dynamic
-# 3-hour window distance, parallel to rto_load_profile. Pool prefers the
-# DA-cutoff forecast (vintage-consistent with the query); RT actuals fill
-# pre-2019 gaps via load_solar_coalesced.
+# 3-hour window distance, parallel to rto_load_profile. Pool reads from the
+# unified supply-demand coalescer so the (forecast | RT) decision is shared
+# with load and wind on every (region, date). RT actuals fill pre-2019
+# (and any partial-coverage) dates with no cross-series mixing risk.
+
 
 def _build_solar_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
-    df = loader.load_solar_coalesced(cache_dir=cache_dir)
-    val = "solar_forecast" if "solar_forecast" in df.columns else "solar_mw"
-    return _hourly_value_profile(df, val, output_prefix="solar")
+    df = loader.load_pjm_supply_demand_coalesced(cache_dir=cache_dir, region=RTO)
+    return _hourly_value_profile(df, "solar_mw", output_prefix="solar")
 
 
-def _build_solar_profile_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:
+def _build_solar_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
     df = loader.load_solar_forecast(cache_dir=cache_dir).copy()
     df["date"] = _to_date(df["date"])
     df = df[df["date"] == target_date]
@@ -169,13 +189,17 @@ SOLAR_PROFILE = FeatureDomain(
 
 # ── wind_profile (per-HE level) ──────────────────────────────────────────
 
+
 def _build_wind_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
-    df = loader.load_wind_coalesced(cache_dir=cache_dir)
-    val = "wind_forecast" if "wind_forecast" in df.columns else "wind_mw"
-    return _hourly_value_profile(df, val, output_prefix="wind")
+    # Same single-source-decision reasoning as load and solar — see
+    # _build_rto_load_profile_pool.
+    df = loader.load_pjm_supply_demand_coalesced(cache_dir=cache_dir, region=RTO)
+    return _hourly_value_profile(df, "wind_mw", output_prefix="wind")
 
 
-def _build_wind_profile_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:
+def _build_wind_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
     df = loader.load_wind_forecast(cache_dir=cache_dir).copy()
     df["date"] = _to_date(df["date"])
     df = df[df["date"] == target_date]
@@ -193,26 +217,91 @@ WIND_PROFILE = FeatureDomain(
 )
 
 
+# ── rto_net_load_profile (per-HE level, identity-safe) ──────────────────
+# Net load = load - solar - wind. Pool reads from the unified supply-demand
+# coalescer so the four components share a single source decision per
+# (region, date), preserving the identity by construction. Avoids the
+# cross-source mixing artifact that breaks `load - solar - wind` when the
+# per-series coalescers disagree on forecast-vs-RT (e.g. 2025-05-01).
+
+
+def _build_rto_net_load_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_pjm_supply_demand_coalesced(cache_dir=cache_dir, region=RTO)
+    return _hourly_value_profile(df, "net_load_mw", output_prefix="net_load")
+
+
+def _build_rto_net_load_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_pjm_net_load_forecast(cache_dir=cache_dir).copy()
+    df = df[df["region"].astype(str) == RTO]
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    if "as_of_date" in df.columns and len(df) > 0:
+        df["as_of_date"] = _to_date(df["as_of_date"])
+        delta = (
+            pd.to_datetime(df["date"], errors="coerce")
+            - pd.to_datetime(df["as_of_date"], errors="coerce")
+        ).dt.days
+        df = df[delta == 1]
+    return _hourly_value_profile(df, "net_load_forecast_mw", output_prefix="net_load")
+
+
+RTO_NET_LOAD_PROFILE = FeatureDomain(
+    name="rto_net_load_profile",
+    description=(
+        "RTO net load (load - solar - wind), unified-source — 24 hourly cols "
+        "(net_load_h1..net_load_h24), bucketed by time of day. Pool from the "
+        "unified supply-demand coalescer; query from the DA-cutoff net-load "
+        "forecast (lead_days=1)."
+    ),
+    feature_groups={
+        "net_load_overnight": [f"net_load_h{h}" for h in range(1, 7)],
+        "net_load_morning": [f"net_load_h{h}" for h in range(7, 12)],
+        "net_load_midday": [f"net_load_h{h}" for h in range(12, 17)],
+        "net_load_peak": [f"net_load_h{h}" for h in range(17, 21)],
+        "net_load_evening": [f"net_load_h{h}" for h in range(21, 25)],
+    },
+    # Mirrors RTO_LOAD_PROFILE defaults so the two domains contribute
+    # equally when both are enabled in a spec — natural baseline for
+    # ablation comparisons. Override via spec or feature_group_weights_override.
+    feature_group_weights={
+        "net_load_overnight": 0.5,
+        "net_load_morning": 1.0,
+        "net_load_midday": 1.0,
+        "net_load_peak": 2.0,
+        "net_load_evening": 1.0,
+    },
+    pool_builder=_build_rto_net_load_profile_pool,
+    query_builder=_build_rto_net_load_profile_query,
+)
+
+
 # ── outages_level (daily, broadcast across HEs) ──────────────────────────
 # Outages MW are published daily by PJM — no hourly granularity exists.
 # Daily-broadcast features bias which candidate dates rank high overall;
 # they don't differentiate between HEs of a given candidate date.
 
+
 def _outages_level_features(df_rto: pd.DataFrame) -> pd.DataFrame:
     if df_rto is None or len(df_rto) == 0:
         return pd.DataFrame(columns=["date"] + OUTAGE_LEVEL_COLS)
     date_col = "forecast_date" if "forecast_date" in df_rto.columns else "date"
-    df = df_rto[[date_col, "total_outages_mw", "planned_outages_mw", "forced_outages_mw"]].copy()
+    df = df_rto[
+        [date_col, "total_outages_mw", "planned_outages_mw", "forced_outages_mw"]
+    ].copy()
     df = df.rename(columns={date_col: "date"})
     df["date"] = _to_date(df["date"])
     for c in ["total_outages_mw", "planned_outages_mw", "forced_outages_mw"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-    df = df.rename(columns={
-        "total_outages_mw": "outage_total_mw",
-        "planned_outages_mw": "outage_planned_mw",
-        "forced_outages_mw": "outage_forced_mw",
-    })
+    df = df.rename(
+        columns={
+            "total_outages_mw": "outage_total_mw",
+            "planned_outages_mw": "outage_planned_mw",
+            "forced_outages_mw": "outage_forced_mw",
+        }
+    )
     return df[["date"] + OUTAGE_LEVEL_COLS]
 
 
@@ -222,7 +311,9 @@ def _build_outages_level_pool(cache_dir: Path | None) -> pd.DataFrame:
     return _outages_level_features(df)
 
 
-def _build_outages_level_query(target_date: date, cache_dir: Path | None) -> pd.DataFrame:
+def _build_outages_level_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
     df = loader.load_outages_forecast_history(cache_dir=cache_dir, lead_days=1)
     df = df[df["region"].astype(str) == RTO].copy()
     date_col = "forecast_date" if "forecast_date" in df.columns else "date"
@@ -232,19 +323,23 @@ def _build_outages_level_query(target_date: date, cache_dir: Path | None) -> pd.
         empty = {"date": target_date, **{c: np.nan for c in OUTAGE_LEVEL_COLS}}
         return pd.DataFrame([empty])
     row = df.iloc[0]
-    return pd.DataFrame([{
-        "date": target_date,
-        "outage_total_mw": float(row.get("total_outages_mw", np.nan)),
-        "outage_planned_mw": float(row.get("planned_outages_mw", np.nan)),
-        "outage_forced_mw": float(row.get("forced_outages_mw", np.nan)),
-    }])[["date"] + OUTAGE_LEVEL_COLS]
+    return pd.DataFrame(
+        [
+            {
+                "date": target_date,
+                "outage_total_mw": float(row.get("total_outages_mw", np.nan)),
+                "outage_planned_mw": float(row.get("planned_outages_mw", np.nan)),
+                "outage_forced_mw": float(row.get("forced_outages_mw", np.nan)),
+            }
+        ]
+    )[["date"] + OUTAGE_LEVEL_COLS]
 
 
 OUTAGES_LEVEL = FeatureDomain(
     name="outages_level",
     description="RTO outages — 3 daily level cols (total/planned/forced MW). Broadcast across HEs.",
     feature_groups={"outage_level": OUTAGE_LEVEL_COLS},
-    feature_group_weights={"outage_level": 6.0},
+    feature_group_weights={"outage_level": 4.0},
     pool_builder=_build_outages_level_pool,
     query_builder=_build_outages_level_query,
 )
@@ -253,6 +348,7 @@ OUTAGES_LEVEL = FeatureDomain(
 # ── gas_level (daily, broadcast across HEs) ──────────────────────────────
 # Hourly gas ticks exist but next-day cash gas settles once per day; daily
 # mean of M3 is the right denoising for next-day LMP prediction.
+
 
 def _gas_level_features(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or len(df) == 0 or "gas_m3" not in df.columns:
@@ -297,6 +393,7 @@ DOMAIN_REGISTRY: dict[str, FeatureDomain] = {
     RTO_LOAD_PROFILE.name: RTO_LOAD_PROFILE,
     SOLAR_PROFILE.name: SOLAR_PROFILE,
     WIND_PROFILE.name: WIND_PROFILE,
+    RTO_NET_LOAD_PROFILE.name: RTO_NET_LOAD_PROFILE,
     OUTAGES_LEVEL.name: OUTAGES_LEVEL,
     GAS_LEVEL.name: GAS_LEVEL,
 }
@@ -309,15 +406,53 @@ def resolved_feature_groups(domain_names: tuple[str, ...]) -> dict[str, list[str
     return out
 
 
-def resolved_feature_group_weights(domain_names: tuple[str, ...]) -> dict[str, float]:
-    """Sum each domain's group weights, then renormalize so total = 1.0."""
+def resolved_raw_feature_group_weights(
+    domain_names: tuple[str, ...],
+) -> dict[str, float]:
+    """Sum each domain's group weights without renormalization."""
     raw: dict[str, float] = {}
     for n in domain_names:
         raw.update(DOMAIN_REGISTRY[n].feature_group_weights)
+    return raw
+
+
+def resolved_feature_group_weights(domain_names: tuple[str, ...]) -> dict[str, float]:
+    """Sum each domain's group weights, then renormalize so total = 1.0."""
+    raw = resolved_raw_feature_group_weights(domain_names)
     total = sum(raw.values())
     if total <= 0:
         return raw
     return {k: v / total for k, v in raw.items()}
+
+
+def feature_group_weight_locations() -> dict[str, tuple[str, int]]:
+    """Map each feature-group name to the (file, line) of its weight literal.
+
+    Parses this module's source to find every ``FeatureDomain(...)``
+    construction and returns the line number of each key in its
+    ``feature_group_weights={...}`` dict literal — i.e. the exact line
+    where you'd edit the raw weight.
+    """
+    import ast as _ast
+
+    src_file = __file__
+    with open(src_file, encoding="utf-8") as f:
+        tree = _ast.parse(f.read())
+    out: dict[str, tuple[str, int]] = {}
+    for node in _ast.walk(tree):
+        if not (
+            isinstance(node, _ast.Call)
+            and isinstance(node.func, _ast.Name)
+            and node.func.id == "FeatureDomain"
+        ):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "feature_group_weights" or not isinstance(kw.value, _ast.Dict):
+                continue
+            for k in kw.value.keys:
+                if isinstance(k, _ast.Constant) and isinstance(k.value, str):
+                    out[k.value] = (src_file, k.lineno)
+    return out
 
 
 def all_feature_cols(domain_names: tuple[str, ...]) -> list[str]:
