@@ -15,6 +15,11 @@ import pandas as pd
 
 from da_models.common.data import loader
 from da_models.common.data.loader import _resolve_cache_dir
+from da_models.common.data.lmp_pool import (
+    LMP_HOUR_COLUMNS,
+    build_lmp_labels,
+    load_lmp_da,
+)
 from da_models.like_day_model_knn import configs
 from da_models.like_day_model_knn.domains import (
     DOMAIN_REGISTRY,
@@ -32,13 +37,6 @@ def resolved_load_forecast_paths(cache_dir: Path | None) -> list[Path]:
         for name in configs.LOAD_FORECAST_PARQUETS
         if (resolved / name).exists()
     ]
-
-
-def resolved_lmp_da_path(cache_dir: Path | None) -> Path | None:
-    """Absolute path of the DA LMP labels parquet, or ``None`` if missing."""
-    resolved = _resolve_cache_dir(cache_dir)
-    p = resolved / configs.LMP_DA_PARQUET
-    return p if p.exists() else None
 
 
 def load_pjm_load_forecast(cache_dir: Path | None) -> pd.DataFrame:
@@ -64,20 +62,6 @@ def load_pjm_load_forecast(cache_dir: Path | None) -> pd.DataFrame:
     return df
 
 
-def load_lmp_da(cache_dir: Path | None) -> pd.DataFrame:
-    """Load DA LMPs from ``configs.LMP_DA_PARQUET`` (explicit), falling back
-    to the shared loader's default search if the named file is missing."""
-    p = resolved_lmp_da_path(cache_dir)
-    if p is None:
-        logger.warning(
-            "DA LMP parquet not found at %s - falling back to default loader search",
-            _resolve_cache_dir(cache_dir) / configs.LMP_DA_PARQUET,
-        )
-        return loader.load_lmps_da(cache_dir=cache_dir)
-    logger.info("Loaded DA LMPs: %s", p.name)
-    return loader.load_lmps_da(path=p)
-
-
 def filter_to_region(df: pd.DataFrame, region: str) -> pd.DataFrame:
     """Restrict a hourly load forecast frame to a specific PJM region (e.g. RTO).
 
@@ -88,29 +72,6 @@ def filter_to_region(df: pd.DataFrame, region: str) -> pd.DataFrame:
     if "region" in df.columns:
         return df[df["region"] == region].copy()
     return df.copy()
-
-
-def build_lmp_labels(df_lmp_da: pd.DataFrame, hub: str) -> pd.DataFrame:
-    """One row per delivery date with lmp_h1..lmp_h24 for the configured hub."""
-    if df_lmp_da is None or len(df_lmp_da) == 0:
-        return pd.DataFrame(columns=["date"] + configs.LMP_LABEL_COLUMNS)
-
-    df = df_lmp_da[df_lmp_da["region"] == hub].copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["hour_ending"] = pd.to_numeric(df["hour_ending"], errors="coerce")
-    df["lmp"] = pd.to_numeric(df["lmp"], errors="coerce")
-    df = df.dropna(subset=["date", "hour_ending"])
-    if len(df) == 0:
-        return pd.DataFrame(columns=["date"] + configs.LMP_LABEL_COLUMNS)
-
-    df["hour_ending"] = df["hour_ending"].astype(int)
-    pivot = (
-        df.pivot_table(index="date", columns="hour_ending", values="lmp", aggfunc="mean")
-        .reindex(columns=configs.HOURS)
-        .rename(columns={h: f"lmp_h{h}" for h in configs.HOURS})
-        .reset_index()
-    )
-    return pivot
 
 
 def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -180,12 +141,12 @@ def build_pool_from_spec(
     pool = feat.merge(df_labels, on="date", how="left")
 
     feature_cols = all_feature_cols(spec.domains)
-    keep = ["date"] + feature_cols + configs.LMP_LABEL_COLUMNS
+    keep = ["date"] + feature_cols + LMP_HOUR_COLUMNS
     pool = ensure_columns(pool, keep)[keep]
     pool = pool.sort_values("date").reset_index(drop=True)
 
     n_features_filled = int(pool[feature_cols].notna().any(axis=1).sum())
-    n_labels_filled = int(pool[configs.LMP_LABEL_COLUMNS].notna().any(axis=1).sum())
+    n_labels_filled = int(pool[LMP_HOUR_COLUMNS].notna().any(axis=1).sum())
     logger.info(
         "%s pool: %d rows x %d features (%d w/ features, %d w/ labels) — domains=%s",
         spec.name, len(pool), len(feature_cols), n_features_filled,

@@ -14,9 +14,11 @@ Schema produced by ``load_pjm_dates_daily``:
     summer_winter         str   ('SUMMER'/'WINTER')
     holiday_name          str | None
 """
+
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +29,8 @@ from da_models.common.data.loader import _resolve_cache_dir, load_pjm_dates_dail
 from da_models.like_day_model_knn import configs
 
 __all__ = [
+    "FunnelCounts",
+    "FunnelStage",
     "resolve_day_type",
     "resolved_dates_daily_path",
     "load_pjm_dates_daily",
@@ -37,10 +41,72 @@ __all__ = [
     "age_decay_weights",
 ]
 
+
+@dataclass
+class FunnelStage:
+    """One row of the candidate-pool funnel.
+
+    ``relaxed=True`` means the filter was *not* applied because doing so
+    would have left fewer than ``min_pool_size`` candidates; in that case
+    ``survives`` equals the pre-filter count, ``dropped=0``, and
+    ``would_survive`` records the count the filter would have yielded
+    had it been applied (so the printer can flag the relax fall-back).
+    """
+
+    name: str
+    detail: str
+    survives: int
+    dropped: int
+    relaxed: bool = False
+    would_survive: int | None = None
+
+
+@dataclass
+class FunnelCounts:
+    """Accumulator threaded through the pool-filtering chain.
+
+    Stages are appended in pipeline order: raw pool → chronological cut →
+    explicit excludes → recency cap → holiday exclusion → DOW group →
+    season window. Any disabled or no-op filter is simply not recorded.
+    """
+
+    stages: list[FunnelStage] = field(default_factory=list)
+
+    def record(
+        self,
+        name: str,
+        detail: str,
+        *,
+        before: int,
+        after: int,
+        relaxed: bool = False,
+        would_survive: int | None = None,
+    ) -> None:
+        self.stages.append(
+            FunnelStage(
+                name=name,
+                detail=detail,
+                survives=after,
+                dropped=max(0, before - after),
+                relaxed=relaxed,
+                would_survive=would_survive,
+            )
+        )
+
+    @property
+    def initial(self) -> int:
+        return self.stages[0].survives if self.stages else 0
+
+    @property
+    def final(self) -> int:
+        return self.stages[-1].survives if self.stages else 0
+
+
 logger = logging.getLogger(__name__)
 
 
 # ── Day-type ───────────────────────────────────────────────────────────
+
 
 def resolve_day_type(d: date) -> str:
     """Return ``"weekday"`` / ``"saturday"`` / ``"sunday"`` for a delivery date."""
@@ -50,11 +116,13 @@ def resolve_day_type(d: date) -> str:
 # ── Loader ─────────────────────────────────────────────────────────────
 # load_pjm_dates_daily lives in common/data/loader.py and is re-exported above.
 
+
 def resolved_dates_daily_path(cache_dir: Path | str | None) -> Path:
     return _resolve_cache_dir(cache_dir) / configs.PJM_DATES_DAILY_PARQUET
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
+
 
 def _dow_group_index(dow_num: int) -> int:
     """Map Sun=0..Sat=6 day-of-week to its DOW_GROUPS bucket index."""
@@ -100,6 +168,7 @@ def resolve_target_day_metadata(
 
 # ── Filter ─────────────────────────────────────────────────────────────
 
+
 def apply_calendar_filter(
     pool: pd.DataFrame,
     target_date: date,
@@ -110,6 +179,7 @@ def apply_calendar_filter(
     exclude_dates: list[str] | None = None,
     max_age_years: int | None = None,
     min_pool_size: int = configs.MIN_POOL_SIZE,
+    funnel: FunnelCounts | None = None,
 ) -> pd.DataFrame:
     """Restrict the candidate pool to dates with compatible calendar metadata.
 
@@ -145,8 +215,16 @@ def apply_calendar_filter(
             work = candidates
             logger.info(
                 "calendar filter: excluded %d explicit date(s), %d candidates remain",
-                before - len(work), len(work),
+                before - len(work),
+                len(work),
             )
+            if funnel is not None:
+                funnel.record(
+                    "explicit excludes",
+                    f"exclude_dates=[{len(excl_dates)} date(s)]",
+                    before=before,
+                    after=len(work),
+                )
 
     # 2. max-age cap. Drop anything older than target_date - max_age_years.
     if max_age_years is not None and max_age_years > 0:
@@ -158,13 +236,34 @@ def apply_calendar_filter(
             work = candidates
             logger.info(
                 "calendar filter: max_age_years=%d cutoff=%s dropped %d, %d remain",
-                int(max_age_years), cutoff_date, before - len(work), len(work),
+                int(max_age_years),
+                cutoff_date,
+                before - len(work),
+                len(work),
             )
+            if funnel is not None:
+                funnel.record(
+                    "recency cap",
+                    f"max_age={int(max_age_years)}y (cutoff {cutoff_date})",
+                    before=before,
+                    after=len(work),
+                )
         else:
             logger.warning(
                 "calendar filter: max_age_years=%d would leave only %d (< min %d) - relaxing",
-                int(max_age_years), len(candidates), min_pool_size,
+                int(max_age_years),
+                len(candidates),
+                min_pool_size,
             )
+            if funnel is not None:
+                funnel.record(
+                    "recency cap",
+                    f"max_age={int(max_age_years)}y (cutoff {cutoff_date})",
+                    before=before,
+                    after=before,
+                    relaxed=True,
+                    would_survive=len(candidates),
+                )
 
     if dates_meta is None or len(dates_meta) == 0:
         return work.reset_index(drop=True)
@@ -174,11 +273,22 @@ def apply_calendar_filter(
     target_meta = resolve_target_day_metadata(target_date, meta)
 
     work = work.merge(
-        meta[["date"] + [c for c in (
-            "day_of_week_number", "is_weekend", "is_nerc_holiday",
-            "is_federal_holiday", "summer_winter",
-        ) if c in meta.columns]],
-        on="date", how="left",
+        meta[
+            ["date"]
+            + [
+                c
+                for c in (
+                    "day_of_week_number",
+                    "is_weekend",
+                    "is_nerc_holiday",
+                    "is_federal_holiday",
+                    "summer_winter",
+                )
+                if c in meta.columns
+            ]
+        ],
+        on="date",
+        how="left",
     )
 
     # 2. holiday exclusion (only when target is itself non-holiday)
@@ -190,13 +300,31 @@ def apply_calendar_filter(
             work = candidates
             logger.info(
                 "calendar filter: dropped %d NERC holiday candidate(s), %d remain",
-                before - len(work), len(work),
+                before - len(work),
+                len(work),
             )
+            if funnel is not None:
+                funnel.record(
+                    "NERC holiday exclusion",
+                    "exclude_holidays=True (target is non-holiday)",
+                    before=before,
+                    after=len(work),
+                )
         else:
             logger.warning(
                 "calendar filter: holiday exclusion would leave only %d (< min %d) - keeping holidays",
-                len(candidates), min_pool_size,
+                len(candidates),
+                min_pool_size,
             )
+            if funnel is not None:
+                funnel.record(
+                    "NERC holiday exclusion",
+                    "exclude_holidays=True (target is non-holiday)",
+                    before=before,
+                    after=before,
+                    relaxed=True,
+                    would_survive=len(candidates),
+                )
 
     # 3. same DOW group
     if same_dow_group and "day_of_week_number" in work.columns:
@@ -208,17 +336,37 @@ def apply_calendar_filter(
             )
             before = len(work)
             candidates = work[cand_groups == target_group]
+            group_name = list(configs.DOW_GROUPS.keys())[target_group]
+            group_days = list(configs.DOW_GROUPS.values())[target_group]
             if len(candidates) >= min_pool_size:
                 work = candidates
                 logger.info(
                     "calendar filter: same DOW group kept %d candidates (dropped %d)",
-                    len(work), before - len(work),
+                    len(work),
+                    before - len(work),
                 )
+                if funnel is not None:
+                    funnel.record(
+                        "same DOW group",
+                        f"group={group_name} (dow_nums={group_days})",
+                        before=before,
+                        after=len(work),
+                    )
             else:
                 logger.warning(
                     "calendar filter: same DOW group would leave only %d (< min %d) - relaxing",
-                    len(candidates), min_pool_size,
+                    len(candidates),
+                    min_pool_size,
                 )
+                if funnel is not None:
+                    funnel.record(
+                        "same DOW group",
+                        f"group={group_name} (dow_nums={group_days})",
+                        before=before,
+                        after=before,
+                        relaxed=True,
+                        would_survive=len(candidates),
+                    )
 
     return work.reset_index(drop=True)
 
@@ -234,8 +382,12 @@ def filtered_pool_for_target(
         pool=pool,
         target_date=target_date,
         dates_meta=dates_meta,
-        same_dow_group=bool(getattr(cfg, "same_dow_group", configs.FILTER_SAME_DOW_GROUP)),
-        exclude_holidays=bool(getattr(cfg, "exclude_holidays", configs.FILTER_EXCLUDE_HOLIDAYS)),
+        same_dow_group=bool(
+            getattr(cfg, "same_dow_group", configs.FILTER_SAME_DOW_GROUP)
+        ),
+        exclude_holidays=bool(
+            getattr(cfg, "exclude_holidays", configs.FILTER_EXCLUDE_HOLIDAYS)
+        ),
         exclude_dates=list(getattr(cfg, "exclude_dates", []) or []),
         max_age_years=getattr(cfg, "max_age_years", None),
         min_pool_size=int(getattr(cfg, "min_pool_size", configs.MIN_POOL_SIZE)),
@@ -243,6 +395,7 @@ def filtered_pool_for_target(
 
 
 # ── Recency weighting ──────────────────────────────────────────────────
+
 
 def age_years(
     candidate_dates: pd.Series | np.ndarray | list,
@@ -274,6 +427,7 @@ def age_decay_weights(
 
 # ── Light-weight smoke test ────────────────────────────────────────────
 
+
 def _self_check() -> None:  # pragma: no cover - run via __main__
     df = load_pjm_dates_daily(cache_dir=None)
     assert {"date", "day_of_week_number", "is_nerc_holiday"}.issubset(df.columns)
@@ -281,18 +435,28 @@ def _self_check() -> None:  # pragma: no cover - run via __main__
     meta = resolve_target_day_metadata(target, df)
     assert meta["day_type"] == "weekday"
 
-    pool = pd.DataFrame({
-        "date": pd.date_range("2024-07-01", "2024-09-15", freq="D").date,
-        "load_h1": np.arange(77, dtype=float),
-    })
-    out = apply_calendar_filter(
-        pool=pool, target_date=target, dates_meta=df,
-        same_dow_group=True, exclude_holidays=True,
-        exclude_dates=[], min_pool_size=5,
+    pool = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-07-01", "2024-09-15", freq="D").date,
+            "load_h1": np.arange(77, dtype=float),
+        }
     )
-    print(f"smoke: target={target} kept={len(out)}/{len(pool)} day_type={meta['day_type']}")
+    out = apply_calendar_filter(
+        pool=pool,
+        target_date=target,
+        dates_meta=df,
+        same_dow_group=True,
+        exclude_holidays=True,
+        exclude_dates=[],
+        min_pool_size=5,
+    )
+    print(
+        f"smoke: target={target} kept={len(out)}/{len(pool)} day_type={meta['day_type']}"
+    )
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
     _self_check()
