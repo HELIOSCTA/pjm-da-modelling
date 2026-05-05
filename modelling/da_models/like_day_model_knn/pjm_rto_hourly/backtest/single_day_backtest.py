@@ -111,10 +111,52 @@ def _execute_scenario(
 
     metrics = result.get("metrics") or {}
     output_table = result.get("output_table")
+    quantiles_table = result.get("quantiles_table")
     forecast_row = (
         output_table[output_table["Type"] == "Forecast"].iloc[0]
         if output_table is not None and len(output_table) else None
     )
+    actual_row = (
+        output_table[output_table["Type"] == "Actual"].iloc[0]
+        if output_table is not None and (output_table["Type"] == "Actual").any() else None
+    )
+    error_row = (
+        output_table[output_table["Type"] == "Error"].iloc[0]
+        if output_table is not None and (output_table["Type"] == "Error").any() else None
+    )
+
+    # Per-HE arrays for the hourly metrics table
+    hourly_forecast: list[float | None] = (
+        [float(forecast_row[f"HE{h}"]) if pd.notna(forecast_row[f"HE{h}"]) else None
+         for h in range(1, 25)]
+        if forecast_row is not None else [None] * 24
+    )
+    hourly_actual: list[float | None] = (
+        [float(actual_row[f"HE{h}"]) if pd.notna(actual_row[f"HE{h}"]) else None
+         for h in range(1, 25)]
+        if actual_row is not None else [None] * 24
+    )
+    hourly_abs_error: list[float | None] = (
+        [abs(float(error_row[f"HE{h}"])) if pd.notna(error_row[f"HE{h}"]) else None
+         for h in range(1, 25)]
+        if error_row is not None else [None] * 24
+    )
+
+    # Per-HE 90% PI coverage (from P05/P95 rows in the quantiles table)
+    hourly_in_90pi: list[bool | None] = [None] * 24
+    if quantiles_table is not None and actual_row is not None:
+        p05_rows = quantiles_table[quantiles_table["Type"] == "P05"]
+        p95_rows = quantiles_table[quantiles_table["Type"] == "P95"]
+        if len(p05_rows) and len(p95_rows):
+            p05 = p05_rows.iloc[0]
+            p95 = p95_rows.iloc[0]
+            for i, h in enumerate(range(1, 25)):
+                a = hourly_actual[i]
+                lo = float(p05[f"HE{h}"]) if pd.notna(p05[f"HE{h}"]) else None
+                hi = float(p95[f"HE{h}"]) if pd.notna(p95[f"HE{h}"]) else None
+                if a is None or lo is None or hi is None:
+                    continue
+                hourly_in_90pi[i] = lo <= a <= hi
 
     base.update({
         "n_analogs_used": result.get("n_analogs_used"),
@@ -131,6 +173,10 @@ def _execute_scenario(
         "forecast_onpeak": float(forecast_row["OnPeak"]) if forecast_row is not None else None,
         "forecast_offpeak": float(forecast_row["OffPeak"]) if forecast_row is not None else None,
         "forecast_flat": float(forecast_row["Flat"]) if forecast_row is not None else None,
+        "hourly_forecast": hourly_forecast,
+        "hourly_actual": hourly_actual,
+        "hourly_abs_error": hourly_abs_error,
+        "hourly_in_90pi": hourly_in_90pi,
         "duration_s": round(time.perf_counter() - started, 3),
     })
     return base
@@ -195,6 +241,108 @@ def _print_comparison(
         for _, r in failed.iterrows():
             print(f"    {r['scenario_name']}: {r['error_message']}")
 
+    print()
+
+
+def _print_hourly_metrics(rows: list[dict], target_date: date) -> None:
+    """Per-HE absolute-error + 90%PI-coverage table across scenarios.
+
+    Wide format: HE rows, scenario columns. Best abs_error per HE marked
+    with '*'. Footer aggregates per scenario (sum of abs errors,
+    HEs-won count, 90% PI hit-rate).
+    """
+    ok = [r for r in rows if r["status"] == "ok"]
+    if not ok:
+        return
+    hourly_actual = ok[0].get("hourly_actual")
+    if hourly_actual is None or all(v is None for v in hourly_actual):
+        return
+
+    name_w = max(10, max(len(r["scenario_name"]) for r in ok))
+    err_w = name_w + 1                     # one extra char for the '*' marker
+
+    print("=" * (12 + 7 + (err_w + 2) * len(ok) + 12))
+    print(f"  HOURLY ABSOLUTE ERROR ($/MWh)  —  best per HE marked *  ({target_date})")
+    print("=" * (12 + 7 + (err_w + 2) * len(ok) + 12))
+
+    header = f"{'HE':>3}  {'Actual':>7}"
+    for r in ok:
+        header += f"  {r['scenario_name']:>{err_w}}"
+    header += f"  {'Best':<{name_w}}"
+    print(header)
+    print("-" * len(header))
+
+    sums = {r["scenario_name"]: 0.0 for r in ok}
+    won_he = {r["scenario_name"]: 0 for r in ok}
+    in_pi_count = {r["scenario_name"]: 0 for r in ok}
+    in_pi_total = {r["scenario_name"]: 0 for r in ok}
+
+    for i, h in enumerate(range(1, 25)):
+        a = hourly_actual[i]
+        line = f"{h:>3}  "
+        line += f"{a:>7.1f}" if a is not None else f"{'n/a':>7}"
+
+        per_scenario_errs: list[tuple[str, float | None]] = []
+        for r in ok:
+            errs = r.get("hourly_abs_error") or [None] * 24
+            per_scenario_errs.append((r["scenario_name"], errs[i]))
+
+        valid_errs = [(n, e) for n, e in per_scenario_errs if e is not None]
+        min_err = min(e for _, e in valid_errs) if valid_errs else None
+        winners: list[str] = []
+        if min_err is not None:
+            winners = [n for n, e in valid_errs if abs(e - min_err) < 0.01]
+
+        for r in ok:
+            errs = r.get("hourly_abs_error") or [None] * 24
+            e = errs[i]
+            if e is None:
+                cell = f"{'n/a':>{err_w}}"
+            else:
+                sums[r["scenario_name"]] += e
+                marker = "*" if r["scenario_name"] in winners else " "
+                cell = f"{e:>{err_w - 1}.1f}{marker}"
+            line += f"  {cell}"
+
+            in_pi = (r.get("hourly_in_90pi") or [None] * 24)[i]
+            if in_pi is not None:
+                in_pi_total[r["scenario_name"]] += 1
+                if in_pi:
+                    in_pi_count[r["scenario_name"]] += 1
+
+        if len(winners) == 1:
+            won_he[winners[0]] += 1
+            best_str = winners[0]
+        elif len(winners) > 1:
+            best_str = f"tie ({len(winners)})"
+        else:
+            best_str = "n/a"
+        line += f"  {best_str:<{name_w}}"
+        print(line)
+
+    print("-" * len(header))
+    sum_line = f"{'sum':>3}  {sum(a for a in hourly_actual if a is not None):>7.1f}"
+    for r in ok:
+        sum_line += f"  {sums[r['scenario_name']]:>{err_w - 1}.1f} "
+    sum_line += f"  {'(sum abs err)':<{name_w}}"
+    print(sum_line)
+
+    won_line = f"{'won':>3}  {'':>7}"
+    for r in ok:
+        won_line += f"  {won_he[r['scenario_name']]:>{err_w - 1}d} "
+    won_line += f"  {'(HEs won)':<{name_w}}"
+    print(won_line)
+
+    pi_line = f"{'90%PI':>3}  {'':>7}"
+    for r in ok:
+        tot = in_pi_total[r["scenario_name"]]
+        if tot == 0:
+            pi_line += f"  {'n/a':>{err_w}} "
+        else:
+            pct = in_pi_count[r["scenario_name"]] / tot
+            pi_line += f"  {pct:>{err_w - 1}.0%} "
+    pi_line += f"  {'(coverage)':<{name_w}}"
+    print(pi_line)
     print()
 
 
@@ -269,6 +417,7 @@ def run(
         rows.append(row)
 
     _print_comparison(rows, resolved_date, actuals_summary)
+    _print_hourly_metrics(rows, resolved_date)
     return rows
 
 
