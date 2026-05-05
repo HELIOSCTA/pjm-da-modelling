@@ -129,25 +129,23 @@ def _build_rto_load_profile_query(
 
 RTO_LOAD_PROFILE = FeatureDomain(
     name="rto_load_profile",
-    description="RTO load — 24 hourly cols (load_h1..load_h24) in 5 zones.",
+    description=(
+        "RTO load — 24 hourly cols (load_h1..load_h24) as a single group. "
+        "Time-of-day bucketing is redundant under per-HE windowed matching "
+        "(``flt_radius`` already localizes the match), so the spec-side "
+        "split was removed in favor of one ``load_level`` group; tune the "
+        "single weight rather than five sub-bucket weights."
+    ),
     feature_groups={
-        "load_overnight": [f"load_h{h}" for h in range(1, 7)],
-        "load_morning": [f"load_h{h}" for h in range(7, 12)],
-        "load_midday": [f"load_h{h}" for h in range(12, 17)],
-        "load_peak": [f"load_h{h}" for h in range(17, 21)],
-        "load_evening": [f"load_h{h}" for h in range(21, 25)],
+        "load_level": LOAD_HOURLY_COLS,
     },
-    # Tuned 2026-05-04 from the `outage_driven` scenario — see
-    # backtest/scenarios.py and the 28-day param_sweep result that beat
-    # the prior weights by 5.4% mean MAE / 7% rMAE. Outages now carry
-    # most of the date-level signal (renormalized share ~43%); load
-    # groups proportionally smaller (~39% combined, was ~62%).
+    # Raw weight 5.5 preserves the prior renormalized share (sum of the
+    # old five sub-bucket weights: 0.5 + 1 + 1 + 2 + 1) so this collapse
+    # is structural-only — same effective contribution to the windowed
+    # Euclidean as before. Retune separately if migrating toward sunny's
+    # weight profile (load_at_hour=3.0).
     feature_group_weights={
-        "load_overnight": 0.5,
-        "load_morning": 1.0,
-        "load_midday": 1.0,
-        "load_peak": 2.0,
-        "load_evening": 1.0,
+        "load_level": 5.5,
     },
     pool_builder=_build_rto_load_profile_pool,
     query_builder=_build_rto_load_profile_query,
@@ -251,26 +249,19 @@ RTO_NET_LOAD_PROFILE = FeatureDomain(
     name="rto_net_load_profile",
     description=(
         "RTO net load (load - solar - wind), unified-source — 24 hourly cols "
-        "(net_load_h1..net_load_h24), bucketed by time of day. Pool from the "
+        "(net_load_h1..net_load_h24) as a single group. Pool from the "
         "unified supply-demand coalescer; query from the DA-cutoff net-load "
-        "forecast (lead_days=1)."
+        "forecast (lead_days=1). Time-of-day bucketing dropped in favor of "
+        "one ``net_load_level`` group, mirroring rto_load_profile."
     ),
     feature_groups={
-        "net_load_overnight": [f"net_load_h{h}" for h in range(1, 7)],
-        "net_load_morning": [f"net_load_h{h}" for h in range(7, 12)],
-        "net_load_midday": [f"net_load_h{h}" for h in range(12, 17)],
-        "net_load_peak": [f"net_load_h{h}" for h in range(17, 21)],
-        "net_load_evening": [f"net_load_h{h}" for h in range(21, 25)],
+        "net_load_level": NET_LOAD_HOURLY_COLS,
     },
-    # Mirrors RTO_LOAD_PROFILE defaults so the two domains contribute
-    # equally when both are enabled in a spec — natural baseline for
-    # ablation comparisons. Override via spec or feature_group_weights_override.
+    # Raw weight 5.5 preserves the prior renormalized share (sum of the
+    # five sub-bucket weights). Mirrors RTO_LOAD_PROFILE so the two
+    # domains contribute equally when both are enabled in a spec.
     feature_group_weights={
-        "net_load_overnight": 0.5,
-        "net_load_morning": 1.0,
-        "net_load_midday": 1.0,
-        "net_load_peak": 2.0,
-        "net_load_evening": 1.0,
+        "net_load_level": 5.5,
     },
     pool_builder=_build_rto_net_load_profile_pool,
     query_builder=_build_rto_net_load_profile_query,
