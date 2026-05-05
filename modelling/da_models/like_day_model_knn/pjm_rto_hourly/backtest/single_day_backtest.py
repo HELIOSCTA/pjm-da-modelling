@@ -244,12 +244,19 @@ def _print_comparison(
     print()
 
 
-def _print_hourly_metrics(rows: list[dict], target_date: date) -> None:
-    """Per-HE absolute-error + 90%PI-coverage table across scenarios.
+def _print_hourly_scenarios(rows: list[dict], target_date: date) -> None:
+    """Per-scenario forecast / error tables in the DA LMP LIKE-DAY FORECAST format.
 
-    Wide format: HE rows, scenario columns. Best abs_error per HE marked
-    with '*'. Footer aggregates per scenario (sum of abs errors,
-    HEs-won count, 90% PI hit-rate).
+    Mirrors ``forecast_single_day.print_forecast`` but stacks one row per
+    scenario instead of a single Forecast row. Two tables:
+
+      1. Forecasts — Actual on top, then one row per scenario showing
+         that scenario's Forecast across HE1..HE24 plus OnPk/OffPk/Flat.
+      2. Errors — one row per scenario showing signed (Forecast - Actual)
+         across HE1..HE24 plus OnPk/OffPk/Flat.
+
+    Same fixed-width formatting as the live forecast table for visual
+    consistency.
     """
     ok = [r for r in rows if r["status"] == "ok"]
     if not ok:
@@ -258,91 +265,64 @@ def _print_hourly_metrics(rows: list[dict], target_date: date) -> None:
     if hourly_actual is None or all(v is None for v in hourly_actual):
         return
 
-    name_w = max(10, max(len(r["scenario_name"]) for r in ok))
-    err_w = name_w + 1                     # one extra char for the '*' marker
+    onpeak_hes = list(range(8, 24))
+    offpeak_hes = list(range(1, 8)) + [24]
 
-    print("=" * (12 + 7 + (err_w + 2) * len(ok) + 12))
-    print(f"  HOURLY ABSOLUTE ERROR ($/MWh)  —  best per HE marked *  ({target_date})")
-    print("=" * (12 + 7 + (err_w + 2) * len(ok) + 12))
+    def _summary(values: list[float | None]) -> tuple[float | None, float | None, float | None]:
+        on = [values[h - 1] for h in onpeak_hes if values[h - 1] is not None]
+        off = [values[h - 1] for h in offpeak_hes if values[h - 1] is not None]
+        all_v = [v for v in values if v is not None]
+        return (
+            (sum(on) / len(on)) if on else None,
+            (sum(off) / len(off)) if off else None,
+            (sum(all_v) / len(all_v)) if all_v else None,
+        )
 
-    header = f"{'HE':>3}  {'Actual':>7}"
-    for r in ok:
-        header += f"  {r['scenario_name']:>{err_w}}"
-    header += f"  {'Best':<{name_w}}"
+    name_w = max(16, max(len(r["scenario_name"]) for r in ok))
+
+    def _render_row(label: str, values: list[float | None]) -> str:
+        line = f"{str(target_date):<12} {label:<{name_w}}"
+        for v in values:
+            line += f" {v:>6.1f}" if v is not None else f" {'':>6}"
+        on, off, flat = _summary(values)
+        line += f" {on:>7.2f}" if on is not None else f" {'':>7}"
+        line += f" {off:>7.2f}" if off is not None else f" {'':>7}"
+        line += f" {flat:>7.2f}" if flat is not None else f" {'':>7}"
+        return line
+
+    # ── Forecasts table ────────────────────────────────────────────────
+    print("=" * 120)
+    print(f"  HOURLY FORECASTS BY SCENARIO — Western Hub ($/MWh) — {target_date}")
+    print("=" * 120)
+    header = f"{'Date':<12} {'Type':<{name_w}}"
+    for h in range(1, 25):
+        header += f" {h:>6}"
+    header += f" {'OnPk':>7} {'OffPk':>7} {'Flat':>7}"
     print(header)
     print("-" * len(header))
 
-    sums = {r["scenario_name"]: 0.0 for r in ok}
-    won_he = {r["scenario_name"]: 0 for r in ok}
-    in_pi_count = {r["scenario_name"]: 0 for r in ok}
-    in_pi_total = {r["scenario_name"]: 0 for r in ok}
-
-    for i, h in enumerate(range(1, 25)):
-        a = hourly_actual[i]
-        line = f"{h:>3}  "
-        line += f"{a:>7.1f}" if a is not None else f"{'n/a':>7}"
-
-        per_scenario_errs: list[tuple[str, float | None]] = []
-        for r in ok:
-            errs = r.get("hourly_abs_error") or [None] * 24
-            per_scenario_errs.append((r["scenario_name"], errs[i]))
-
-        valid_errs = [(n, e) for n, e in per_scenario_errs if e is not None]
-        min_err = min(e for _, e in valid_errs) if valid_errs else None
-        winners: list[str] = []
-        if min_err is not None:
-            winners = [n for n, e in valid_errs if abs(e - min_err) < 0.01]
-
-        for r in ok:
-            errs = r.get("hourly_abs_error") or [None] * 24
-            e = errs[i]
-            if e is None:
-                cell = f"{'n/a':>{err_w}}"
-            else:
-                sums[r["scenario_name"]] += e
-                marker = "*" if r["scenario_name"] in winners else " "
-                cell = f"{e:>{err_w - 1}.1f}{marker}"
-            line += f"  {cell}"
-
-            in_pi = (r.get("hourly_in_90pi") or [None] * 24)[i]
-            if in_pi is not None:
-                in_pi_total[r["scenario_name"]] += 1
-                if in_pi:
-                    in_pi_count[r["scenario_name"]] += 1
-
-        if len(winners) == 1:
-            won_he[winners[0]] += 1
-            best_str = winners[0]
-        elif len(winners) > 1:
-            best_str = f"tie ({len(winners)})"
-        else:
-            best_str = "n/a"
-        line += f"  {best_str:<{name_w}}"
-        print(line)
-
+    print(_render_row("Actual", hourly_actual))
+    for r in ok:
+        forecast_vals = r.get("hourly_forecast") or [None] * 24
+        print(_render_row(r["scenario_name"], forecast_vals))
     print("-" * len(header))
-    sum_line = f"{'sum':>3}  {sum(a for a in hourly_actual if a is not None):>7.1f}"
-    for r in ok:
-        sum_line += f"  {sums[r['scenario_name']]:>{err_w - 1}.1f} "
-    sum_line += f"  {'(sum abs err)':<{name_w}}"
-    print(sum_line)
+    print()
 
-    won_line = f"{'won':>3}  {'':>7}"
+    # ── Errors table (signed: forecast - actual) ───────────────────────
+    print("=" * 120)
+    print(f"  HOURLY ERRORS BY SCENARIO (Forecast - Actual, $/MWh) — {target_date}")
+    print("=" * 120)
+    print(header)
+    print("-" * len(header))
     for r in ok:
-        won_line += f"  {won_he[r['scenario_name']]:>{err_w - 1}d} "
-    won_line += f"  {'(HEs won)':<{name_w}}"
-    print(won_line)
-
-    pi_line = f"{'90%PI':>3}  {'':>7}"
-    for r in ok:
-        tot = in_pi_total[r["scenario_name"]]
-        if tot == 0:
-            pi_line += f"  {'n/a':>{err_w}} "
-        else:
-            pct = in_pi_count[r["scenario_name"]] / tot
-            pi_line += f"  {pct:>{err_w - 1}.0%} "
-    pi_line += f"  {'(coverage)':<{name_w}}"
-    print(pi_line)
+        forecast_vals = r.get("hourly_forecast") or [None] * 24
+        signed_err = [
+            (forecast_vals[i] - hourly_actual[i])
+            if (forecast_vals[i] is not None and hourly_actual[i] is not None) else None
+            for i in range(24)
+        ]
+        print(_render_row(r["scenario_name"], signed_err))
+    print("-" * len(header))
     print()
 
 
@@ -417,7 +397,7 @@ def run(
         rows.append(row)
 
     _print_comparison(rows, resolved_date, actuals_summary)
-    _print_hourly_metrics(rows, resolved_date)
+    _print_hourly_scenarios(rows, resolved_date)
     return rows
 
 
