@@ -1,7 +1,32 @@
 
 ## 2026-05-01 (Friday)
 
+### Trading
+- Late to trading today. Edi lifting 65.5 ... dont miss it for a penny
 
+### Notes
+- Outages
+- Clouds / temps in the south
+- Nukes coming back
+
+### Reading
+- #### Gridstatus note on congestion
+Unsettled conditions are expected across the East Coast tomorrow as storms are forecasted to form along the leading edge of a cold front.
+
+Low-level cloud coverage, aided by precipitation, is expected to lead to flat daytime load levels due to amplified lighting load and suppressed BTM solar. The main risk expected here will primarily be energy price strength, particularly in PJM.
+
+Some W-E flow-driven congestion is a possibility tomorrow with moderate forecasted wind generation and increasingly clear skies in Illinois, which will likely drive suppressed COMED clears.
+
+Cloud coverage in Southern Virginia will be important to watch as sparser clouds, and thus increased solar, could keep pressure on Cloud XF, especially as this region is still expected to see cooling load develop over the afternoon.
+
+- #### Gridstatus note on congestion
+As expected, Ladysmith CB has begun to bind in PJM this morning, due in part to outages on the Elmont 500kV network that began today.
+
+Dominion Hub is seeing increased downside, with increased bearish Day-Ahead congestion coverage and negative real-time pricing, driven by both Ladysmith CB and Cloud XF.
+
+Notably, Ladysmith CB did not see any DA coverage, with much of the strong increase in negative congestion costs driven by the increase in Cloud XF, Remington XF, and constraints around Charlottesville.
+
+It does appear that some solar generation had started to curtail due to negative pricing, which could continue during the daytime and lead to an increase in bullish WHUB congestion of constraints like Conastone -Northwest beginning to bind due to the drop in solar.
 
 
 ## 2026-04-13 (Sunday)
