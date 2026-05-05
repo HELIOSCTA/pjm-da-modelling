@@ -11,6 +11,7 @@ days' HE h. Output is hour-keyed - 24 separate top-N selections produce
 Pool-fit z-score, NaN-aware Euclidean over the window, inverse-distance
 analog weighting normalized within each hour.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +20,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from da_models.common.configs import HOURS
 from da_models.like_day_model_knn import calendar as _calendar
 from da_models.like_day_model_knn import configs
 from da_models.like_day_model_knn.configs import ModelSpec
@@ -41,14 +43,23 @@ def _candidate_pool(
     exclude_holidays: bool = False,
     exclude_dates: list[str] | None = None,
     max_age_years: int | None = None,
+    funnel: _calendar.FunnelCounts | None = None,
 ) -> pd.DataFrame:
     work = pool.copy()
+    before_chrono = len(work)
     work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
+    if funnel is not None:
+        funnel.record(
+            "chronological cut",
+            f"date < target ({target_date})",
+            before=before_chrono,
+            after=len(work),
+        )
     if len(work) == 0:
         return work
-    if (
-        same_dow_group or exclude_holidays or exclude_dates or max_age_years
-    ) and (dates_meta is not None or max_age_years):
+    if (same_dow_group or exclude_holidays or exclude_dates or max_age_years) and (
+        dates_meta is not None or max_age_years
+    ):
         work = _calendar.apply_calendar_filter(
             pool=work,
             target_date=target_date,
@@ -58,6 +69,7 @@ def _candidate_pool(
             exclude_dates=exclude_dates,
             max_age_years=max_age_years,
             min_pool_size=min_pool_size,
+            funnel=funnel,
         )
         if len(work) == 0:
             return work
@@ -66,18 +78,38 @@ def _candidate_pool(
         doys = pd.to_datetime(work["date"]).dt.dayofyear.to_numpy(dtype=float)
         keep = _circular_day_distance(doys, target_doy) <= float(season_window_days)
         candidates = work[keep]
+        before_season = len(work)
         if len(candidates) >= min_pool_size:
             work = candidates.copy()
             logger.info(
                 "pjm_rto_hourly season window +/-%dd kept %d candidates",
-                season_window_days, len(work),
+                season_window_days,
+                len(work),
             )
+            if funnel is not None:
+                funnel.record(
+                    "season window",
+                    f"+/-{season_window_days}d (DOY circular)",
+                    before=before_season,
+                    after=len(work),
+                )
         else:
             logger.warning(
                 "pjm_rto_hourly season window kept only %d candidates "
                 "(< min %d) - falling back to full history (%d)",
-                len(candidates), min_pool_size, len(work),
+                len(candidates),
+                min_pool_size,
+                len(work),
             )
+            if funnel is not None:
+                funnel.record(
+                    "season window",
+                    f"+/-{season_window_days}d (DOY circular)",
+                    before=before_season,
+                    after=before_season,
+                    relaxed=True,
+                    would_survive=len(candidates),
+                )
     return work
 
 
@@ -87,8 +119,13 @@ def _candidate_pool(
 # wind_h1..wind_h24). Adding a new windowed feature family means: define
 # domain cols as ``{stem}_h{HE}``, name groups ``{stem}_*``, and add the
 # stem here.
-_WINDOWED_GROUP_PREFIXES: tuple[str, ...] = ("load_", "solar_", "wind_")
-_WINDOWED_COL_STEMS: tuple[str, ...] = ("load", "solar", "wind")
+_WINDOWED_GROUP_PREFIXES: tuple[str, ...] = (
+    "load_",
+    "solar_",
+    "wind_",
+    "net_load_",
+)
+_WINDOWED_COL_STEMS: tuple[str, ...] = ("load", "solar", "wind", "net_load")
 
 
 def _is_windowed_group(group_name: str) -> bool:
@@ -124,8 +161,7 @@ def _effective_weights(
     bad = set(override) - valid
     if bad:
         raise ValueError(
-            f"Unknown weight-override keys: {sorted(bad)}. "
-            f"Valid: {sorted(valid)}"
+            f"Unknown weight-override keys: {sorted(bad)}. Valid: {sorted(valid)}"
         )
     raw = {g: float(override.get(g, 0.0)) for g in valid}
     total = sum(raw.values())
@@ -135,7 +171,9 @@ def _effective_weights(
 
 
 def _combined_non_load_distance(
-    spec: ModelSpec, pool: pd.DataFrame, query: pd.Series,
+    spec: ModelSpec,
+    pool: pd.DataFrame,
+    query: pd.Series,
     weights: dict[str, float],
 ) -> tuple[np.ndarray | None, float]:
     """Weighted-average per-group RMS-z distance over broadcast (non-windowed) groups.
@@ -171,7 +209,7 @@ def _combined_non_load_distance(
         query_z = (query_vals - means) / stds
         diff = query_z - pool_z
         mask = ~np.isnan(diff)
-        sq = np.where(mask, diff ** 2, 0.0)
+        sq = np.where(mask, diff**2, 0.0)
         n_valid = mask.sum(axis=1)
         with np.errstate(invalid="ignore", divide="ignore"):
             d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.nan)
@@ -200,6 +238,7 @@ def find_twins(
     max_age_years: int | None = None,
     recency_half_life_years: float | None = None,
     feature_group_weights_override: dict[str, float] | None = None,
+    funnel: _calendar.FunnelCounts | None = None,
 ) -> pd.DataFrame:
     """Per-hour analog table. Shape: 24 * n_analogs rows.
 
@@ -208,22 +247,40 @@ def find_twins(
     ``feature_group_weights_override`` (when given) replaces the
     spec-derived weights for this call only. Validated and renormalized
     via ``_effective_weights``.
+
+    ``funnel`` (when given) accumulates per-stage candidate counts as the
+    pool is filtered down — see ``calendar.FunnelCounts``. Stage 0 (raw
+    history) is recorded here; subsequent stages are recorded inside
+    ``_candidate_pool`` and ``apply_calendar_filter``.
     """
     out_cols = ["hour_ending", "rank", "date", "distance", "weight", "lmp"]
 
     weights = _effective_weights(spec, feature_group_weights_override)
 
+    if funnel is not None:
+        funnel.record(
+            "raw history",
+            f"build_pool: {len(pool)} dates with feature coverage",
+            before=len(pool),
+            after=len(pool),
+        )
+
     work = _candidate_pool(
-        pool, target_date, season_window_days, min_pool_size,
+        pool,
+        target_date,
+        season_window_days,
+        min_pool_size,
         dates_meta=dates_meta,
         same_dow_group=same_dow_group,
         exclude_holidays=exclude_holidays,
         exclude_dates=exclude_dates,
         max_age_years=max_age_years,
+        funnel=funnel,
     )
     if len(work) == 0:
         logger.warning(
-            "pjm_rto_hourly: pool has no rows before target_date=%s", target_date,
+            "pjm_rto_hourly: pool has no rows before target_date=%s",
+            target_date,
         )
         return pd.DataFrame(columns=out_cols)
 
@@ -233,16 +290,16 @@ def find_twins(
     # Pre-compute broadcast (non-windowed) groups' combined distance (constant
     # across hours). Windowed groups (load/solar/wind) are evaluated per HE
     # below.
-    non_load_dist, non_load_weight = _combined_non_load_distance(spec, work, query, weights)
-    load_weight = sum(
-        float(w) for g, w in weights.items() if _is_windowed_group(g)
+    non_load_dist, non_load_weight = _combined_non_load_distance(
+        spec, work, query, weights
     )
+    load_weight = sum(float(w) for g, w in weights.items() if _is_windowed_group(g))
     if load_weight <= 0:
         # No windowed groups in the spec; treat the dynamic window as the full
         # remaining weight so distances stay finite.
         load_weight = max(0.0, 1.0 - non_load_weight)
 
-    for h in configs.HOURS:
+    for h in HOURS:
         cols = _window_columns(h, flt_radius)
         cols_present = [c for c in cols if c in work.columns and c in query.index]
         if not cols_present:
@@ -259,7 +316,7 @@ def find_twins(
 
         diff = query_z - pool_z
         mask = ~np.isnan(diff)
-        sq = np.where(mask, diff ** 2, 0.0)
+        sq = np.where(mask, diff**2, 0.0)
         n_valid = mask.sum(axis=1)
         with np.errstate(invalid="ignore", divide="ignore"):
             d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.inf)
@@ -289,7 +346,9 @@ def find_twins(
         eps = 1e-6
         inv_dist = 1.0 / (d_top + eps)
         top_dates = work.iloc[[int(i) for i in order]]["date"].to_list()
-        decay = _calendar.age_decay_weights(top_dates, target_date, recency_half_life_years)
+        decay = _calendar.age_decay_weights(
+            top_dates, target_date, recency_half_life_years
+        )
         raw = inv_dist * decay
         if raw.sum() <= 0:
             weights = np.full(len(d_top), 1.0 / max(1, len(d_top)))
@@ -299,13 +358,17 @@ def find_twins(
         lmp_col = f"lmp_h{h}"
         for rank, (idx_arr, dist, w) in enumerate(zip(order, d_top, weights), start=1):
             row = work.iloc[int(idx_arr)]
-            rows.append({
-                "hour_ending": h,
-                "rank": rank,
-                "date": row["date"],
-                "distance": float(dist),
-                "weight": float(w),
-                "lmp": float(row.get(lmp_col, np.nan)) if lmp_col in row.index else float("nan"),
-            })
+            rows.append(
+                {
+                    "hour_ending": h,
+                    "rank": rank,
+                    "date": row["date"],
+                    "distance": float(dist),
+                    "weight": float(w),
+                    "lmp": float(row.get(lmp_col, np.nan))
+                    if lmp_col in row.index
+                    else float("nan"),
+                }
+            )
 
     return pd.DataFrame(rows, columns=out_cols)
