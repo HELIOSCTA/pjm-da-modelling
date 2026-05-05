@@ -105,7 +105,7 @@ _RS: str = Colors.RESET if _COLOR_ON else ""
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
 TARGET_DATE: date | None = date(2026, 5, 6)
-MODEL_NAME: str = configs.PJM_RTO_HOURLY_FULL_SPEC.name
+MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
 HUB: str = configs.HUB
 FEATURES: tuple[str, ...] = ("load", "solar", "wind", "net_load")
 

@@ -81,7 +81,7 @@ TARGET_DATE: date | None = date(2026, 5, 6)
 # (forecast | RT) decision per (region, date) — net_load is read directly
 # from the pool, not derived from load/solar/wind, eliminating the
 # cross-source mixing artifact.
-MODEL_NAME: str = configs.PJM_RTO_HOURLY_FULL_SPEC.name
+MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
 HUB: str = configs.HUB
 
 # Within-day features to score. All map to pool columns

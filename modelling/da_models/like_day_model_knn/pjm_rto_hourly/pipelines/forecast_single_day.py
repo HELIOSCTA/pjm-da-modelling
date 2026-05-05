@@ -64,8 +64,12 @@ from da_models.like_day_model_knn.pjm_rto_hourly.printers import (  # noqa: E402
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
 TARGET_DATE: date | None = None  # None -> tomorrow (date.today() + 1d)
-MODEL_NAME: str = configs.PJM_RTO_HOURLY_SPEC.name
-FLT_RADIUS: int = configs.PJM_RTO_HOURLY_SPEC.flt_radius
+# Sunny-aligned spec: load + load_ramp_1h + load_ramp_3h + solar + wind +
+# net_load + temperature (windowed) plus outage + gas + calendar (broadcast).
+# Replaces the legacy 5-feature ``pjm_rto_hourly`` spec — see CLAUDE.md /
+# domains.py for the rationale (path B sunny alignment).
+MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
+FLT_RADIUS: int = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.flt_radius
 N_ANALOGS: int | None = None  # None -> configs.DEFAULT_N_ANALOGS
 SEASON_WINDOW_DAYS: int | None = None  # None -> configs.SEASON_WINDOW_DAYS
 MIN_POOL_SIZE: int | None = None  # None -> configs.MIN_POOL_SIZE

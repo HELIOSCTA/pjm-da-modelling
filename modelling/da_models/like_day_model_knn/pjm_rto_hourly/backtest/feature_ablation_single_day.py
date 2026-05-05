@@ -114,7 +114,7 @@ TARGET_DATE: date | None = date(2026, 5, 6)
 # FULL spec includes net_load_h1..net_load_h24 alongside load/solar/wind so
 # net_load can be ablated as a peer of the components. Production today uses
 # the 5-feature ``pjm_rto_hourly`` spec; switch only after ablation justifies it.
-MODEL_NAME: str = configs.PJM_RTO_HOURLY_FULL_SPEC.name
+MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
 HUB: str = configs.HUB
 
 # Map ablation_name -> {nan_cols: [...]} OR {zero_weight_groups: [...]}.

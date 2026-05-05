@@ -26,6 +26,7 @@ Usage::
     python -m da_models.like_day_model_knn.pjm_rto_hourly.backtest.single_day_backtest
     python modelling/da_models/like_day_model_knn/pjm_rto_hourly/backtest/single_day_backtest.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -49,7 +50,8 @@ from da_models.like_day_model_knn.pjm_rto_hourly.backtest.scenarios import (  # 
     SCENARIOS,
 )
 from da_models.like_day_model_knn.pjm_rto_hourly.builder import (  # noqa: E402
-    build_pool, build_query_row,
+    build_pool,
+    build_query_row,
 )
 from da_models.common.forecast.output import actuals_from_pool  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.metrics import (  # noqa: E402
@@ -61,13 +63,16 @@ from da_models.like_day_model_knn.pjm_rto_hourly.pipelines.forecast_single_day i
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
-TARGET_DATE: date | None = date(2026, 5, 6)   # None -> yesterday (date.today() - 1d)
-MODEL_NAME: str = configs.PJM_RTO_HOURLY_SPEC.name
+TARGET_DATE: date | None = date(2026, 5, 6)  # None -> yesterday (date.today() - 1d)
+MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
 # Scenarios live in scenarios.py (shared with param_sweep). Edit there
 # to add/remove perturbations; both backtest scripts pick up the change.
 
 _RUN_KWARGS_PASSTHROUGH: tuple[str, ...] = (
-    "flt_radius", "n_analogs", "season_window_days", "min_pool_size",
+    "flt_radius",
+    "n_analogs",
+    "season_window_days",
+    "min_pool_size",
 )
 
 
@@ -100,18 +105,22 @@ def _execute_scenario(
         result = forecast_run(
             target_date=target_date,
             model_name=model_name,
-            pool=pool, query=query, dates_meta=dates_meta,
+            pool=pool,
+            query=query,
+            dates_meta=dates_meta,
             feature_group_weights_override=scenario.get("weights"),
             quiet=True,
             write_analog_store=False,
             **_scenario_overrides_for_run(scenario),
         )
     except Exception as exc:
-        base.update({
-            "status": "failed",
-            "error_message": f"{type(exc).__name__}: {exc}",
-            "duration_s": round(time.perf_counter() - started, 3),
-        })
+        base.update(
+            {
+                "status": "failed",
+                "error_message": f"{type(exc).__name__}: {exc}",
+                "duration_s": round(time.perf_counter() - started, 3),
+            }
+        )
         return base
 
     metrics = result.get("metrics") or {}
@@ -119,32 +128,44 @@ def _execute_scenario(
     quantiles_table = result.get("quantiles_table")
     forecast_row = (
         output_table[output_table["Type"] == "Forecast"].iloc[0]
-        if output_table is not None and len(output_table) else None
+        if output_table is not None and len(output_table)
+        else None
     )
     actual_row = (
         output_table[output_table["Type"] == "Actual"].iloc[0]
-        if output_table is not None and (output_table["Type"] == "Actual").any() else None
+        if output_table is not None and (output_table["Type"] == "Actual").any()
+        else None
     )
     error_row = (
         output_table[output_table["Type"] == "Error"].iloc[0]
-        if output_table is not None and (output_table["Type"] == "Error").any() else None
+        if output_table is not None and (output_table["Type"] == "Error").any()
+        else None
     )
 
     # Per-HE arrays for the hourly metrics table
     hourly_forecast: list[float | None] = (
-        [float(forecast_row[f"HE{h}"]) if pd.notna(forecast_row[f"HE{h}"]) else None
-         for h in range(1, 25)]
-        if forecast_row is not None else [None] * 24
+        [
+            float(forecast_row[f"HE{h}"]) if pd.notna(forecast_row[f"HE{h}"]) else None
+            for h in range(1, 25)
+        ]
+        if forecast_row is not None
+        else [None] * 24
     )
     hourly_actual: list[float | None] = (
-        [float(actual_row[f"HE{h}"]) if pd.notna(actual_row[f"HE{h}"]) else None
-         for h in range(1, 25)]
-        if actual_row is not None else [None] * 24
+        [
+            float(actual_row[f"HE{h}"]) if pd.notna(actual_row[f"HE{h}"]) else None
+            for h in range(1, 25)
+        ]
+        if actual_row is not None
+        else [None] * 24
     )
     hourly_abs_error: list[float | None] = (
-        [abs(float(error_row[f"HE{h}"])) if pd.notna(error_row[f"HE{h}"]) else None
-         for h in range(1, 25)]
-        if error_row is not None else [None] * 24
+        [
+            abs(float(error_row[f"HE{h}"])) if pd.notna(error_row[f"HE{h}"]) else None
+            for h in range(1, 25)
+        ]
+        if error_row is not None
+        else [None] * 24
     )
 
     # Per-HE 90% PI coverage (from P05/P95 rows in the quantiles table)
@@ -163,43 +184,57 @@ def _execute_scenario(
                     continue
                 hourly_in_90pi[i] = lo <= a <= hi
 
-    base.update({
-        "n_analogs_used": result.get("n_analogs_used"),
-        "mae": metrics.get("mae"),
-        "rmse": metrics.get("rmse"),
-        "mape": metrics.get("mape"),
-        "rmae": metrics.get("rmae"),
-        "crps": metrics.get("crps"),
-        "mean_pinball": metrics.get("mean_pinball"),
-        "coverage_80pct": metrics.get("coverage_80pct"),
-        "coverage_90pct": metrics.get("coverage_90pct"),
-        "coverage_98pct": metrics.get("coverage_98pct"),
-        "sharpness_90pct": metrics.get("sharpness_90pct"),
-        "forecast_onpeak": float(forecast_row["OnPeak"]) if forecast_row is not None else None,
-        "forecast_offpeak": float(forecast_row["OffPeak"]) if forecast_row is not None else None,
-        "forecast_flat": float(forecast_row["Flat"]) if forecast_row is not None else None,
-        "hourly_forecast": hourly_forecast,
-        "hourly_actual": hourly_actual,
-        "hourly_abs_error": hourly_abs_error,
-        "hourly_in_90pi": hourly_in_90pi,
-        "output_table": output_table,
-        "duration_s": round(time.perf_counter() - started, 3),
-    })
+    base.update(
+        {
+            "n_analogs_used": result.get("n_analogs_used"),
+            "mae": metrics.get("mae"),
+            "rmse": metrics.get("rmse"),
+            "mape": metrics.get("mape"),
+            "rmae": metrics.get("rmae"),
+            "crps": metrics.get("crps"),
+            "mean_pinball": metrics.get("mean_pinball"),
+            "coverage_80pct": metrics.get("coverage_80pct"),
+            "coverage_90pct": metrics.get("coverage_90pct"),
+            "coverage_98pct": metrics.get("coverage_98pct"),
+            "sharpness_90pct": metrics.get("sharpness_90pct"),
+            "forecast_onpeak": float(forecast_row["OnPeak"])
+            if forecast_row is not None
+            else None,
+            "forecast_offpeak": float(forecast_row["OffPeak"])
+            if forecast_row is not None
+            else None,
+            "forecast_flat": float(forecast_row["Flat"])
+            if forecast_row is not None
+            else None,
+            "hourly_forecast": hourly_forecast,
+            "hourly_actual": hourly_actual,
+            "hourly_abs_error": hourly_abs_error,
+            "hourly_in_90pi": hourly_in_90pi,
+            "output_table": output_table,
+            "duration_s": round(time.perf_counter() - started, 3),
+        }
+    )
     return base
 
 
 def _print_comparison(
-    rows: list[dict], target_date: date, actuals_summary: dict[str, float],
+    rows: list[dict],
+    target_date: date,
+    actuals_summary: dict[str, float],
 ) -> None:
     df = pd.DataFrame(rows)
     ok = df[df["status"] == "ok"].copy()
     failed = df[df["status"] == "failed"]
 
     print("\n" + "=" * 110)
-    print(f"  SINGLE-DAY BACKTEST — {target_date} ({target_date.strftime('%a')})  |  Hub: WESTERN HUB")
-    print(f"  Actuals  OnPeak={actuals_summary['onpeak']:>7.2f}  "
-          f"OffPeak={actuals_summary['offpeak']:>7.2f}  "
-          f"Flat={actuals_summary['flat']:>7.2f}  ($/MWh)")
+    print(
+        f"  SINGLE-DAY BACKTEST — {target_date} ({target_date.strftime('%a')})  |  Hub: WESTERN HUB"
+    )
+    print(
+        f"  Actuals  OnPeak={actuals_summary['onpeak']:>7.2f}  "
+        f"OffPeak={actuals_summary['offpeak']:>7.2f}  "
+        f"Flat={actuals_summary['flat']:>7.2f}  ($/MWh)"
+    )
     print(f"  Scenarios: {len(df)} ({len(ok)} ok, {len(failed)} failed)")
     print("=" * 110)
 
@@ -212,12 +247,21 @@ def _print_comparison(
         else:
             ok["delta_mae_vs_default"] = None
 
-        ok = ok.sort_values("mae", ascending=True, na_position="last").reset_index(drop=True)
+        ok = ok.sort_values("mae", ascending=True, na_position="last").reset_index(
+            drop=True
+        )
 
         cols = [
-            "scenario_name", "mae", "rmse", "rmae", "crps",
-            "coverage_90pct", "sharpness_90pct",
-            "forecast_onpeak", "forecast_offpeak", "forecast_flat",
+            "scenario_name",
+            "mae",
+            "rmse",
+            "rmae",
+            "crps",
+            "coverage_90pct",
+            "sharpness_90pct",
+            "forecast_onpeak",
+            "forecast_offpeak",
+            "forecast_flat",
             "delta_mae_vs_default",
         ]
         formatters = {
@@ -230,7 +274,9 @@ def _print_comparison(
             "forecast_onpeak": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
             "forecast_offpeak": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
             "forecast_flat": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
-            "delta_mae_vs_default": lambda v: f"{v:+7.2f}" if pd.notna(v) else "       -",
+            "delta_mae_vs_default": lambda v: (
+                f"{v:+7.2f}" if pd.notna(v) else "       -"
+            ),
         }
 
         with pd.option_context("display.max_rows", None, "display.width", None):
@@ -239,8 +285,10 @@ def _print_comparison(
 
         if len(ok) >= 2:
             best = ok.iloc[0]
-            print(f"\n  Best by MAE: {best['scenario_name']} "
-                  f"(MAE ${best['mae']:.2f}, rMAE {best['rmae']:.3f})")
+            print(
+                f"\n  Best by MAE: {best['scenario_name']} "
+                f"(MAE ${best['mae']:.2f}, rMAE {best['rmae']:.3f})"
+            )
 
     if len(failed) > 0:
         print("\n  Failed scenarios:")
@@ -267,9 +315,9 @@ _RESET_FG = Fore.RESET
 # off ... mramp ... valley ... eramp ... off, matching the typical
 # PJM daily price-shape vocabulary.
 _REGIME_LABEL: dict[str, str] = {
-    "offpeak":      "off",
+    "offpeak": "off",
     "morning_ramp": "m.ramp",
-    "valley":       "valley",
+    "valley": "valley",
     "evening_ramp": "e.ramp",
 }
 
@@ -366,15 +414,15 @@ def _summarize_regime_windows(labels: list[str]) -> str:
     for regime in ("offpeak", "morning_ramp", "valley", "evening_ramp"):
         if not runs[regime]:
             continue
-        ranges = ",".join(
-            f"HE{s}-{e}" if s != e else f"HE{s}" for s, e in runs[regime]
-        )
+        ranges = ",".join(f"HE{s}-{e}" if s != e else f"HE{s}" for s, e in runs[regime])
         parts.append(f"{_REGIME_LABEL[regime]}={ranges}")
     return "  ".join(parts)
 
 
 def _regime_mae(
-    actual: np.ndarray, forecast: np.ndarray, labels: list[str],
+    actual: np.ndarray,
+    forecast: np.ndarray,
+    labels: list[str],
 ) -> dict[str, float]:
     """Mean absolute error within each regime. NaN for empty regimes."""
     out: dict[str, float] = {}
@@ -418,42 +466,59 @@ def _print_metric_breakdown(rows: list[dict], target_date: date) -> None:
         forecast = np.asarray(forecast_list, dtype=float)
         shape = evaluate_shape(actual, forecast)
         regime = _regime_mae(actual, forecast, regime_labels)
-        metric_rows.append({
-            "scenario_name": r["scenario_name"],
-            "variogm":  shape["variogram_score_p05"],
-            "pkErr":    shape["peak_height_err"],
-            "vlErr":    shape["valley_height_err"],
-            "tPk":      shape["time_of_peak_err"],
-            "tVl":      shape["time_of_valley_err"],
-            "pkWinMAE": shape["peak_window_mae"],
-            "fdMAE":    shape["first_diff_mae"],
-            "off":      regime["offpeak"],
-            "mramp":    regime["morning_ramp"],
-            "valley":   regime["valley"],
-            "eramp":    regime["evening_ramp"],
-        })
+        metric_rows.append(
+            {
+                "scenario_name": r["scenario_name"],
+                "variogm": shape["variogram_score_p05"],
+                "pkErr": shape["peak_height_err"],
+                "vlErr": shape["valley_height_err"],
+                "tPk": shape["time_of_peak_err"],
+                "tVl": shape["time_of_valley_err"],
+                "pkWinMAE": shape["peak_window_mae"],
+                "fdMAE": shape["first_diff_mae"],
+                "off": regime["offpeak"],
+                "mramp": regime["morning_ramp"],
+                "valley": regime["valley"],
+                "eramp": regime["evening_ramp"],
+            }
+        )
 
-    df = pd.DataFrame(metric_rows).sort_values(
-        "variogm", ascending=True, na_position="last",
-    ).reset_index(drop=True)
+    df = (
+        pd.DataFrame(metric_rows)
+        .sort_values(
+            "variogm",
+            ascending=True,
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
 
     cols = [
         "scenario_name",
-        "variogm", "pkErr", "vlErr", "tPk", "tVl", "pkWinMAE", "fdMAE",
-        "off", "mramp", "valley", "eramp",
+        "variogm",
+        "pkErr",
+        "vlErr",
+        "tPk",
+        "tVl",
+        "pkWinMAE",
+        "fdMAE",
+        "off",
+        "mramp",
+        "valley",
+        "eramp",
     ]
     formatters = {
-        "variogm":  lambda v: f"{v:>7.4f}" if pd.notna(v) else "    n/a",
-        "pkErr":    lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
-        "vlErr":    lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
-        "tPk":      lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
-        "tVl":      lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
+        "variogm": lambda v: f"{v:>7.4f}" if pd.notna(v) else "    n/a",
+        "pkErr": lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
+        "vlErr": lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
+        "tPk": lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
+        "tVl": lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
         "pkWinMAE": lambda v: f"{v:>8.2f}" if pd.notna(v) else "     n/a",
-        "fdMAE":    lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
-        "off":      lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
-        "mramp":    lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
-        "valley":   lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
-        "eramp":    lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "fdMAE": lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "off": lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "mramp": lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "valley": lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
+        "eramp": lambda v: f"{v:>6.2f}" if pd.notna(v) else "   n/a",
     }
 
     a_max = float(np.max(actual))
@@ -462,10 +527,18 @@ def _print_metric_breakdown(rows: list[dict], target_date: date) -> None:
     a_argmin = int(np.argmin(actual))
 
     print("=" * 140)
-    print(f"  METRIC BREAKDOWN — {target_date}  (signed err = forecast - actual; sorted by variogram ascending)")
-    print(f"  Actuals: peak ${a_max:.2f} at HE{a_argmax + 1}   valley ${a_min:.2f} at HE{a_argmin + 1}")
-    print(f"  Regime windows (auto-detected from actual): {_summarize_regime_windows(regime_labels)}")
-    print(f"  variogm = shape KPI; *MAE = $/MWh within window; t* = signed timing err in hours")
+    print(
+        f"  METRIC BREAKDOWN — {target_date}  (signed err = forecast - actual; sorted by variogram ascending)"
+    )
+    print(
+        f"  Actuals: peak ${a_max:.2f} at HE{a_argmax + 1}   valley ${a_min:.2f} at HE{a_argmin + 1}"
+    )
+    print(
+        f"  Regime windows (auto-detected from actual): {_summarize_regime_windows(regime_labels)}"
+    )
+    print(
+        "  variogm = shape KPI; *MAE = $/MWh within window; t* = signed timing err in hours"
+    )
     print("=" * 140)
     print()
     with pd.option_context("display.max_rows", None, "display.width", None):
@@ -490,9 +563,7 @@ def _print_per_scenario_detail(rows: list[dict], target_date: date) -> None:
         return
 
     actual_list = ok[0].get("hourly_actual")
-    have_actual = (
-        actual_list is not None and not any(v is None for v in actual_list)
-    )
+    have_actual = actual_list is not None and not any(v is None for v in actual_list)
     actual_arr = np.asarray(actual_list, dtype=float) if have_actual else None
     actual_argmax = int(np.argmax(actual_arr)) if have_actual else None
     actual_argmin = int(np.argmin(actual_arr)) if have_actual else None
@@ -518,23 +589,26 @@ def _print_per_scenario_detail(rows: list[dict], target_date: date) -> None:
             continue
 
         forecast_list = r.get("hourly_forecast")
-        have_forecast = (
-            forecast_list is not None and not any(v is None for v in forecast_list)
+        have_forecast = forecast_list is not None and not any(
+            v is None for v in forecast_list
         )
-        forecast_arr = (
-            np.asarray(forecast_list, dtype=float) if have_forecast else None
-        )
+        forecast_arr = np.asarray(forecast_list, dtype=float) if have_forecast else None
         forecast_argmax = int(np.argmax(forecast_arr)) if have_forecast else None
         forecast_argmin = int(np.argmin(forecast_arr)) if have_forecast else None
         shape = (
             evaluate_shape(actual_arr, forecast_arr)
-            if have_actual and have_forecast else None
+            if have_actual and have_forecast
+            else None
         )
 
         print("=" * 120)
-        print(f"  HOURLY DETAIL: {r['scenario_name']}  —  Western Hub ($/MWh) — {target_date}")
+        print(
+            f"  HOURLY DETAIL: {r['scenario_name']}  —  Western Hub ($/MWh) — {target_date}"
+        )
         if r.get("mae") is not None:
-            print(f"  MAE: ${r['mae']:.2f}/MWh  |  RMSE: ${r['rmse']:.2f}/MWh  |  rMAE: {r['rmae']:.3f}")
+            print(
+                f"  MAE: ${r['mae']:.2f}/MWh  |  RMSE: ${r['rmse']:.2f}/MWh  |  rMAE: {r['rmae']:.3f}"
+            )
         print("=" * 120)
         print(header)
         print("-" * sep_len)
@@ -657,8 +731,10 @@ def run(
     t0 = time.perf_counter()
     pool = build_pool(spec=spec_for_build, cache_dir=configs.CACHE_DIR)
     dates_meta = _shared.load_dates_daily(configs.CACHE_DIR)
-    print(f"[backtest {resolved_date}] pool built in {time.perf_counter() - t0:.1f}s "
-          f"({len(pool)} rows)")
+    print(
+        f"[backtest {resolved_date}] pool built in {time.perf_counter() - t0:.1f}s "
+        f"({len(pool)} rows)"
+    )
 
     actuals = actuals_from_pool(pool, resolved_date)
     if actuals is None:
@@ -675,7 +751,9 @@ def run(
 
     print(f"[backtest {resolved_date}] building query for target...")
     query = build_query_row(
-        target_date=resolved_date, cache_dir=configs.CACHE_DIR, spec=spec_for_build,
+        target_date=resolved_date,
+        cache_dir=configs.CACHE_DIR,
+        spec=spec_for_build,
     )
 
     print(f"[backtest {resolved_date}] running {len(scenarios)} scenario(s)...")
@@ -685,14 +763,22 @@ def run(
             scenario_name=scenario_name,
             scenario=scenario,
             target_date=resolved_date,
-            pool=pool, query=query, dates_meta=dates_meta,
+            pool=pool,
+            query=query,
+            dates_meta=dates_meta,
             model_name=model_name,
         )
         tag = "OK" if row["status"] == "ok" else "FAIL"
         mae = row.get("mae")
-        mae_str = f"MAE={mae:.2f}" if isinstance(mae, (int, float)) and pd.notna(mae) else "MAE=n/a"
-        print(f"[backtest {resolved_date}]   {scenario_name:<24} {tag:<4} "
-              f"{mae_str}  ({row['duration_s']:.2f}s)")
+        mae_str = (
+            f"MAE={mae:.2f}"
+            if isinstance(mae, (int, float)) and pd.notna(mae)
+            else "MAE=n/a"
+        )
+        print(
+            f"[backtest {resolved_date}]   {scenario_name:<24} {tag:<4} "
+            f"{mae_str}  ({row['duration_s']:.2f}s)"
+        )
         rows.append(row)
 
     _print_comparison(rows, resolved_date, actuals_summary)
