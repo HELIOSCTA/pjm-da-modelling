@@ -141,6 +141,7 @@ _WINDOWED_GROUP_PREFIXES: tuple[str, ...] = (
     "wind_",
     "net_load_",
     "temp_",
+    "renewable_",
 )
 _WINDOWED_COL_STEMS: tuple[str, ...] = (
     "load",
@@ -463,7 +464,16 @@ def find_twins(
                     float(recency_half_life_days),
                 )
 
-        order = np.argsort(d)
+        # Sort by (distance asc, date desc) so newer dates win on equal
+        # distance — sunny parity (sunny.engine.py:210 uses ``ascending=
+        # [True, False]`` on [distance, date]). ``np.lexsort`` reads keys
+        # right-to-left as primary→secondary, ascending; pass ``-date_ord``
+        # to invert the secondary sort to descending.
+        date_ord = np.array(
+            [pd.Timestamp(d_).toordinal() for d_ in work["date"]],
+            dtype=np.int64,
+        )
+        order = np.lexsort((-date_ord, d))
         order = order[np.isfinite(d[order])]
         order = order[:n_analogs]
         if len(order) == 0:

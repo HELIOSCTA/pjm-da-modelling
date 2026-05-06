@@ -298,35 +298,46 @@ def apply_calendar_filter(
         how="left",
     )
 
-    # 2. holiday exclusion (only when target is itself non-holiday)
+    # 2. holiday filter — mirror target (sunny parity). When target is a
+    # non-holiday, restrict candidates to non-holidays. When target IS a
+    # holiday, restrict to holiday candidates (so the rare holiday-target
+    # case picks analogs of OTHER holidays, not random weekday). Same
+    # ``min_pool_size`` relax-on-undershoot fallback as before.
     target_is_holiday = int(target_meta.get("is_nerc_holiday", 0) or 0) == 1
-    if exclude_holidays and not target_is_holiday and "is_nerc_holiday" in work.columns:
+    if exclude_holidays and "is_nerc_holiday" in work.columns:
         before = len(work)
-        candidates = work[work["is_nerc_holiday"].fillna(0).astype(int) != 1]
+        holiday_int = work["is_nerc_holiday"].fillna(0).astype(int)
+        if target_is_holiday:
+            candidates = work[holiday_int == 1]
+            detail = "exclude_holidays=True (target IS holiday — keep holidays only)"
+        else:
+            candidates = work[holiday_int != 1]
+            detail = "exclude_holidays=True (target is non-holiday)"
         if len(candidates) >= min_pool_size:
             work = candidates
             logger.info(
-                "calendar filter: dropped %d NERC holiday candidate(s), %d remain",
-                before - len(work),
+                "calendar filter: holiday filter (target_holiday=%s) kept %d, dropped %d",
+                target_is_holiday,
                 len(work),
+                before - len(work),
             )
             if funnel is not None:
                 funnel.record(
-                    "NERC holiday exclusion",
-                    "exclude_holidays=True (target is non-holiday)",
+                    "NERC holiday filter",
+                    detail,
                     before=before,
                     after=len(work),
                 )
         else:
             logger.warning(
-                "calendar filter: holiday exclusion would leave only %d (< min %d) - keeping holidays",
+                "calendar filter: holiday filter would leave only %d (< min %d) - relaxing",
                 len(candidates),
                 min_pool_size,
             )
             if funnel is not None:
                 funnel.record(
-                    "NERC holiday exclusion",
-                    "exclude_holidays=True (target is non-holiday)",
+                    "NERC holiday filter",
+                    detail,
                     before=before,
                     after=before,
                     relaxed=True,

@@ -37,7 +37,7 @@ SOLAR_HOURLY_COLS = [f"solar_h{h}" for h in range(1, 25)]
 WIND_HOURLY_COLS = [f"wind_h{h}" for h in range(1, 25)]
 NET_LOAD_HOURLY_COLS = [f"net_load_h{h}" for h in range(1, 25)]
 TEMP_HOURLY_COLS = [f"temp_h{h}" for h in range(1, 25)]
-OUTAGE_LEVEL_COLS = ["outage_total_mw", "outage_planned_mw", "outage_forced_mw"]
+OUTAGE_LEVEL_COLS = ["outage_total_mw"]  # sunny parity: total only
 GAS_LEVEL_COLS = ["gas_m3_avg"]
 CALENDAR_LEVEL_COLS = ["dow_sin", "dow_cos", "is_weekend"]
 
@@ -220,6 +220,56 @@ WIND_PROFILE = FeatureDomain(
 )
 
 
+# ── renewable_profile (combined solar+wind, sunny parity) ───────────────
+# Both stems in a single ``renewable_level`` feature group. Sunny's
+# ``renewable_at_hour_scalar`` does the same — solar and wind share one
+# weight and one per-group distance, so the engine doesn't double-count
+# renewable signal vs ours where solar/wind were separately weighted.
+# Underlying cols still named solar_h*/wind_h* so existing windowed-
+# stem registries (engine._WINDOWED_COL_STEMS) keep emitting them.
+
+
+def _build_renewable_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_pjm_supply_demand_coalesced(cache_dir=cache_dir, region=RTO)
+    solar_pool = _hourly_value_profile(df, "solar_mw", output_prefix="solar")
+    wind_pool = _hourly_value_profile(df, "wind_mw", output_prefix="wind")
+    return solar_pool.merge(wind_pool, on="date", how="outer")
+
+
+def _build_renewable_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    solar_df = loader.load_solar_forecast(cache_dir=cache_dir).copy()
+    solar_df["date"] = _to_date(solar_df["date"])
+    solar_df = solar_df[solar_df["date"] == target_date]
+    val_s = "solar_forecast" if "solar_forecast" in solar_df.columns else "solar_mw"
+    solar_q = _hourly_value_profile(solar_df, val_s, output_prefix="solar")
+
+    wind_df = loader.load_wind_forecast(cache_dir=cache_dir).copy()
+    wind_df["date"] = _to_date(wind_df["date"])
+    wind_df = wind_df[wind_df["date"] == target_date]
+    val_w = "wind_forecast" if "wind_forecast" in wind_df.columns else "wind_mw"
+    wind_q = _hourly_value_profile(wind_df, val_w, output_prefix="wind")
+
+    return solar_q.merge(wind_q, on="date", how="outer")
+
+
+RENEWABLE_PROFILE = FeatureDomain(
+    name="renewable_profile",
+    description=(
+        "Combined solar+wind — 48 hourly cols (solar_h1..solar_h24, "
+        "wind_h1..wind_h24) as a single ``renewable_level`` group. "
+        "Mirrors sunny's renewable_at_hour_scalar: both stems share one "
+        "spec weight and one per-group distance, avoiding double-counting "
+        "of renewable signal vs the split solar_profile + wind_profile."
+    ),
+    feature_groups={"renewable_level": SOLAR_HOURLY_COLS + WIND_HOURLY_COLS},
+    feature_group_weights={"renewable_level": 1.5},
+    pool_builder=_build_renewable_profile_pool,
+    query_builder=_build_renewable_profile_query,
+)
+
+
 # ── rto_net_load_profile (per-HE level, identity-safe) ──────────────────
 # Net load = load - solar - wind. Pool reads from the unified supply-demand
 # coalescer so the four components share a single source decision per
@@ -283,21 +333,11 @@ def _outages_level_features(df_rto: pd.DataFrame) -> pd.DataFrame:
     if df_rto is None or len(df_rto) == 0:
         return pd.DataFrame(columns=["date"] + OUTAGE_LEVEL_COLS)
     date_col = "forecast_date" if "forecast_date" in df_rto.columns else "date"
-    df = df_rto[
-        [date_col, "total_outages_mw", "planned_outages_mw", "forced_outages_mw"]
-    ].copy()
-    df = df.rename(columns={date_col: "date"})
+    df = df_rto[[date_col, "total_outages_mw"]].copy()
+    df = df.rename(columns={date_col: "date", "total_outages_mw": "outage_total_mw"})
     df["date"] = _to_date(df["date"])
-    for c in ["total_outages_mw", "planned_outages_mw", "forced_outages_mw"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["outage_total_mw"] = pd.to_numeric(df["outage_total_mw"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-    df = df.rename(
-        columns={
-            "total_outages_mw": "outage_total_mw",
-            "planned_outages_mw": "outage_planned_mw",
-            "forced_outages_mw": "outage_forced_mw",
-        }
-    )
     return df[["date"] + OUTAGE_LEVEL_COLS]
 
 
@@ -324,8 +364,6 @@ def _build_outages_level_query(
             {
                 "date": target_date,
                 "outage_total_mw": float(row.get("total_outages_mw", np.nan)),
-                "outage_planned_mw": float(row.get("planned_outages_mw", np.nan)),
-                "outage_forced_mw": float(row.get("forced_outages_mw", np.nan)),
             }
         ]
     )[["date"] + OUTAGE_LEVEL_COLS]
@@ -333,7 +371,12 @@ def _build_outages_level_query(
 
 OUTAGES_LEVEL = FeatureDomain(
     name="outages_level",
-    description="RTO outages — 3 daily level cols (total/planned/forced MW). Broadcast across HEs.",
+    description=(
+        "RTO outages — total MW only (sunny parity). The planned/forced "
+        "split was dropped; sunny's outage_daily uses total only and the "
+        "split was inflating outage's per-group sum-Euclidean distance "
+        "(sqrt(3) vs sqrt(1)) without adding orthogonal signal."
+    ),
     feature_groups={"outage_level": OUTAGE_LEVEL_COLS},
     feature_group_weights={"outage_level": 1.5},
     pool_builder=_build_outages_level_pool,
@@ -432,16 +475,16 @@ LOAD_RAMPS_PROFILE = FeatureDomain(
     description=(
         "Derived intra-day load ramps — load_ramp_1h_h{HE} = load_h{HE} - "
         "load_h{HE-1}, load_ramp_3h_h{HE} = load_h{HE} - load_h{HE-3}. "
-        "Mirrors sunny's load_ramp_1h_at_hour / load_ramp_3h_at_hour. "
-        "HE=1 1h ramp and HE<=3 3h ramp are NaN (no in-day predecessor)."
+        "Both ramps share a single ``load_ramps`` feature group (sunny "
+        "parity — sunny's load_ramps_scalar combines load_ramp_1h_at_hour "
+        "and load_ramp_3h_at_hour into one per-group distance). HE=1 1h "
+        "ramp and HE<=3 3h ramp are NaN (no in-day predecessor)."
     ),
     feature_groups={
-        "load_ramp_1h": LOAD_RAMP_1H_HOURLY_COLS,
-        "load_ramp_3h": LOAD_RAMP_3H_HOURLY_COLS,
+        "load_ramps": LOAD_RAMP_1H_HOURLY_COLS + LOAD_RAMP_3H_HOURLY_COLS,
     },
     feature_group_weights={
-        "load_ramp_1h": 1.5,
-        "load_ramp_3h": 1.5,
+        "load_ramps": 1.5,
     },
     pool_builder=_build_load_ramps_profile_pool,
     query_builder=_build_load_ramps_profile_query,
@@ -546,6 +589,7 @@ DOMAIN_REGISTRY: dict[str, FeatureDomain] = {
     LOAD_RAMPS_PROFILE.name: LOAD_RAMPS_PROFILE,
     SOLAR_PROFILE.name: SOLAR_PROFILE,
     WIND_PROFILE.name: WIND_PROFILE,
+    RENEWABLE_PROFILE.name: RENEWABLE_PROFILE,
     RTO_NET_LOAD_PROFILE.name: RTO_NET_LOAD_PROFILE,
     TEMPERATURE_PROFILE.name: TEMPERATURE_PROFILE,
     OUTAGES_LEVEL.name: OUTAGES_LEVEL,

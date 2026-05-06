@@ -208,23 +208,27 @@ PJM_RTO_HOURLY_FULL_SPEC = ModelSpec(
 PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC = ModelSpec(
     name="pjm_rto_hourly_sunny_aligned",
     description=(
-        "Sunny feature set on the per-HE windowed engine: load + load_ramp_1h "
-        "+ load_ramp_3h + solar + wind + net_load + temperature (windowed) "
-        "and outage + gas + calendar (broadcast)."
+        "Sunny feature set on the per-HE engine. With ``flt_radius=0``, "
+        "windowed groups match scalar at the target HE only — sunny-equivalent. "
+        "Domains: load + load_ramps (combined 1h+3h) + renewable (combined "
+        "solar+wind) + net_load + temperature (windowed scalar) + outage "
+        "(total only) + gas + calendar (broadcast)."
     ),
     match_unit="hour",
     domains=(
         "rto_load_profile",
         "load_ramps_profile",
-        "solar_profile",
-        "wind_profile",
+        "renewable_profile",
         "rto_net_load_profile",
         "temperature_profile",
         "outages_level",
         "gas_level",
         "calendar_level",
     ),
-    flt_radius=1,
+    # flt_radius=0 makes the windowed Euclidean degenerate to a scalar
+    # match at the target HE (sunny-equivalent). Bump to 1 or 3 if the
+    # neighbor-hour smoothing earns its keep on a backtest.
+    flt_radius=0,
 )
 
 MODEL_REGISTRY: dict[str, ModelSpec] = {

@@ -134,10 +134,8 @@ _TEMP_COLS: list[str] = [f"temp_h{h}" for h in range(1, 25)]
 # stay populated regardless of which spec is selected.
 ABLATIONS: dict[str, dict] = {
     "load": {"nan_cols": _LOAD_COLS},
-    "load_ramp_1h": {"nan_cols": _LOAD_RAMP_1H_COLS},
-    "load_ramp_3h": {"nan_cols": _LOAD_RAMP_3H_COLS},
-    "solar": {"nan_cols": _SOLAR_COLS},
-    "wind": {"nan_cols": _WIND_COLS},
+    "load_ramps": {"nan_cols": _LOAD_RAMP_1H_COLS + _LOAD_RAMP_3H_COLS},
+    "renewable": {"nan_cols": _SOLAR_COLS + _WIND_COLS},
     "net_load": {"nan_cols": _NET_LOAD_COLS},
     "temp": {"nan_cols": _TEMP_COLS},
     "outage": {"zero_weight_groups": ["outage_level"]},
@@ -323,10 +321,15 @@ def _run_scenario(
 # ``load`` and ``net_load`` matches before ``load``. Required by
 # ``_stem_of`` below to assign each group to its most specific stem.
 _WINDOWED_STEMS_ORDERED: tuple[str, ...] = (
+    # Longest-prefix matches first so combined groups (load_ramps,
+    # renewable) resolve before falling through to single-stem matches
+    # (load, solar/wind kept for legacy specs).
+    "load_ramps",
     "load_ramp_1h",
     "load_ramp_3h",
     "net_load",
     "load",
+    "renewable",
     "solar",
     "wind",
     "temp",
