@@ -738,6 +738,77 @@ def print_forecast(table: pd.DataFrame, metrics: dict | None) -> None:
     print()
 
 
+_SHAPE_DISPLAY: tuple[tuple[str, str | None, str | None, str], ...] = (
+    ("block_mean_err", None, "block_mean_err", "+.2f"),
+    ("block_mean_abs_err", None, "block_mean_abs_err", ".2f"),
+    ("peak_height_err", "peak_height_err", "peak_height_err_onpeak", "+.2f"),
+    (
+        "peak_at_actual_hour_err",
+        "peak_at_actual_hour_err",
+        "peak_at_actual_hour_err_onpeak",
+        "+.2f",
+    ),
+    ("time_of_peak_err (h)", "time_of_peak_err", "time_of_peak_err_onpeak", "+.0f"),
+    ("valley_height_err", "valley_height_err", "valley_height_err_onpeak", "+.2f"),
+    (
+        "valley_at_actual_hour_err",
+        "valley_at_actual_hour_err",
+        "valley_at_actual_hour_err_onpeak",
+        "+.2f",
+    ),
+    (
+        "time_of_valley_err (h)",
+        "time_of_valley_err",
+        "time_of_valley_err_onpeak",
+        "+.0f",
+    ),
+    ("peak_window_mae", "peak_window_mae", "peak_window_mae_onpeak", ".2f"),
+    ("first_diff_mae", "first_diff_mae", "first_diff_mae_onpeak", ".2f"),
+    ("variogram_score_p05", "variogram_score_p05", "variogram_score_p05_onpeak", ".4f"),
+    ("peak_outside_onpeak", None, "peak_outside_onpeak", ".0f"),
+    ("valley_outside_onpeak", None, "valley_outside_onpeak", ".0f"),
+)
+
+
+def print_shape(shape: dict | None, shape_onpeak: dict | None) -> None:
+    """SHAPE METRICS block — full 24h vs HE8-23 on-peak side by side.
+
+    Skips silently when both dicts are empty/None (no actuals available).
+    """
+    shape = shape or {}
+    shape_onpeak = shape_onpeak or {}
+    if not shape and not shape_onpeak:
+        return
+
+    print_header("SHAPE METRICS — Western Hub", "=", 120)
+    label_w = 28
+    col_w = 18
+    head = (
+        f"  {'metric':<{label_w}} {'full 24h':>{col_w}} {'HE8-23 (on-peak)':>{col_w}}"
+    )
+    print(head)
+    print("-" * len(head))
+
+    def _fmt(val: float | None, fmt: str) -> str:
+        if val is None or (isinstance(val, float) and not np.isfinite(val)):
+            return f"{'-':>{col_w}}"
+        return f"{format(val, fmt):>{col_w}}"
+
+    for label, full_key, onpeak_key, fmt in _SHAPE_DISPLAY:
+        full_val = shape.get(full_key) if full_key else None
+        onpeak_val = shape_onpeak.get(onpeak_key) if onpeak_key else None
+        print(f"  {label:<{label_w}} {_fmt(full_val, fmt)} {_fmt(onpeak_val, fmt)}")
+
+    print()
+    print(
+        "  variogram is shape-only — translation-invariant. peak_outside_onpeak=1"
+        " means the daily peak fell outside HE8-23 (winter morning peaks)."
+    )
+    print()
+    print_divider("=", 120, dim=False)
+    print()
+
+
 def print_quantiles(table: pd.DataFrame) -> None:
     """Quantile bands table."""
     print("  Quantile Bands ($/MWh)")

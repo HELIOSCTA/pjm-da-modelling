@@ -52,12 +52,17 @@ from da_models.like_day_model_knn.pjm_rto_hourly.forecast import (  # noqa: E402
     build_quantiles_table,
     hourly_forecast_from_hour_analogs,
 )
+from da_models.common.evaluation.metrics import (  # noqa: E402
+    evaluate_shape,
+    evaluate_shape_onpeak,
+)
 from da_models.like_day_model_knn.pjm_rto_hourly.metrics import evaluate_forecast  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.printers import (  # noqa: E402
     print_config,
     print_forecast,
     print_pool_funnel,
     print_quantiles,
+    print_shape,
 )
 
 
@@ -252,6 +257,23 @@ def run(
                 y_naive = naive_full[merged["hour_ending"].astype(int).values - 1]
             metrics = evaluate_forecast(y_true, merged, quantiles, y_naive=y_naive)
 
+    shape: dict = {}
+    shape_onpeak: dict = {}
+    if has_actuals and len(df_forecast) > 0:
+        point_col = (
+            "point_forecast" if "point_forecast" in df_forecast.columns else "q_0.50"
+        )
+        fc_by_he = dict(
+            zip(
+                df_forecast["hour_ending"].astype(int),
+                df_forecast[point_col].astype(float),
+            )
+        )
+        actual_arr = np.array([actuals.get(h, np.nan) for h in HOURS], dtype=float)
+        forecast_arr = np.array([fc_by_he.get(h, np.nan) for h in HOURS], dtype=float)
+        shape = evaluate_shape(actual_arr, forecast_arr)
+        shape_onpeak = evaluate_shape_onpeak(actual_arr, forecast_arr)
+
     if not quiet:
         from da_models.like_day_model_knn.pjm_rto_hourly.printers import (
             print_analog_features,
@@ -261,6 +283,7 @@ def run(
         print_pool_funnel(funnel, resolved_date, day_type, config.hub)
         print_analog_features(analogs, pool, query, resolved_date, config.hub)
         print_forecast(output_table, metrics if metrics else None)
+        print_shape(shape if shape else None, shape_onpeak if shape_onpeak else None)
         print_quantiles(quantiles_table)
 
     return {
@@ -268,6 +291,8 @@ def run(
         "quantiles_table": quantiles_table,
         "analogs": analogs,
         "metrics": metrics,
+        "shape": shape,
+        "shape_onpeak": shape_onpeak,
         "forecast_date": str(resolved_date),
         "day_type": day_type,
         "has_actuals": has_actuals,
