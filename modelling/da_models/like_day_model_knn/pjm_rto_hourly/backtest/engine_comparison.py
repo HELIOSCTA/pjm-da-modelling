@@ -1,9 +1,8 @@
-"""Cross-family engine comparison + flt_radius sweep.
+"""Cross-family engine comparison for a single target date.
 
-Runs four engine configurations on the same backtest window of weekday
-target dates and compares mean MAE / RMSE / rMAE / CRPS / coverage.
-
-Configurations:
+Runs four engine configurations on ONE target date and stacks their
+hourly forecasts side-by-side, with a per-engine metrics block when
+actuals are available:
 
   knn_flt0   -- like_day_model_knn engine, flt_radius=0
                 (scalar match at target HE; sunny-like window scope)
@@ -13,17 +12,19 @@ Configurations:
                 (HE-3 .. HE+3 window — broader local context)
   sunny      -- like_day_model_knn_sunny engine on its native long pool
 
-Both families consume the same parquet sources (load / solar / wind /
-net_load / outages / gas / weather), use byte-identical metric
-definitions in their respective ``metrics.evaluate_forecast``, and
-default to last-week-same-day persistence as the rMAE naive baseline,
-so the reported numbers are apples-to-apples comparable.
+Both families consume the same parquet sources and use byte-identical
+metric definitions in their respective ``metrics.evaluate_forecast``,
+so MAE/RMSE/rMAE/CRPS/coverage are directly comparable.
 
-Per-family pools are built ONCE and reused across all target dates and
-flt_radius variants. Per-target-date the knn ``query`` row is built
-once and reused across the three flt_radius variants. Sunny builds its
-query inside its pipeline because sunny's query is a 24-row frame that
-the pipeline composes itself.
+Output structure:
+
+  1. Configuration block (target date, specs, flt_radius variants).
+  2. Hourly forecast stack — Actual row at top + one Forecast row per
+     engine, in canonical Date | Type | HE1..HE24 | OnPk | OffPk | Flat
+     layout. Sorted by MAE asc when actuals are available so the best
+     engine sits directly under the Actual row.
+  3. Per-engine metrics block (MAE / RMSE / rMAE / CRPS / coverage /
+     sharpness / n_analogs / runtime).
 
 Cross-family import is intentional and bounded to this script — the
 project's "forward-only cross-family imports" rule is for production
@@ -40,7 +41,7 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 _MODELLING_ROOT = Path(__file__).resolve().parents[4]
@@ -77,14 +78,12 @@ _COLOR_ON: bool = supports_color()
 _HL_LEADER: str = Colors.BOLD if _COLOR_ON else ""
 _HL_WIN: str = Colors.BRIGHT_GREEN if _COLOR_ON else ""
 _HL_LOSS: str = Colors.BRIGHT_RED if _COLOR_ON else ""
+_HL_ACTUAL: str = (Colors.BOLD + Colors.BRIGHT_RED) if _COLOR_ON else ""
 _RS: str = Colors.RESET if _COLOR_ON else ""
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
-TARGET_DATE: date | None = (
-    None  # None -> tomorrow (anchor); we walk back to find weekday targets
-)
-BACKTEST_WINDOW_DAYS: int = 14
+TARGET_DATE: date = date(2026, 5, 1)
 KNN_FLT_RADII: tuple[int, ...] = (0, 1, 3)
 
 # knn spec: the sunny-aligned spec (load + ramps + solar + wind + net_load
@@ -96,25 +95,7 @@ SUNNY_MODEL_NAME: str = sunny_configs.PJM_RTO_HOURLY_SUNNY_SPEC.name
 _DOW_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
-def _resolve_anchor(target_date: date | None) -> date:
-    return target_date if target_date is not None else date.today() + timedelta(days=1)
-
-
-def _backtest_dates(pool: pd.DataFrame, anchor: date, lookback_days: int) -> list[date]:
-    """Last N weekday targets ending at anchor, with full LMP actuals in pool.
-
-    Uses the knn (wide) pool for the actuals check; sunny shares the
-    same LMP source so any date with knn actuals also has sunny actuals.
-    """
-    out: list[date] = []
-    for k in range(1, lookback_days + 1):
-        d = anchor - timedelta(days=k)
-        if d.weekday() >= 5:
-            continue
-        if actuals_from_pool(pool, d) is None:
-            continue
-        out.append(d)
-    return out
+# ── Scenario execution ─────────────────────────────────────────────────────
 
 
 def _execute_knn(
@@ -124,13 +105,14 @@ def _execute_knn(
     query: pd.Series,
     dates_meta: pd.DataFrame,
 ) -> dict:
-    """One knn forecast run, captured to a flat metric row."""
+    """One knn forecast run, captured to a flat row including output_table."""
     started = time.perf_counter()
     base = {
         "engine": f"knn_flt{flt_radius}",
         "target_date": target_date,
         "status": "ok",
         "error_message": None,
+        "output_table": None,
     }
     try:
         result = knn_run(
@@ -158,6 +140,7 @@ def _execute_knn(
         {
             "n_pool": result.get("n_pool"),
             "n_analogs_used": result.get("n_analogs_used"),
+            "output_table": result.get("output_table"),
             "mae": metrics.get("mae"),
             "rmse": metrics.get("rmse"),
             "rmae": metrics.get("rmae"),
@@ -172,13 +155,14 @@ def _execute_knn(
 
 
 def _execute_sunny(target_date: date, pool: pd.DataFrame) -> dict:
-    """One sunny forecast run, captured to a flat metric row."""
+    """One sunny forecast run, captured to a flat row including output_table."""
     started = time.perf_counter()
     base = {
         "engine": "sunny",
         "target_date": target_date,
         "status": "ok",
         "error_message": None,
+        "output_table": None,
     }
     try:
         result = sunny_run(
@@ -202,6 +186,7 @@ def _execute_sunny(target_date: date, pool: pd.DataFrame) -> dict:
         {
             "n_pool": result.get("n_pool"),
             "n_analogs_used": result.get("n_analogs_used"),
+            "output_table": result.get("output_table"),
             "mae": metrics.get("mae"),
             "rmse": metrics.get("rmse"),
             "rmae": metrics.get("rmae"),
@@ -230,155 +215,193 @@ def _format_pct(v, width: int) -> str:
     return f"{v * 100:>{width - 1}.1f}%"
 
 
-def _print_per_date_table(rows: list[dict], width: int = 110) -> None:
-    """Per-date MAE for each engine — useful for spotting days where the
-    verdict flips between engines."""
-    print()
-    print_header("PER-TARGET-DATE MAE", "=", width)
-    print()
-    df = pd.DataFrame(rows)
-    ok = df[df["status"] == "ok"]
-    if ok.empty:
-        print("  (no successful runs)")
+def _print_hourly_forecasts(
+    rows: list[dict],
+    target_date: date,
+    width: int = 220,
+) -> None:
+    """Stacked hourly forecast comparison: Actual + one row per engine.
+
+    Columns: Date | Type | HE1..HE24 | OnPeak | OffPeak | Flat. Engines
+    sorted by MAE asc (best directly under Actual) when actuals are
+    available; otherwise in input order.
+    """
+    ok = [
+        r for r in rows if r.get("status") == "ok" and r.get("output_table") is not None
+    ]
+    if not ok:
+        print()
+        print_header("HOURLY FORECASTS  --  no successful runs", "=", width)
         return
-    pivot = ok.pivot_table(
-        index="target_date", columns="engine", values="mae"
-    ).sort_index()
-    engines = sorted(ok["engine"].unique())
-    name_w = max(10, max(len(e) for e in engines) + 1)
 
-    head = f"  {'date':<12} {'dow':<4}"
-    for e in engines:
-        head += f" {e:>{name_w}}"
-    head += f"  {'best':>10}"
-    print(head)
-    print_divider("-", len(head), dim=False)
+    # Pull the Actual row from any engine's output_table — they all
+    # source from the same LMP parquet so the actuals are identical.
+    actual_row: dict | None = None
+    for r in ok:
+        ot = r["output_table"]
+        actuals = ot[ot["Type"] == "Actual"]
+        if len(actuals):
+            actual_row = actuals.iloc[0].to_dict()
+            actual_row["Date"] = str(target_date)
+            actual_row["Type"] = "Actual"
+            break
 
-    for d, row in pivot.iterrows():
-        d_obj = d if isinstance(d, date) else pd.Timestamp(d).date()
-        dow = _DOW_ABBR[d_obj.weekday()]
-        line = f"  {str(d_obj):<12} {dow:<4}"
-        best_engine = row.idxmin() if row.notna().any() else None
-        for e in engines:
-            v = row.get(e)
-            cell = _format_metric(v, name_w, ".2f")
-            if e == best_engine:
-                cell = f"{_HL_WIN}{cell}{_RS}"
-            line += f" {cell}"
-        line += f"  {best_engine or 'n/a':>10}"
-        print(line)
-    print_divider("-", len(head), dim=False)
+    # Pull each engine's Forecast row.
+    forecast_rows: list[dict] = []
+    for r in ok:
+        ot = r["output_table"]
+        fc = ot[ot["Type"] == "Forecast"]
+        if not len(fc):
+            continue
+        fr = fc.iloc[0].to_dict()
+        fr["Date"] = str(target_date)
+        fr["Type"] = r["engine"]
+        forecast_rows.append((r, fr))
 
+    # Sort engines by MAE asc when actuals exist; else preserve input order.
+    has_actuals = actual_row is not None and any(
+        pd.notna(r.get("mae")) for r, _ in forecast_rows
+    )
+    if has_actuals:
+        forecast_rows.sort(
+            key=lambda pair: (
+                float(pair[0]["mae"]) if pd.notna(pair[0].get("mae")) else float("inf")
+            )
+        )
 
-def _print_leaderboard(rows: list[dict], width: int = 120) -> None:
-    """Per-engine mean metrics across the backtest window, sorted by mean MAE."""
+    target_dow = _DOW_ABBR[target_date.weekday()]
     print()
-    print_header("ENGINE COMPARISON LEADERBOARD  (mean across window)", "=", width)
+    print_header(
+        f"HOURLY FORECASTS  --  {target_date}  ({target_dow})",
+        "=",
+        width,
+    )
+    print()
+    print(
+        "  Actual row (red) at top + one Forecast row per engine. Engines"
+        " sorted by MAE asc (best directly under Actual) when actuals"
+        " are available."
+    )
+    print()
+
+    he_w = 6
+    sum_w = 7
+    type_w = 14
+    header = f"{'Date':<12} {'Type':<{type_w}}"
+    for h in range(1, 25):
+        header += f" {h:>{he_w}}"
+    for label in ("OnPk", "OffPk", "Flat"):
+        header += f" {label:>{sum_w}}"
+    print(header)
+    print_divider("-", len(header), dim=False)
+
+    def _fmt_row(row: dict, color: str = "") -> str:
+        line = f"{str(row.get('Date', '')):<12} {str(row.get('Type', '')):<{type_w}}"
+        for h in range(1, 25):
+            v = row.get(f"HE{h}")
+            line += f" {v:>{he_w}.1f}" if pd.notna(v) else f" {'':>{he_w}}"
+        for col in ("OnPeak", "OffPeak", "Flat"):
+            v = row.get(col)
+            line += f" {v:>{sum_w}.2f}" if pd.notna(v) else f" {'':>{sum_w}}"
+        if color:
+            line = f"{color}{line}{_RS}"
+        return line
+
+    if actual_row is not None:
+        print(_fmt_row(actual_row, _HL_ACTUAL))
+    best_engine = (
+        forecast_rows[0][0]["engine"] if forecast_rows and has_actuals else None
+    )
+    for r, fr in forecast_rows:
+        color = _HL_LEADER if r["engine"] == best_engine else ""
+        print(_fmt_row(fr, color))
+    print_divider("-", len(header), dim=False)
+
+
+def _print_metrics(rows: list[dict], width: int = 120) -> None:
+    """Per-engine metrics for the single target date, sorted by MAE asc."""
+    print()
+    print_header("PER-ENGINE METRICS", "=", width)
     print()
     df = pd.DataFrame(rows)
     ok = df[df["status"] == "ok"]
     failed = df[df["status"] == "failed"]
     if ok.empty:
-        print("  No successful runs to summarize.")
+        print("  No successful runs.")
         if not failed.empty:
-            print("\n  Failed runs:")
             for _, r in failed.iterrows():
                 print(f"    {r['engine']:<12} {r['target_date']}  {r['error_message']}")
         return
 
-    agg = (
-        ok.groupby("engine")
-        .agg(
-            n_dates=("target_date", "count"),
-            mean_mae=("mae", "mean"),
-            mean_rmse=("rmse", "mean"),
-            mean_rmae=("rmae", "mean"),
-            mean_crps=("crps", "mean"),
-            mean_cov_90=("coverage_90pct", "mean"),
-            mean_sharp_90=("sharpness_90pct", "mean"),
-            mean_n_analogs=("n_analogs_used", "mean"),
-            mean_dur_s=("duration_s", "mean"),
-        )
-        .reset_index()
-    )
-    agg = agg.sort_values("mean_mae", ascending=True, na_position="last").reset_index(
+    ordered = ok.sort_values("mae", ascending=True, na_position="last").reset_index(
         drop=True
     )
-
-    name_w = max(8, max(len(e) for e in agg["engine"]) + 1)
+    name_w = max(8, max(len(e) for e in ordered["engine"]) + 1)
     head = (
-        f"  {'engine':<{name_w}} {'n_dates':>8} {'mae':>8} {'rmse':>8} "
-        f"{'rmae':>7} {'crps':>8} {'cov_90':>7} {'sharp_90':>9} "
-        f"{'analogs':>8} {'sec':>5}"
+        f"  {'engine':<{name_w}} "
+        f"{'mae':>8} {'rmse':>8} {'rmae':>7} {'crps':>8} "
+        f"{'cov_90':>7} {'sharp_90':>9} {'analogs':>8} {'sec':>5}"
     )
     print(head)
     print_divider("-", len(head), dim=False)
-    best_mae = agg["mean_mae"].min() if not agg["mean_mae"].isna().all() else None
-    for _, r in agg.iterrows():
+
+    best_mae = ordered["mae"].min() if not ordered["mae"].isna().all() else None
+    for _, r in ordered.iterrows():
         line = (
             f"  {str(r['engine']):<{name_w}} "
-            f"{int(r['n_dates']):>8d} "
-            f"{_format_metric(r['mean_mae'], 8)} "
-            f"{_format_metric(r['mean_rmse'], 8)} "
-            f"{_format_metric(r['mean_rmae'], 7, '.3f')} "
-            f"{_format_metric(r['mean_crps'], 8, '.3f')} "
-            f"{_format_pct(r['mean_cov_90'], 7)} "
-            f"{_format_metric(r['mean_sharp_90'], 9)} "
-            f"{_format_metric(r['mean_n_analogs'], 8, '.0f')} "
-            f"{_format_metric(r['mean_dur_s'], 5, '.1f')}"
+            f"{_format_metric(r['mae'], 8)} "
+            f"{_format_metric(r['rmse'], 8)} "
+            f"{_format_metric(r['rmae'], 7, '.3f')} "
+            f"{_format_metric(r['crps'], 8, '.3f')} "
+            f"{_format_pct(r['coverage_90pct'], 7)} "
+            f"{_format_metric(r['sharpness_90pct'], 9)} "
+            f"{int(r['n_analogs_used']) if pd.notna(r['n_analogs_used']) else 0:>8d} "
+            f"{_format_metric(r['duration_s'], 5, '.1f')}"
         )
-        if (
-            best_mae is not None
-            and pd.notna(r["mean_mae"])
-            and r["mean_mae"] == best_mae
-        ):
+        if best_mae is not None and pd.notna(r["mae"]) and r["mae"] == best_mae:
             line = f"{_HL_LEADER}{line}{_RS}"
         print(line)
     print_divider("-", len(head), dim=False)
     print()
     if best_mae is not None:
-        winner = agg.loc[agg["mean_mae"] == best_mae, "engine"].iloc[0]
-        print(f"  Best mean MAE: {winner}  ({best_mae:.2f} $/MWh)")
+        winner = ordered.loc[ordered["mae"] == best_mae, "engine"].iloc[0]
+        print(f"  Best MAE: {winner}  ({best_mae:.2f} $/MWh)")
     print(
-        "  Read: lower mean_mae / mean_rmse / mean_rmae = better point forecast."
-        " Higher mean_cov_90 (closer to 90%) and lower mean_sharp_90 = better"
-        " calibrated probabilistic forecast."
+        "  Lower mae / rmse / rmae = better point forecast. Higher cov_90"
+        " (closer to 90%) and lower sharp_90 = better calibrated bands."
     )
 
     if not failed.empty:
         print()
         print("  Failed runs:")
         for _, r in failed.iterrows():
-            print(f"    {r['engine']:<12} {r['target_date']}  {r['error_message']}")
+            print(f"    {r['engine']:<12} {r['error_message']}")
 
 
 # ── main ───────────────────────────────────────────────────────────────────
 
 
 def run(
-    target_date: date | None = TARGET_DATE,
-    backtest_window_days: int = BACKTEST_WINDOW_DAYS,
+    target_date: date = TARGET_DATE,
     knn_flt_radii: tuple[int, ...] = KNN_FLT_RADII,
 ) -> dict:
-    """Execute the cross-family engine comparison and print the
-    per-date + leaderboard tables. Returns the full row list for
-    notebook consumption."""
+    """Single-day cross-family engine comparison. Prints config + hourly
+    forecasts + metrics. Returns the row list for notebook consumption."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
 
-    anchor = _resolve_anchor(target_date)
+    target_dow = _DOW_ABBR[target_date.weekday()]
 
     print_header("ENGINE COMPARISON  --  knn (wide) vs sunny (long)", "=", 110)
     print()
-    print(f"  Anchor date         {anchor}  (walks back {backtest_window_days} days)")
+    print(f"  Target date         {target_date}  ({target_dow})")
     print(f"  knn spec            {KNN_MODEL_NAME}")
     print(f"  knn flt_radius      {knn_flt_radii}")
     print(f"  sunny spec          {SUNNY_MODEL_NAME}")
     print()
 
-    # Build pools and dates_meta ONCE.
     print("[engine-cmp] building knn pool...")
     t0 = time.perf_counter()
     knn_base_spec = knn_configs.MODEL_REGISTRY[KNN_MODEL_NAME]
@@ -401,73 +424,54 @@ def run(
         f" {time.perf_counter() - t0:.1f}s"
     )
 
-    target_dates = _backtest_dates(knn_pool, anchor, backtest_window_days)
-    if not target_dates:
-        raise RuntimeError(
-            f"No weekday target dates with actuals in the {backtest_window_days}d "
-            f"window ending {anchor}."
+    if actuals_from_pool(knn_pool, target_date) is None:
+        print(
+            f"[engine-cmp] WARNING: target_date={target_date} has no full LMP"
+            " actuals in the knn pool — MAE/rMAE/CRPS will be NaN. Pick a"
+            " recent weekday with actuals to get a real comparison."
         )
-    print(
-        f"[engine-cmp] {len(target_dates)} weekday target(s):"
-        f" {target_dates[-1]} -> {target_dates[0]}"
+
+    knn_query = knn_build_query_row(
+        target_date=target_date,
+        cache_dir=knn_configs.CACHE_DIR,
+        spec=knn_spec_for_build,
     )
-    print(
-        f"[engine-cmp] {len(target_dates)} dates x"
-        f" ({len(knn_flt_radii)} knn flt + 1 sunny) ="
-        f" {len(target_dates) * (len(knn_flt_radii) + 1)} cells"
-    )
-    print()
 
     rows: list[dict] = []
-    for td in target_dates:
-        try:
-            knn_query = knn_build_query_row(
-                target_date=td,
-                cache_dir=knn_configs.CACHE_DIR,
-                spec=knn_spec_for_build,
-            )
-        except Exception as exc:
-            print(
-                f"[engine-cmp]   skip {td}: knn build_query_row failed"
-                f" ({type(exc).__name__}: {exc})"
-            )
-            continue
-
-        for flt in knn_flt_radii:
-            row = _execute_knn(td, flt, knn_pool, knn_query, knn_dates_meta)
-            tag = "OK" if row["status"] == "ok" else "FAIL"
-            mae_str = (
-                f"MAE={row['mae']:.2f}"
-                if row.get("mae") is not None and pd.notna(row.get("mae"))
-                else "MAE=n/a"
-            )
-            print(
-                f"[engine-cmp]   {td} knn_flt{flt}    {tag:<4}"
-                f" {mae_str}  ({row['duration_s']:.2f}s)"
-            )
-            rows.append(row)
-
-        srow = _execute_sunny(td, sunny_pool)
-        tag = "OK" if srow["status"] == "ok" else "FAIL"
+    print()
+    for flt in knn_flt_radii:
+        row = _execute_knn(target_date, flt, knn_pool, knn_query, knn_dates_meta)
+        tag = "OK" if row["status"] == "ok" else "FAIL"
         mae_str = (
-            f"MAE={srow['mae']:.2f}"
-            if srow.get("mae") is not None and pd.notna(srow.get("mae"))
+            f"MAE={row['mae']:.2f}"
+            if row.get("mae") is not None and pd.notna(row.get("mae"))
             else "MAE=n/a"
         )
         print(
-            f"[engine-cmp]   {td} sunny         {tag:<4}"
-            f" {mae_str}  ({srow['duration_s']:.2f}s)"
+            f"[engine-cmp]   knn_flt{flt}    {tag:<4}"
+            f" {mae_str}  ({row['duration_s']:.2f}s)"
         )
-        rows.append(srow)
+        rows.append(row)
 
-    _print_per_date_table(rows)
-    _print_leaderboard(rows)
+    srow = _execute_sunny(target_date, sunny_pool)
+    tag = "OK" if srow["status"] == "ok" else "FAIL"
+    mae_str = (
+        f"MAE={srow['mae']:.2f}"
+        if srow.get("mae") is not None and pd.notna(srow.get("mae"))
+        else "MAE=n/a"
+    )
+    print(
+        f"[engine-cmp]   sunny         {tag:<4} {mae_str}  ({srow['duration_s']:.2f}s)"
+    )
+    rows.append(srow)
+
+    _print_hourly_forecasts(rows, target_date)
+    _print_metrics(rows)
     print()
 
     return {
         "rows": rows,
-        "target_dates": target_dates,
-        "anchor": anchor,
+        "target_date": target_date,
     }
 
 

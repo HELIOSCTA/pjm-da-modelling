@@ -406,10 +406,19 @@ def find_twins(
             mask = ~np.isnan(diff)
             sq = np.where(mask, diff**2, 0.0)
             n_valid = mask.sum(axis=1)
-            with np.errstate(invalid="ignore", divide="ignore"):
+            # Sum-Euclidean over the group's windowed cols (sunny parity).
+            # Replaces the prior RMS-z (which divided by n_valid). The
+            # division normalized for missing-feature coverage, but that
+            # made candidates with one strong feature match and noise on
+            # the rest "look close" — the candidate set then drifts
+            # toward partial-coverage analogs rather than dates that
+            # match across all features simultaneously. Sum-Euclidean
+            # penalizes incomplete coverage by construction. n_valid > 0
+            # gate retained so all-NaN cols still produce NaN distance.
+            with np.errstate(invalid="ignore"):
                 d_group = np.where(
                     n_valid > 0,
-                    np.sqrt(sq.sum(axis=1) / n_valid),
+                    np.sqrt(sq.sum(axis=1)),
                     np.nan,
                 )
 
@@ -462,7 +471,14 @@ def find_twins(
 
         d_top = d[order]
         eps = 1e-6
-        inv_dist = 1.0 / (d_top + eps)
+        # Inverse-distance-squared analog weighting (sunny parity). Squared
+        # form concentrates blend weight on the nearest analog; linear
+        # form smears more uniformly across K. Empirically: when the
+        # nearest analog is a genuinely close match, squared returns a
+        # sharper forecast; when distances are clustered (no clearly-best
+        # neighbor), the two are nearly equivalent. See
+        # like_day_model_knn_sunny/.../engine.py:217 for the same formula.
+        inv_dist = 1.0 / (d_top + eps) ** 2
         if inv_dist.sum() <= 0:
             analog_weights = np.full(len(d_top), 1.0 / max(1, len(d_top)))
         else:

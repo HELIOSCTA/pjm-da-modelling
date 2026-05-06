@@ -266,7 +266,7 @@ RTO_NET_LOAD_PROFILE = FeatureDomain(
     # five sub-bucket weights). Mirrors RTO_LOAD_PROFILE so the two
     # domains contribute equally when both are enabled in a spec.
     feature_group_weights={
-        "net_load_level": 5.5,
+        "net_load_level": 2,
     },
     pool_builder=_build_rto_net_load_profile_pool,
     query_builder=_build_rto_net_load_profile_query,
