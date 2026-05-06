@@ -24,27 +24,13 @@ where production prints its single forecast row. The ablation then
 by delta_mae desc — directly comparable across scenarios at a glance.
 A compact metrics block follows for MAE / rMAE / CRPS / coverage.
 
-Two ablation mechanisms, applied per feature type:
-
-  Windowed features (load / solar / wind / net_load) — NaN-out the
-    feature's columns in the pool and query before passing to
-    ``find_twins``. The engine z-scores per pool with NaN-aware
-    masking (``engine.py`` ~L311-322 and L211-215), so columns that
-    are entirely NaN drop out of the windowed Euclidean cleanly.
-
-  Broadcast features (outage / gas) — set the group's weight to 0
-    via ``feature_group_weights_override``. The engine's
-    ``_combined_non_load_distance`` filters non-windowed groups by
-    ``weight > 0`` (engine.py L187-191), so weight=0 is exactly
-    equivalent to dropping the group.
-
-The mismatch is intentional. Setting a windowed group's weight to 0
-does NOT remove its columns from the windowed Euclidean —
-``_WINDOWED_COL_STEMS`` in engine.py is hardcoded, weights only affect
-the windowed-vs-broadcast weight split. For windowed features, NaN
-ablation is the only clean removal; for broadcast features, the
-weight override is cleaner because it preserves the broadcast group's
-share of the combined distance for the remaining groups.
+Single ablation mechanism: set the target group's weight to 0 via
+``feature_group_weights_override``. The T4 long-pool engine filters
+groups uniformly by ``weight > 0`` in ``find_twins``, so weight=0 is
+exact removal — same effect for every feature group (load, ramps,
+renewables, net_load, temp, outage, gas, calendar). The wide-format
+dual-mechanism (NaN-cols for windowed features vs zero-weight for
+broadcast features) is gone with the wide engine.
 
 Reads pool, query, and dates_meta once; reuses across all scenarios
 via ``forecast_single_day.run()``'s reusable-artefact kwargs. Single
@@ -117,27 +103,23 @@ TARGET_DATE: date | None = date(2026, 5, 6)
 MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
 HUB: str = configs.HUB
 
-# Map ablation_name -> {nan_cols: [...]} OR {zero_weight_groups: [...]}.
-# Windowed features must use nan_cols; broadcast features must use
-# zero_weight_groups (see module docstring for why).
-_LOAD_COLS: list[str] = [f"load_h{h}" for h in range(1, 25)]
-_LOAD_RAMP_1H_COLS: list[str] = [f"load_ramp_1h_h{h}" for h in range(1, 25)]
-_LOAD_RAMP_3H_COLS: list[str] = [f"load_ramp_3h_h{h}" for h in range(1, 25)]
-_SOLAR_COLS: list[str] = [f"solar_h{h}" for h in range(1, 25)]
-_WIND_COLS: list[str] = [f"wind_h{h}" for h in range(1, 25)]
-_NET_LOAD_COLS: list[str] = [f"net_load_h{h}" for h in range(1, 25)]
-_TEMP_COLS: list[str] = [f"temp_h{h}" for h in range(1, 25)]
-
-# Includes ablations for the sunny-aligned spec's added features
-# (ramps/temperature/calendar) — entries are silently no-ops when run
-# against a spec that doesn't include those domains, so this dict can
-# stay populated regardless of which spec is selected.
+# Map ablation_name -> {zero_weight_groups: [...]}.
+#
+# Under the T4 long-pool engine, every feature group (whether previously
+# "windowed" load/solar/wind/net_load/temp or "broadcast" outage/gas/
+# calendar) is filtered uniformly by weight>0 in find_twins. Setting a
+# group's weight to 0 is exact removal — no NaN'ing of pool/query cols
+# needed. The wide-format dual-mechanism (nan_cols vs zero_weight_groups)
+# is gone.
+#
+# Group names below match ``spec.feature_groups`` keys; entries that
+# don't appear in the active spec are silently skipped.
 ABLATIONS: dict[str, dict] = {
-    "load": {"nan_cols": _LOAD_COLS},
-    "load_ramps": {"nan_cols": _LOAD_RAMP_1H_COLS + _LOAD_RAMP_3H_COLS},
-    "renewable": {"nan_cols": _SOLAR_COLS + _WIND_COLS},
-    "net_load": {"nan_cols": _NET_LOAD_COLS},
-    "temp": {"nan_cols": _TEMP_COLS},
+    "load": {"zero_weight_groups": ["load_level"]},
+    "load_ramps": {"zero_weight_groups": ["load_ramps"]},
+    "renewable": {"zero_weight_groups": ["renewable_level"]},
+    "net_load": {"zero_weight_groups": ["net_load_level"]},
+    "temp": {"zero_weight_groups": ["temp_level"]},
     "outage": {"zero_weight_groups": ["outage_level"]},
     "gas": {"zero_weight_groups": ["gas_level"]},
     "calendar": {"zero_weight_groups": ["calendar_level"]},
@@ -147,28 +129,6 @@ _DOW_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 # ── Ablation helpers ───────────────────────────────────────────────────────
-
-
-def _apply_nan_ablation(
-    pool: pd.DataFrame,
-    query: pd.Series,
-    cols: list[str],
-) -> tuple[pd.DataFrame, pd.Series]:
-    """Copy pool/query and set ``cols`` to NaN where present.
-
-    Engine handles all-NaN columns by masking them out of the per-row
-    Euclidean (``mask = ~np.isnan(diff)`` then ``n_valid > 0``). The
-    feature drops out of the distance metric entirely.
-    """
-    pool_copy = pool.copy()
-    present_pool = [c for c in cols if c in pool_copy.columns]
-    if present_pool:
-        pool_copy[present_pool] = np.nan
-    query_copy = query.copy()
-    for c in cols:
-        if c in query_copy.index:
-            query_copy[c] = np.nan
-    return pool_copy, query_copy
 
 
 def _zero_weight_override(
@@ -255,7 +215,7 @@ def _run_scenario(
     scenario_name: str,
     target_date: date,
     pool: pd.DataFrame,
-    query: pd.Series,
+    query: pd.DataFrame,
     dates_meta: pd.DataFrame,
     model_name: str,
     feature_group_weights_override: dict[str, float] | None,
@@ -418,19 +378,10 @@ def _print_config(
     print(f"  Pool size       {n_pool:,} rows")
     print(f"  Scenarios       1 baseline + {len(ablations)} ablation(s)")
     print()
-    print("  Ablation mechanisms:")
+    print("  Ablation mechanism:  weight=0 per group (engine filters by weight>0).")
     for name, payload in ablations.items():
-        if "nan_cols" in payload:
-            mech = (
-                f"NaN {len(payload['nan_cols'])} cols "
-                "(windowed -> drop from per-HE Euclidean)"
-            )
-        elif "zero_weight_groups" in payload:
-            groups = ", ".join(payload["zero_weight_groups"])
-            mech = f"weight=0 for [{groups}] (broadcast -> filtered by weight>0)"
-        else:
-            mech = "?"
-        print(f"    ablate_{name:<10} {mech}")
+        groups = ", ".join(payload.get("zero_weight_groups", []))
+        print(f"    ablate_{name:<10} weight=0 for [{groups}]")
 
     if spec is not None:
         rows = _effective_column_weights(spec)
@@ -1221,42 +1172,28 @@ def run(
         )
 
         spec_groups = set(spec_for_build.feature_groups.keys())
-        spec_cols = {c for cols in spec_for_build.feature_groups.values() for c in cols}
         for name, payload in ablations.items():
             scenario_name = f"ablate_{name}"
-            if "nan_cols" in payload:
-                cols_in_spec = [c for c in payload["nan_cols"] if c in spec_cols]
-                if not cols_in_spec:
-                    print(
-                        f"[ablate]   {scenario_name:<20} "
-                        f"SKIP (no matching cols in spec)"
-                    )
-                    continue
-                pool_run, query_run = _apply_nan_ablation(pool, query, cols_in_spec)
-                override = None
-            elif "zero_weight_groups" in payload:
-                groups_in_spec = [
-                    g for g in payload["zero_weight_groups"] if g in spec_groups
-                ]
-                if not groups_in_spec:
-                    print(
-                        f"[ablate]   {scenario_name:<20} "
-                        f"SKIP (no matching groups in spec)"
-                    )
-                    continue
-                pool_run, query_run = pool, query
-                override = _zero_weight_override(spec_for_build, groups_in_spec)
-            else:
+            if "zero_weight_groups" not in payload:
                 raise ValueError(
                     f"Ablation '{name}' has no recognised payload "
-                    f"(expected 'nan_cols' or 'zero_weight_groups')."
+                    f"(expected 'zero_weight_groups')."
                 )
+            groups_in_spec = [
+                g for g in payload["zero_weight_groups"] if g in spec_groups
+            ]
+            if not groups_in_spec:
+                print(
+                    f"[ablate]   {scenario_name:<20} SKIP (no matching groups in spec)"
+                )
+                continue
+            override = _zero_weight_override(spec_for_build, groups_in_spec)
             rows.append(
                 _run_scenario(
                     scenario_name=scenario_name,
                     target_date=resolved,
-                    pool=pool_run,
-                    query=query_run,
+                    pool=pool,
+                    query=query,
                     dates_meta=dates_meta,
                     model_name=model_name,
                     feature_group_weights_override=override,
@@ -1287,10 +1224,4 @@ def run(
 
 
 if __name__ == "__main__":
-    raise NotImplementedError(
-        "T4: needs long-format migration. Pool/query are now"
-        " row-per-(date, HE) with scalar feature cols; this script's"
-        " wide-format reads and per-feature column-pruning logic must"
-        " be rewritten for the long schema. Slated for T4 Session 2."
-    )
     run()

@@ -1,24 +1,22 @@
 """Cross-family engine comparison for a single target date.
 
-Runs four engine configurations on ONE target date and stacks their
-hourly forecasts side-by-side, with a per-engine metrics block when
-actuals are available:
+Runs the two like_day_model_knn implementations on ONE target date and
+stacks their hourly forecasts side-by-side, with a per-engine metrics
+block when actuals are available:
 
-  knn_flt0   -- like_day_model_knn engine, flt_radius=0
-                (scalar match at target HE; sunny-like window scope)
-  knn_flt1   -- like_day_model_knn engine, flt_radius=1
-                (HE-1, HE, HE+1 window — current spec default)
-  knn_flt3   -- like_day_model_knn engine, flt_radius=3
-                (HE-3 .. HE+3 window — broader local context)
+  knn        -- like_day_model_knn engine (this package; T4 long pool)
   sunny      -- like_day_model_knn_sunny engine on its native long pool
 
 Both families consume the same parquet sources and use byte-identical
 metric definitions in their respective ``metrics.evaluate_forecast``,
-so MAE/RMSE/rMAE/CRPS/coverage are directly comparable.
+so MAE/RMSE/rMAE/CRPS/coverage are directly comparable. Pre-T4 this
+script also varied ``flt_radius`` (0/1/3) on the wide knn engine; the
+long-format engine is "scalar match at target HE" by construction, so
+the radii are no longer a degree of freedom.
 
 Output structure:
 
-  1. Configuration block (target date, specs, flt_radius variants).
+  1. Configuration block (target date, specs).
   2. Hourly forecast stack — Actual row at top + one Forecast row per
      engine, in canonical Date | Type | HE1..HE24 | OnPk | OffPk | Flat
      layout. Sorted by MAE asc when actuals are available so the best
@@ -83,8 +81,7 @@ _RS: str = Colors.RESET if _COLOR_ON else ""
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
-TARGET_DATE: date = date(2026, 5, 1)
-KNN_FLT_RADII: tuple[int, ...] = (0, 1, 3)
+TARGET_DATE: date = date(2026, 5, 6)
 
 # knn spec: the sunny-aligned spec (load + ramps + solar + wind + net_load
 # + temp + outages + gas + calendar). Matches what sunny exercises so the
@@ -100,15 +97,14 @@ _DOW_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 def _execute_knn(
     target_date: date,
-    flt_radius: int,
     pool: pd.DataFrame,
-    query: pd.Series,
+    query: pd.DataFrame,
     dates_meta: pd.DataFrame,
 ) -> dict:
     """One knn forecast run, captured to a flat row including output_table."""
     started = time.perf_counter()
     base = {
-        "engine": f"knn_flt{flt_radius}",
+        "engine": "knn",
         "target_date": target_date,
         "status": "ok",
         "error_message": None,
@@ -118,7 +114,6 @@ def _execute_knn(
         result = knn_run(
             target_date=target_date,
             model_name=KNN_MODEL_NAME,
-            flt_radius=flt_radius,
             pool=pool,
             query=query,
             dates_meta=dates_meta,
@@ -383,7 +378,6 @@ def _print_metrics(rows: list[dict], width: int = 120) -> None:
 
 def run(
     target_date: date = TARGET_DATE,
-    knn_flt_radii: tuple[int, ...] = KNN_FLT_RADII,
 ) -> dict:
     """Single-day cross-family engine comparison. Prints config + hourly
     forecasts + metrics. Returns the row list for notebook consumption."""
@@ -394,11 +388,10 @@ def run(
 
     target_dow = _DOW_ABBR[target_date.weekday()]
 
-    print_header("ENGINE COMPARISON  --  knn (wide) vs sunny (long)", "=", 110)
+    print_header("ENGINE COMPARISON  --  knn (long) vs sunny (long)", "=", 110)
     print()
     print(f"  Target date         {target_date}  ({target_dow})")
     print(f"  knn spec            {KNN_MODEL_NAME}")
-    print(f"  knn flt_radius      {knn_flt_radii}")
     print(f"  sunny spec          {SUNNY_MODEL_NAME}")
     print()
 
@@ -439,19 +432,15 @@ def run(
 
     rows: list[dict] = []
     print()
-    for flt in knn_flt_radii:
-        row = _execute_knn(target_date, flt, knn_pool, knn_query, knn_dates_meta)
-        tag = "OK" if row["status"] == "ok" else "FAIL"
-        mae_str = (
-            f"MAE={row['mae']:.2f}"
-            if row.get("mae") is not None and pd.notna(row.get("mae"))
-            else "MAE=n/a"
-        )
-        print(
-            f"[engine-cmp]   knn_flt{flt}    {tag:<4}"
-            f" {mae_str}  ({row['duration_s']:.2f}s)"
-        )
-        rows.append(row)
+    row = _execute_knn(target_date, knn_pool, knn_query, knn_dates_meta)
+    tag = "OK" if row["status"] == "ok" else "FAIL"
+    mae_str = (
+        f"MAE={row['mae']:.2f}"
+        if row.get("mae") is not None and pd.notna(row.get("mae"))
+        else "MAE=n/a"
+    )
+    print(f"[engine-cmp]   knn          {tag:<4} {mae_str}  ({row['duration_s']:.2f}s)")
+    rows.append(row)
 
     srow = _execute_sunny(target_date, sunny_pool)
     tag = "OK" if srow["status"] == "ok" else "FAIL"
@@ -476,11 +465,4 @@ def run(
 
 
 if __name__ == "__main__":
-    raise NotImplementedError(
-        "T4: needs long-format migration. The wide-engine alternative"
-        " this script compares against was removed in the T4 cutover;"
-        " what remains of the comparison must be rewritten against the"
-        " long-format engine alone (or deleted if no longer useful)."
-        " Slated for T4 Session 2."
-    )
     run()

@@ -56,6 +56,9 @@ from da_models.common.forecast.output import (  # noqa: E402
 from da_models.common.stats.correlation import pearson as _pearson  # noqa: E402
 from da_models.common.stats.correlation import spearman as _spearman  # noqa: E402
 from da_models.like_day_model_knn import configs  # noqa: E402
+from da_models.like_day_model_knn.domains import (  # noqa: E402
+    HOURLY_STEM_TO_LONG_COL,
+)
 from da_models.like_day_model_knn.pjm_rto_hourly.builder import build_pool  # noqa: E402
 from utils.logging_utils import (  # noqa: E402
     Colors,
@@ -90,7 +93,6 @@ HUB: str = configs.HUB
 FEATURES: tuple[str, ...] = ("load", "solar", "wind", "net_load")
 
 _HOURS: list[int] = list(range(1, 25))
-_LMP_COLS: list[str] = [f"lmp_h{h}" for h in _HOURS]
 _SEP_VALUE_COL: str = "lmp_system_energy_price"
 
 
@@ -147,48 +149,55 @@ def _resolve_target_date(pool: pd.DataFrame, target_date: date | None) -> date:
     )
 
 
-def _feature_profile(row: pd.Series, feature: str) -> np.ndarray | None:
-    """Pull the 24-hour profile for ``feature`` off a pool row.
+def _feature_profile(rows: pd.DataFrame, feature: str) -> np.ndarray | None:
+    """Pull the 24-hour profile for ``feature`` off the long-pool slice
+    for one date (24 rows, one per hour_ending).
 
-    Returns ``None`` if the underlying columns are missing entirely.
-    All four supply-demand features (load/solar/wind/net_load) come from
-    the FULL spec's pool, which sources every series from the unified
+    Maps the feature stem (``load``, ``solar``, ``wind``, ``net_load``)
+    to the long col via ``HOURLY_STEM_TO_LONG_COL``. Returns ``None`` if
+    the col is missing. All four supply-demand features come from the
+    FULL spec's pool, which sources every series from the unified
     ``load_pjm_supply_demand_coalesced`` — so net_load is read directly,
     not derived, and the identity ``net_load = load - solar - wind``
     holds within each row by construction.
     """
-    cols = [f"{feature}_h{h}" for h in _HOURS]
-    if not all(c in row.index for c in cols):
+    long_col = HOURLY_STEM_TO_LONG_COL.get(feature)
+    if long_col is None or long_col not in rows.columns:
         return None
-    return np.array([row[c] for c in cols], dtype=float)
+    sub = rows.set_index("hour_ending")[long_col]
+    return np.array([float(sub.get(h, np.nan)) for h in _HOURS], dtype=float)
 
 
-def _lmp_profile(row: pd.Series) -> np.ndarray | None:
-    if not all(c in row.index for c in _LMP_COLS):
+def _lmp_profile(rows: pd.DataFrame) -> np.ndarray | None:
+    if "lmp" not in rows.columns:
         return None
-    return np.array([row[c] for c in _LMP_COLS], dtype=float)
+    sub = rows.set_index("hour_ending")["lmp"]
+    return np.array([float(sub.get(h, np.nan)) for h in _HOURS], dtype=float)
 
 
 def _profile_table(
-    row: pd.Series,
+    rows: pd.DataFrame,
     lmp: np.ndarray,
     sep: np.ndarray | None,
     features: tuple[str, ...],
     target_date: date,
 ) -> pd.DataFrame:
     """Wide table: one row per feature, then ``lmp``, then ``sep`` (if
-    available). Columns: ``Date | Type | HE1..HE24 | OnPeak | OffPeak | Flat``."""
+    available). Columns: ``Date | Type | HE1..HE24 | OnPeak | OffPeak | Flat``.
+
+    ``rows`` is the 24-row long-pool slice for the target date.
+    """
     targets: list[tuple[str, np.ndarray]] = [("lmp", lmp)]
     if sep is not None:
         targets.append(("sep", sep))
     target_map = dict(targets)
 
-    rows: list[dict] = []
+    out: list[dict] = []
     for f in (*features, *[name for name, _ in targets]):
         if f in target_map:
             prof = target_map[f]
         else:
-            prof = _feature_profile(row, f)
+            prof = _feature_profile(rows, f)
             if prof is None:
                 prof = np.full(24, np.nan, dtype=float)
         rec: dict = {"Date": str(target_date), "Type": f}
@@ -196,8 +205,8 @@ def _profile_table(
             v = prof[h - 1]
             rec[f"HE{h}"] = float(v) if pd.notna(v) else float("nan")
         rec = add_summary_cols(rec)
-        rows.append(rec)
-    return pd.DataFrame(rows)
+        out.append(rec)
+    return pd.DataFrame(out)
 
 
 def _correlations(
@@ -523,18 +532,20 @@ def run(
         print(f"[corr] target_date={resolved}")
     print(f"[corr] features: {features}")
 
-    pool_indexed = pool.set_index("date", drop=False)
-    if resolved not in pool_indexed.index:
+    rows = pool[pool["date"] == resolved]
+    if len(rows) == 0:
         raise RuntimeError(f"target_date={resolved} not present in pool.")
-    row = pool_indexed.loc[resolved]
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[0]
+    if "hour_ending" not in rows.columns:
+        raise RuntimeError(
+            "feature_lmp_correlation expects a long-format pool"
+            " (row per (date, hour_ending))."
+        )
 
-    lmp = _lmp_profile(row)
+    lmp = _lmp_profile(rows)
     if lmp is None or not np.isfinite(lmp).all():
         raise RuntimeError(
-            f"target_date={resolved} is missing one or more lmp_h* values; "
-            f"pick a date with full DA LMP actuals."
+            f"target_date={resolved} is missing one or more hourly LMP values;"
+            f" pick a date with full DA LMP actuals."
         )
 
     sep = _load_sep_profile(resolved, configs.CACHE_DIR, HUB)
@@ -545,7 +556,7 @@ def run(
     else:
         print(f"[corr] SEP loaded for {HUB}: 24/24 HEs")
 
-    profile = _profile_table(row, lmp, sep, features, resolved)
+    profile = _profile_table(rows, lmp, sep, features, resolved)
     corr_df = _correlations(profile, features, has_sep=sep is not None)
 
     _print_config(
@@ -585,10 +596,4 @@ _ = timedelta
 
 
 if __name__ == "__main__":
-    raise NotImplementedError(
-        "T4: needs long-format migration. Pool is now row-per-(date, HE)"
-        " with scalar feature cols; this script's wide-format reads"
-        " (load_h*, lmp_h* etc.) must be rewritten for the long schema."
-        " Slated for T4 Session 2."
-    )
     run()

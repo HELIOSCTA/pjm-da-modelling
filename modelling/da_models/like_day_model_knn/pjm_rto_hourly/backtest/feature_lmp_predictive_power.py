@@ -81,6 +81,9 @@ from da_models.like_day_model_knn.calendar import (  # noqa: E402
     FunnelCounts,
     resolve_day_type,
 )
+from da_models.like_day_model_knn.domains import (  # noqa: E402
+    HOURLY_STEM_TO_LONG_COL,
+)
 from da_models.like_day_model_knn.pjm_rto_hourly.builder import build_pool  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.engine import (  # noqa: E402
     _candidate_pool,
@@ -88,6 +91,14 @@ from da_models.like_day_model_knn.pjm_rto_hourly.engine import (  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.printers import (  # noqa: E402
     print_pool_funnel,
 )
+
+
+def _long_col(stem: str) -> str | None:
+    """Map a feature stem (``load``, ``solar``, ``lmp``, ...) to its
+    long-format column name. ``None`` means stem isn't in the registry."""
+    return HOURLY_STEM_TO_LONG_COL.get(stem)
+
+
 from utils.logging_utils import (  # noqa: E402
     Colors,
     print_divider,
@@ -116,7 +127,6 @@ FEATURES: tuple[str, ...] = ("load", "solar", "wind", "net_load")
 K_NEIGHBORS: int = configs.DEFAULT_N_ANALOGS
 
 _HOURS: list[int] = list(range(1, 25))
-_LMP_COLS: list[str] = [f"lmp_h{h}" for h in _HOURS]
 
 _HOUR_BUCKETS: dict[str, list[int]] = {
     "OnPk": list(range(8, 24)),
@@ -133,17 +143,29 @@ def _per_he_corrs(
     target_stem: str,
     corr_fn,
 ) -> dict[int, float | None]:
-    """For each HE, correlate ``feature_h{HE}`` with ``{target_stem}_h{HE}``
-    across pool rows. Returns ``{HE: corr | None}``."""
+    """For each HE, correlate ``feature`` with ``target_stem`` across
+    pool rows of that HE. Returns ``{HE: corr | None}``.
+
+    Long-pool reads: filter by ``hour_ending == h``, then read the scalar
+    long col (mapped via ``HOURLY_STEM_TO_LONG_COL``).
+    """
+    fcol = _long_col(feature)
+    tcol = _long_col(target_stem)
     out: dict[int, float | None] = {}
+    if (
+        fcol is None
+        or tcol is None
+        or fcol not in pool.columns
+        or tcol not in pool.columns
+    ):
+        return {h: None for h in _HOURS}
     for h in _HOURS:
-        fcol = f"{feature}_h{h}"
-        tcol = f"{target_stem}_h{h}"
-        if fcol not in pool.columns or tcol not in pool.columns:
+        sub = pool[pool["hour_ending"] == h]
+        if len(sub) == 0:
             out[h] = None
             continue
-        x = pool[fcol].to_numpy(dtype=float)
-        y = pool[tcol].to_numpy(dtype=float)
+        x = sub[fcol].to_numpy(dtype=float)
+        y = sub[tcol].to_numpy(dtype=float)
         out[h] = corr_fn(x, y)
     return out
 
@@ -184,24 +206,30 @@ def _partial_corr_per_he(
     control: str,
     primary: str,
 ) -> dict[int, float | None]:
-    """Per HE: corr(primary_h{HE}, target_h{HE} | control_h{HE}).
+    """Per HE: corr(primary, target | control), with HE held fixed.
 
-    Two OLS regressions per HE: target on control, primary on control.
-    Pearson the two residual vectors. Returns ``{HE: corr | None}``.
+    Two OLS regressions per HE on the long-pool slice for that HE:
+    target on control, primary on control. Pearson the residual vectors.
+    Returns ``{HE: corr | None}``.
     """
+    ccol = _long_col(control)
+    pcol = _long_col(primary)
+    tcol = _long_col(target_stem)
     out: dict[int, float | None] = {}
+    if any(c is None for c in (ccol, pcol, tcol)) or not all(
+        c in pool.columns for c in (ccol, pcol, tcol)
+    ):
+        return {h: None for h in _HOURS}
     for h in _HOURS:
-        ccol = f"{control}_h{h}"
-        pcol = f"{primary}_h{h}"
-        tcol = f"{target_stem}_h{h}"
-        if not all(c in pool.columns for c in (ccol, pcol, tcol)):
+        sub = pool[pool["hour_ending"] == h]
+        if len(sub) == 0:
             out[h] = None
             continue
-        c = pool[ccol].to_numpy(dtype=float)
-        p = pool[pcol].to_numpy(dtype=float)
-        t = pool[tcol].to_numpy(dtype=float)
-        r_p = _ols_residuals(p, c)
-        r_t = _ols_residuals(t, c)
+        c_vals = sub[ccol].to_numpy(dtype=float)
+        p_vals = sub[pcol].to_numpy(dtype=float)
+        t_vals = sub[tcol].to_numpy(dtype=float)
+        r_p = _ols_residuals(p_vals, c_vals)
+        r_t = _ols_residuals(t_vals, c_vals)
         if r_p is None or r_t is None:
             out[h] = None
             continue
@@ -234,28 +262,32 @@ def _knn_confidence_per_he(
     here.
     """
     out: dict[int, dict | None] = {}
-    target_rows = raw_pool[raw_pool["date"] == target_date]
-    if len(target_rows) == 0:
+    fcol = _long_col(feature)
+    if fcol is None:
         return {h: None for h in _HOURS}
-    target_row = target_rows.iloc[0]
+    lcol = "lmp"
+    target_rows = raw_pool[raw_pool["date"] == target_date]
+    if len(target_rows) == 0 or fcol not in target_rows.columns:
+        return {h: None for h in _HOURS}
+
+    target_by_he: dict[int, float] = {}
+    for _, r in target_rows.iterrows():
+        v = r.get(fcol)
+        if pd.notna(v):
+            target_by_he[int(r["hour_ending"])] = float(v)
 
     for h in _HOURS:
-        fcol = f"{feature}_h{h}"
-        lcol = f"lmp_h{h}"
         if fcol not in post_funnel_pool.columns or lcol not in post_funnel_pool.columns:
             out[h] = None
             continue
-        if fcol not in target_row.index:
+        if h not in target_by_he:
             out[h] = None
             continue
-        target_value = target_row[fcol]
-        if pd.isna(target_value):
-            out[h] = None
-            continue
-        target_value = float(target_value)
+        target_value = target_by_he[h]
 
-        feat_vals = post_funnel_pool[fcol].to_numpy(dtype=float)
-        lmp_vals = post_funnel_pool[lcol].to_numpy(dtype=float)
+        sub = post_funnel_pool[post_funnel_pool["hour_ending"] == h]
+        feat_vals = sub[fcol].to_numpy(dtype=float)
+        lmp_vals = sub[lcol].to_numpy(dtype=float)
         mask = np.isfinite(feat_vals) & np.isfinite(lmp_vals)
         if mask.sum() < k:
             out[h] = None
@@ -357,21 +389,20 @@ def _print_pool_summary(
 
     print_section("Column presence check")
     for f in features:
-        cols = [f"{f}_h{h}" for h in _HOURS]
-        missing = [c for c in cols if c not in pool.columns]
-        if missing:
-            print(f"  {f:<10} MISSING: {len(missing)}/24 cols ({missing[0]} ...)")
-        else:
-            print(f"  {f:<10} 24/24 columns present")
-    lmp_missing = [c for c in _LMP_COLS if c not in pool.columns]
-    print(
-        f"  {'lmp':<10} "
-        + (
-            f"MISSING: {len(lmp_missing)}/24"
-            if lmp_missing
-            else "24/24 columns present"
-        )
-    )
+        long_col = _long_col(f)
+        if long_col is None:
+            print(f"  {f:<10} MISSING: no long-format mapping")
+            continue
+        if long_col not in pool.columns:
+            print(f"  {f:<10} MISSING: long col {long_col!r} not in pool")
+            continue
+        n_finite = int(pool[long_col].notna().sum())
+        print(f"  {f:<10} long col {long_col!r} present ({n_finite:,} finite rows)")
+    if "lmp" not in pool.columns:
+        print(f"  {'lmp':<10} MISSING: long col 'lmp' not in pool")
+    else:
+        n_finite = int(pool["lmp"].notna().sum())
+        print(f"  {'lmp':<10} long col 'lmp' present ({n_finite:,} finite rows)")
     print_divider("=", width, dim=False)
 
 
@@ -674,10 +705,4 @@ def run(
 
 
 if __name__ == "__main__":
-    raise NotImplementedError(
-        "T4: needs long-format migration. Pool is now row-per-(date, HE)"
-        " with scalar feature cols; this script's wide-format reads"
-        " (load_h*, lmp_h* etc.) and per-HE Spearman aggregation must"
-        " be rewritten for the long schema. Slated for T4 Session 2."
-    )
     run()
