@@ -60,30 +60,14 @@ def _candidate_pool(
         )
     if len(work) == 0:
         return work
-    needs_filter = (
-        same_dow_group
-        or same_weekend_group
-        or same_weekend_group_for_weekends
-        or exclude_holidays
-        or exclude_dates
-        or max_age_years
-    )
-    if needs_filter and (dates_meta is not None or max_age_years):
-        work = _calendar.apply_calendar_filter(
-            pool=work,
-            target_date=target_date,
-            dates_meta=dates_meta,
-            same_dow_group=same_dow_group,
-            same_weekend_group=same_weekend_group,
-            same_weekend_group_for_weekends=same_weekend_group_for_weekends,
-            exclude_holidays=exclude_holidays,
-            exclude_dates=exclude_dates,
-            max_age_years=max_age_years,
-            min_pool_size=min_pool_size,
-            funnel=funnel,
-        )
-        if len(work) == 0:
-            return work
+
+    # Sunny parity: apply season window BEFORE the calendar filter
+    # ladder. Previously the order was reversed (calendar then season),
+    # which meant the ladder fell back through stages on the full pool
+    # before season-narrowing. With this order the ladder picks the
+    # most-restrictive stage that meets ``min_pool_size`` *within the
+    # seasonal pool* — same semantics as
+    # like_day_model_knn_sunny.engine._select_analogs_for_hour.
     if season_window_days > 0:
         target_doy = pd.Timestamp(target_date).dayofyear
         doys = pd.to_datetime(work["date"]).dt.dayofyear.to_numpy(dtype=float)
@@ -121,6 +105,33 @@ def _candidate_pool(
                     relaxed=True,
                     would_survive=len(candidates),
                 )
+        if len(work) == 0:
+            return work
+
+    # Calendar filter ladder (after season window — sunny parity).
+    needs_filter = (
+        same_dow_group
+        or same_weekend_group
+        or same_weekend_group_for_weekends
+        or exclude_holidays
+        or exclude_dates
+        or max_age_years
+    )
+    if needs_filter and (dates_meta is not None or max_age_years):
+        work = _calendar.apply_calendar_filter(
+            pool=work,
+            target_date=target_date,
+            dates_meta=dates_meta,
+            same_dow_group=same_dow_group,
+            same_weekend_group=same_weekend_group,
+            same_weekend_group_for_weekends=same_weekend_group_for_weekends,
+            exclude_holidays=exclude_holidays,
+            exclude_dates=exclude_dates,
+            max_age_years=max_age_years,
+            min_pool_size=min_pool_size,
+            funnel=funnel,
+        )
+
     return work
 
 

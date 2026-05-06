@@ -5,6 +5,7 @@ The engine consumes per-HE feature columns (load_h*, solar_h*, wind_h*)
 through a 3-hour window per target HE; daily-broadcast groups (outage_*,
 gas_*) ride along through the engine's broadcast distance path.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -20,9 +21,15 @@ def build_pool(
     hub: str = configs.HUB,
     cache_dir: Path | None = configs.CACHE_DIR,
     spec: configs.ModelSpec = configs.PJM_RTO_HOURLY_SPEC,
+    label_source: str = configs.LABEL_SOURCE,
 ) -> pd.DataFrame:
     _ = schema
-    return _shared.build_pool_from_spec(spec=spec, hub=hub, cache_dir=cache_dir)
+    return _shared.build_pool_from_spec(
+        spec=spec,
+        hub=hub,
+        cache_dir=cache_dir,
+        label_source=label_source,
+    )
 
 
 def build_query_row(
@@ -33,5 +40,7 @@ def build_query_row(
 ) -> pd.Series:
     _ = schema
     return _shared.build_query_row_from_spec(
-        spec=spec, target_date=target_date, cache_dir=cache_dir,
+        spec=spec,
+        target_date=target_date,
+        cache_dir=cache_dir,
     )

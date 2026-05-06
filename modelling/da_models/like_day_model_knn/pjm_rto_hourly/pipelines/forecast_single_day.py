@@ -189,6 +189,7 @@ def run(
             hub=config.hub,
             cache_dir=configs.CACHE_DIR,
             spec=spec,
+            label_source=config.label_source,
         )
     if query is None:
         query = build_query_row(

@@ -298,133 +298,102 @@ def apply_calendar_filter(
         how="left",
     )
 
-    # 2. holiday filter — mirror target (sunny parity). When target is a
-    # non-holiday, restrict candidates to non-holidays. When target IS a
-    # holiday, restrict to holiday candidates (so the rare holiday-target
-    # case picks analogs of OTHER holidays, not random weekday). Same
-    # ``min_pool_size`` relax-on-undershoot fallback as before.
+    # 3. Filter ladder (sunny parity). Replaces the prior sequential
+    # holiday + DOW + weekend filter chain with a composite ladder: build
+    # a list of pre-built candidate frames from most-restrictive to least,
+    # take the FIRST one whose size meets ``min_pool_size``. Mirrors
+    # like_day_model_knn_sunny.calendar.filter_candidates.
+    #
+    # Holiday filter is bound to DOW/weekend rungs (never standalone) —
+    # this is sunny's semantic and means ``exclude_holidays=True`` is a
+    # no-op when both ``same_dow_group=False`` and ``same_weekend_group=
+    # False``. To preserve the prior "always drop holidays" behavior the
+    # caller would need to set ``same_weekend_group_for_weekends=True``
+    # (which is on for Sat/Sun day-type profiles by default).
     target_is_holiday = int(target_meta.get("is_nerc_holiday", 0) or 0) == 1
-    if exclude_holidays and "is_nerc_holiday" in work.columns:
-        before = len(work)
+    if "is_nerc_holiday" in work.columns:
         holiday_int = work["is_nerc_holiday"].fillna(0).astype(int)
-        if target_is_holiday:
-            candidates = work[holiday_int == 1]
-            detail = "exclude_holidays=True (target IS holiday — keep holidays only)"
-        else:
-            candidates = work[holiday_int != 1]
-            detail = "exclude_holidays=True (target is non-holiday)"
-        if len(candidates) >= min_pool_size:
-            work = candidates
-            logger.info(
-                "calendar filter: holiday filter (target_holiday=%s) kept %d, dropped %d",
-                target_is_holiday,
-                len(work),
-                before - len(work),
-            )
-            if funnel is not None:
-                funnel.record(
-                    "NERC holiday filter",
-                    detail,
-                    before=before,
-                    after=len(work),
-                )
-        else:
-            logger.warning(
-                "calendar filter: holiday filter would leave only %d (< min %d) - relaxing",
-                len(candidates),
-                min_pool_size,
-            )
-            if funnel is not None:
-                funnel.record(
-                    "NERC holiday filter",
-                    detail,
-                    before=before,
-                    after=before,
-                    relaxed=True,
-                    would_survive=len(candidates),
-                )
+        holiday_mask = (holiday_int == 1) if target_is_holiday else (holiday_int != 1)
+    else:
+        holiday_mask = pd.Series(True, index=work.index)
 
-    # 3. same DOW group
-    if same_dow_group and "day_of_week_number" in work.columns:
-        target_dow = int(target_meta.get("day_of_week_number", -1))
-        target_group = _dow_group_index(target_dow) if target_dow >= 0 else -1
-        if target_group >= 0:
-            cand_groups = work["day_of_week_number"].apply(
-                lambda v: _dow_group_index(int(v)) if pd.notna(v) else -1,
-            )
-            before = len(work)
-            candidates = work[cand_groups == target_group]
-            group_name = list(configs.DOW_GROUPS.keys())[target_group]
-            group_days = list(configs.DOW_GROUPS.values())[target_group]
-            if len(candidates) >= min_pool_size:
-                work = candidates
-                logger.info(
-                    "calendar filter: same DOW group kept %d candidates (dropped %d)",
-                    len(work),
-                    before - len(work),
-                )
-                if funnel is not None:
-                    funnel.record(
-                        "same DOW group",
-                        f"group={group_name} (dow_nums={group_days})",
-                        before=before,
-                        after=len(work),
-                    )
-            else:
-                logger.warning(
-                    "calendar filter: same DOW group would leave only %d (< min %d) - relaxing",
-                    len(candidates),
-                    min_pool_size,
-                )
-                if funnel is not None:
-                    funnel.record(
-                        "same DOW group",
-                        f"group={group_name} (dow_nums={group_days})",
-                        before=before,
-                        after=before,
-                        relaxed=True,
-                        would_survive=len(candidates),
-                    )
-
-    # 4. same weekend group (sunny parity).
+    target_dow = int(target_meta.get("day_of_week_number", -1))
+    target_group = _dow_group_index(target_dow) if target_dow >= 0 else -1
     target_weekend = int(target_meta.get("is_weekend", 0) or 0)
     apply_weekend = same_weekend_group or (
         same_weekend_group_for_weekends and target_weekend == 1
     )
+
+    ladder: list[tuple[str, pd.DataFrame, str]] = []
+
+    # DOW-group rungs.
+    if same_dow_group and "day_of_week_number" in work.columns and target_group >= 0:
+        cand_groups = work["day_of_week_number"].apply(
+            lambda v: _dow_group_index(int(v)) if pd.notna(v) else -1,
+        )
+        dow_mask = cand_groups == target_group
+        group_name = list(configs.DOW_GROUPS.keys())[target_group]
+        if exclude_holidays:
+            ladder.append(
+                (
+                    "dow_group+holiday",
+                    work[dow_mask & holiday_mask],
+                    f"group={group_name} & holiday-mirror",
+                )
+            )
+        ladder.append(("dow_group_only", work[dow_mask], f"group={group_name}"))
+
+    # Weekend-group rungs.
     if apply_weekend and "is_weekend" in work.columns:
-        before = len(work)
-        candidates = work[work["is_weekend"].fillna(0).astype(int) == target_weekend]
+        weekend_mask = work["is_weekend"].fillna(0).astype(int) == target_weekend
         weekend_label = "weekend" if target_weekend == 1 else "weekday"
-        if len(candidates) >= min_pool_size:
-            work = candidates
-            logger.info(
-                "calendar filter: same weekend group (%s) kept %d candidates (dropped %d)",
-                weekend_label,
-                len(work),
-                before - len(work),
-            )
-            if funnel is not None:
-                funnel.record(
-                    "same weekend group",
-                    f"is_weekend={target_weekend} ({weekend_label})",
-                    before=before,
-                    after=len(work),
+        if exclude_holidays:
+            ladder.append(
+                (
+                    "weekend_group+holiday",
+                    work[weekend_mask & holiday_mask],
+                    f"is_weekend={target_weekend} ({weekend_label}) & holiday-mirror",
                 )
-        else:
-            logger.warning(
-                "calendar filter: same weekend group would leave only %d (< min %d) - relaxing",
-                len(candidates),
-                min_pool_size,
             )
-            if funnel is not None:
-                funnel.record(
-                    "same weekend group",
-                    f"is_weekend={target_weekend} ({weekend_label})",
-                    before=before,
-                    after=before,
-                    relaxed=True,
-                    would_survive=len(candidates),
-                )
+        ladder.append(
+            (
+                "weekend_group_only",
+                work[weekend_mask],
+                f"is_weekend={target_weekend} ({weekend_label})",
+            )
+        )
+
+    # Final fallback: no calendar filter.
+    ladder.append(("no_filter", work, "no calendar filter — full pool"))
+
+    # Walk the ladder; take the first stage meeting min_pool_size.
+    chosen_name = "no_filter"
+    chosen_frame = work
+    chosen_detail = "no calendar filter — full pool"
+    for stage_name, frame, detail in ladder:
+        meets = len(frame) >= min_pool_size
+        if funnel is not None:
+            funnel.record(
+                f"ladder:{stage_name}",
+                detail + (f"  (size={len(frame)})" if not meets else ""),
+                before=len(work),
+                after=len(frame) if meets else len(work),
+                relaxed=not meets,
+                would_survive=len(frame) if not meets else None,
+            )
+        if meets:
+            chosen_frame = frame
+            chosen_name = stage_name
+            chosen_detail = detail
+            break
+
+    work = chosen_frame
+    logger.info(
+        "calendar filter ladder: chose stage=%s (%s), kept %d candidates",
+        chosen_name,
+        chosen_detail,
+        len(work),
+    )
 
     return work.reset_index(drop=True)
 

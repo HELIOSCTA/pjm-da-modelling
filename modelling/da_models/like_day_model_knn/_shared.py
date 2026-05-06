@@ -4,6 +4,7 @@ The per-model builder modules are thin wrappers around ``build_pool_from_spec``
 and ``build_query_row_from_spec`` here; the spec's ``domains`` field drives
 which features are pulled in and joined.
 """
+
 from __future__ import annotations
 
 import logging
@@ -92,6 +93,7 @@ def load_dates_daily(cache_dir: Path | None) -> pd.DataFrame:
     directly; they already import ``_shared``.
     """
     from da_models.like_day_model_knn import calendar as _calendar
+
     return _calendar.load_pjm_dates_daily(cache_dir=cache_dir)
 
 
@@ -109,10 +111,45 @@ def load_hourly_rto(cache_dir: Path | None) -> pd.DataFrame:
 
 # ── Spec-driven pool/query assembly ─────────────────────────────────────
 
+
+def _build_system_energy_labels(df_sep: pd.DataFrame, hub: str) -> pd.DataFrame:
+    """Wide-format LMP labels from PJM DA system energy price data.
+
+    Parallel to ``build_lmp_labels`` but sourced from
+    ``loader.load_lmp_system_energy_da``. SEP is system-wide so all hubs
+    return the same series for a given (date, HE); the hub filter
+    deduplicates the per-hub rows in the parquet rather than narrowing
+    geographically. Output columns: ``date``, ``lmp_h1..lmp_h24``.
+    """
+    if df_sep is None or len(df_sep) == 0:
+        return pd.DataFrame(columns=["date"] + LMP_HOUR_COLUMNS)
+    df = df_sep[df_sep["region"].astype(str) == hub].copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["hour_ending"] = pd.to_numeric(df["hour_ending"], errors="coerce").astype(
+        "Int64"
+    )
+    df["lmp_system_energy_price"] = pd.to_numeric(
+        df["lmp_system_energy_price"], errors="coerce"
+    )
+    df = df.dropna(subset=["date", "hour_ending", "lmp_system_energy_price"])
+    if len(df) == 0:
+        return pd.DataFrame(columns=["date"] + LMP_HOUR_COLUMNS)
+    df["hour_ending"] = df["hour_ending"].astype(int)
+    pivot = df.pivot_table(
+        index="date",
+        columns="hour_ending",
+        values="lmp_system_energy_price",
+        aggfunc="mean",
+    ).reindex(columns=range(1, 25))
+    pivot = pivot.rename(columns={h: f"lmp_h{h}" for h in range(1, 25)})
+    return pivot.reset_index()
+
+
 def build_pool_from_spec(
     spec: configs.ModelSpec,
     hub: str = configs.HUB,
     cache_dir: Path | None = configs.CACHE_DIR,
+    label_source: str = configs.LABEL_SOURCE,
 ) -> pd.DataFrame:
     """One row per delivery date with all enabled-domain feature cols + 24
     LMP labels.
@@ -122,6 +159,21 @@ def build_pool_from_spec(
     — the engine's NaN-aware RMS-z handles partial coverage. (Older dates
     where solar/wind/gas/outages didn't exist still compete on load.)
     LMP labels are then left-joined for the hub.
+
+    ``label_source`` controls what the ``lmp_h1..lmp_h24`` cols mean:
+
+      - ``"hub_lmp"`` (default): total DA LMP at ``hub`` from
+        ``loader.load_lmp_da`` -> ``build_lmp_labels``.
+      - ``"system_energy"``: PJM RTO DA System Energy Price (LMP minus
+        congestion + loss) from ``loader.load_lmp_system_energy_da``.
+        SEP is system-wide so the hub filter only deduplicates per-hub
+        rows; the resulting labels are identical regardless of hub
+        choice. Use to train/forecast against the system-energy
+        component when isolating fundamentals from network effects.
+
+    Sunny parity for the ``label_source`` switch (sunny's
+    ``_shared.build_pool_from_spec`` accepts the same kwarg, with the
+    same dispatch logic — see _build_lmp_long).
     """
     if not spec.domains:
         raise ValueError(f"Spec '{spec.name}' has no domains.")
@@ -136,8 +188,17 @@ def build_pool_from_spec(
         else:
             feat = feat.merge(df, on="date", how="outer")
 
-    df_lmp_da = load_lmp_da(cache_dir=cache_dir)
-    df_labels = build_lmp_labels(df_lmp_da, hub)
+    if label_source == "hub_lmp":
+        df_lmp_da = load_lmp_da(cache_dir=cache_dir)
+        df_labels = build_lmp_labels(df_lmp_da, hub)
+    elif label_source == "system_energy":
+        df_sep = loader.load_lmp_system_energy_da(cache_dir=cache_dir)
+        df_labels = _build_system_energy_labels(df_sep, hub)
+    else:
+        raise ValueError(
+            f"Unknown label_source={label_source!r}; "
+            "expected 'hub_lmp' or 'system_energy'."
+        )
     pool = feat.merge(df_labels, on="date", how="left")
 
     feature_cols = all_feature_cols(spec.domains)
@@ -149,8 +210,12 @@ def build_pool_from_spec(
     n_labels_filled = int(pool[LMP_HOUR_COLUMNS].notna().any(axis=1).sum())
     logger.info(
         "%s pool: %d rows x %d features (%d w/ features, %d w/ labels) — domains=%s",
-        spec.name, len(pool), len(feature_cols), n_features_filled,
-        n_labels_filled, spec.domains,
+        spec.name,
+        len(pool),
+        len(feature_cols),
+        n_features_filled,
+        n_labels_filled,
+        spec.domains,
     )
     return pool
 
@@ -192,6 +257,10 @@ def build_query_row_from_spec(
     n_filled = int(pd.Series(out[feature_cols].iloc[0]).notna().sum())
     logger.info(
         "%s query for %s: %d/%d features filled — domains=%s",
-        spec.name, target_date, n_filled, len(feature_cols), spec.domains,
+        spec.name,
+        target_date,
+        n_filled,
+        len(feature_cols),
+        spec.domains,
     )
     return out.iloc[0]
