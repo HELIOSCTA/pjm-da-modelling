@@ -585,4 +585,10 @@ _ = timedelta
 
 
 if __name__ == "__main__":
+    raise NotImplementedError(
+        "T4: needs long-format migration. Pool is now row-per-(date, HE)"
+        " with scalar feature cols; this script's wide-format reads"
+        " (load_h*, lmp_h* etc.) must be rewritten for the long schema."
+        " Slated for T4 Session 2."
+    )
     run()

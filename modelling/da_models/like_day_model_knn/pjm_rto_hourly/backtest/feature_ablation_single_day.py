@@ -1287,4 +1287,10 @@ def run(
 
 
 if __name__ == "__main__":
+    raise NotImplementedError(
+        "T4: needs long-format migration. Pool/query are now"
+        " row-per-(date, HE) with scalar feature cols; this script's"
+        " wide-format reads and per-feature column-pruning logic must"
+        " be rewritten for the long schema. Slated for T4 Session 2."
+    )
     run()

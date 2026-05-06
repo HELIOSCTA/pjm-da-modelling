@@ -1,15 +1,19 @@
-"""Engine for pjm_rto_hourly - 3-hour window features x per-hour matching (AnEn-NWP-style).
+"""Engine for pjm_rto_hourly — long-format per-HE matching.
 
-One match per (target_date, target_hour). For each target HE h, the
-feature vector is the windowed cols (load_h*, solar_h*, wind_h*) at
-hours [h - flt_radius, h + flt_radius] (clipped to [1, 24]).
+After the T4 wide→long cutover, the pool is one row per (date, hour_ending)
+and the query is a 24-row DataFrame. The engine filters the pool to the
+target HE, computes a per-group NaN-aware sum-Euclidean distance against
+the query at that HE, and combines groups via spec weights. Same K=20-
+per-HE structure as before; ``flt_radius`` / windowed-vs-broadcast split
+are gone (everything is "scalar at HE" now).
 
-Same-hour-of-day constraint: target HE h is matched only against candidate
-days' HE h. Output is hour-keyed - 24 separate top-N selections produce
-24 * n_analogs rows total.
-
-Pool-fit z-score, NaN-aware Euclidean over the window, inverse-distance
-analog weighting normalized within each hour.
+Sunny parity highlights:
+  - Per-group z-fit on the HE-filtered pool subset.
+  - Sum-Euclidean per group (no /n_valid normalization).
+  - Linear pre-selection age penalty: ``d *= 1 + age_days / half_life``.
+  - Inverse-distance squared analog weighting: ``w_i ∝ 1/(d_i + ε)²``.
+  - Tie-break by date desc on equal distance (newer wins).
+  - Filter ladder + holiday-mirror semantics in calendar.apply_calendar_filter.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ def _circular_day_distance(day_of_year: np.ndarray, target_doy: int) -> np.ndarr
 
 
 def _candidate_pool(
-    pool: pd.DataFrame,
+    pool_long: pd.DataFrame,
     target_date: date,
     season_window_days: int,
     min_pool_size: int,
@@ -48,54 +52,50 @@ def _candidate_pool(
     max_age_years: int | None = None,
     funnel: _calendar.FunnelCounts | None = None,
 ) -> pd.DataFrame:
-    work = pool.copy()
-    before_chrono = len(work)
-    work = work[pd.to_datetime(work["date"]).dt.date < target_date].copy()
+    """Apply chronological / season / calendar filters to a long-format pool.
+
+    The filter functions in ``calendar.apply_calendar_filter`` operate on
+    a date-level frame. Here we extract unique dates, run the filters,
+    then reduce the long pool to the surviving dates.
+    """
+    if "date" not in pool_long.columns:
+        raise ValueError("_candidate_pool: long pool missing 'date' column")
+
+    # Date-level subset for filter logic.
+    work_dates = (
+        pool_long[["date"]].drop_duplicates().sort_values("date").reset_index(drop=True)
+    )
+    before_chrono = len(work_dates)
+    work_dates = work_dates[
+        pd.to_datetime(work_dates["date"]).dt.date < target_date
+    ].copy()
     if funnel is not None:
         funnel.record(
             "chronological cut",
             f"date < target ({target_date})",
             before=before_chrono,
-            after=len(work),
+            after=len(work_dates),
         )
-    if len(work) == 0:
-        return work
+    if len(work_dates) == 0:
+        return pool_long.iloc[0:0]
 
-    # Sunny parity: apply season window BEFORE the calendar filter
-    # ladder. Previously the order was reversed (calendar then season),
-    # which meant the ladder fell back through stages on the full pool
-    # before season-narrowing. With this order the ladder picks the
-    # most-restrictive stage that meets ``min_pool_size`` *within the
-    # seasonal pool* — same semantics as
-    # like_day_model_knn_sunny.engine._select_analogs_for_hour.
+    # Season window (sunny parity: applied before the calendar ladder).
     if season_window_days > 0:
         target_doy = pd.Timestamp(target_date).dayofyear
-        doys = pd.to_datetime(work["date"]).dt.dayofyear.to_numpy(dtype=float)
+        doys = pd.to_datetime(work_dates["date"]).dt.dayofyear.to_numpy(dtype=float)
         keep = _circular_day_distance(doys, target_doy) <= float(season_window_days)
-        candidates = work[keep]
-        before_season = len(work)
+        candidates = work_dates[keep]
+        before_season = len(work_dates)
         if len(candidates) >= min_pool_size:
-            work = candidates.copy()
-            logger.info(
-                "pjm_rto_hourly season window +/-%dd kept %d candidates",
-                season_window_days,
-                len(work),
-            )
+            work_dates = candidates.copy()
             if funnel is not None:
                 funnel.record(
                     "season window",
                     f"+/-{season_window_days}d (DOY circular)",
                     before=before_season,
-                    after=len(work),
+                    after=len(work_dates),
                 )
         else:
-            logger.warning(
-                "pjm_rto_hourly season window kept only %d candidates "
-                "(< min %d) - falling back to full history (%d)",
-                len(candidates),
-                min_pool_size,
-                len(work),
-            )
             if funnel is not None:
                 funnel.record(
                     "season window",
@@ -105,10 +105,10 @@ def _candidate_pool(
                     relaxed=True,
                     would_survive=len(candidates),
                 )
-        if len(work) == 0:
-            return work
+        if len(work_dates) == 0:
+            return pool_long.iloc[0:0]
 
-    # Calendar filter ladder (after season window — sunny parity).
+    # Calendar filter ladder.
     needs_filter = (
         same_dow_group
         or same_weekend_group
@@ -118,8 +118,8 @@ def _candidate_pool(
         or max_age_years
     )
     if needs_filter and (dates_meta is not None or max_age_years):
-        work = _calendar.apply_calendar_filter(
-            pool=work,
+        work_dates = _calendar.apply_calendar_filter(
+            pool=work_dates,
             target_date=target_date,
             dates_meta=dates_meta,
             same_dow_group=same_dow_group,
@@ -132,52 +132,11 @@ def _candidate_pool(
             funnel=funnel,
         )
 
-    return work
+    if len(work_dates) == 0:
+        return pool_long.iloc[0:0]
 
-
-# Group prefixes whose features participate in the per-HE dynamic window
-# (vs. the broadcast non-load path). Each prefix corresponds to a column
-# stem of the form ``{stem}_h{HE}``. Adding a new windowed feature family
-# means: define domain cols as ``{stem}_h{HE}``, name groups so they
-# start with ``{stem}_`` (or ARE ``{stem}``), and add the stem here.
-#
-# Note on naming: groups like ``load_ramp_1h`` and ``load_ramp_3h`` start
-# with ``load_`` so they pass the prefix check below — but their stems
-# are the full ``load_ramp_1h`` / ``load_ramp_3h`` strings. The
-# ``_WINDOWED_COL_STEMS`` list determines what cols ``_window_columns``
-# emits per HE; the prefix list only gates ``_is_windowed_group``.
-_WINDOWED_GROUP_PREFIXES: tuple[str, ...] = (
-    "load_",
-    "solar_",
-    "wind_",
-    "net_load_",
-    "temp_",
-    "renewable_",
-)
-_WINDOWED_COL_STEMS: tuple[str, ...] = (
-    "load",
-    "load_ramp_1h",
-    "load_ramp_3h",
-    "solar",
-    "wind",
-    "net_load",
-    "temp",
-)
-
-
-def _is_windowed_group(group_name: str) -> bool:
-    return any(group_name.startswith(p) for p in _WINDOWED_GROUP_PREFIXES)
-
-
-def _window_columns(target_hour: int, flt_radius: int) -> list[str]:
-    """Windowed feature column names for a target hour and +/- flt_radius window.
-
-    Returns one set of cols per windowed stem (load_h, solar_h, wind_h).
-    Caller filters down to columns actually present in the pool/query.
-    """
-    lo = max(1, target_hour - flt_radius)
-    hi = min(24, target_hour + flt_radius)
-    return [f"{stem}_h{h}" for stem in _WINDOWED_COL_STEMS for h in range(lo, hi + 1)]
+    surviving = set(work_dates["date"].tolist())
+    return pool_long[pool_long["date"].isin(surviving)].reset_index(drop=True)
 
 
 def _effective_weights(
@@ -188,9 +147,7 @@ def _effective_weights(
 
     With ``override=None``, returns the spec-derived (already-renormalized)
     weights. With an override dict, validates that every key is a valid
-    spec group, fills missing keys with 0, then renormalizes to sum to 1.0
-    — same convention as ``domains.resolved_feature_group_weights``.
-    Raises ``ValueError`` on unknown keys or zero/negative total.
+    spec group, fills missing keys with 0, then renormalizes to sum to 1.0.
     """
     if override is None:
         return spec.feature_group_weights
@@ -207,74 +164,8 @@ def _effective_weights(
     return {k: v / total for k, v in raw.items()}
 
 
-def _combined_non_load_distance(
-    spec: ModelSpec,
-    pool: pd.DataFrame,
-    query: pd.Series,
-    weights: dict[str, float],
-) -> tuple[np.ndarray | None, float]:
-    """Weighted-average per-group RMS-z distance over broadcast (non-windowed) groups.
-
-    Broadcast group features (e.g. outage_level, gas_level) are constant
-    across target hours, so the combined distance is computed once per
-    pool row and reused for all 24 target hours. Returns
-    ``(distance_array, total_weight)``; ``distance_array`` is ``None``
-    when the spec has no broadcast groups.
-    """
-    non_load_groups = [
-        (g, float(weights.get(g, 0.0)))
-        for g in spec.feature_groups
-        if not _is_windowed_group(g) and float(weights.get(g, 0.0)) > 0
-    ]
-    if not non_load_groups:
-        return None, 0.0
-
-    n = len(pool)
-    weighted_sum = np.zeros(n, dtype=float)
-    weight_sum = np.zeros(n, dtype=float)
-    for group, weight in non_load_groups:
-        cols = spec.feature_groups[group]
-        cols_present = [c for c in cols if c in pool.columns and c in query.index]
-        if not cols_present:
-            continue
-        pool_vals = pool[cols_present].to_numpy(dtype=float)
-        query_vals = query[cols_present].to_numpy(dtype=float)
-        # Same all-NaN-column suppression as the windowed per-group block:
-        # broadcast features can have fully missing cols for old pool dates
-        # (e.g. outage parquet starts later than load) and the NaN-aware
-        # mask below handles them — silence the cosmetic warnings.
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=RuntimeWarning, message="Mean of empty slice"
-            )
-            warnings.filterwarnings(
-                "ignore",
-                category=RuntimeWarning,
-                message="Degrees of freedom <= 0",
-            )
-            means = np.nanmean(pool_vals, axis=0)
-            stds = np.nanstd(pool_vals, axis=0)
-        stds = np.where(stds == 0, 1.0, stds)
-        pool_z = (pool_vals - means) / stds
-        query_z = (query_vals - means) / stds
-        diff = query_z - pool_z
-        mask = ~np.isnan(diff)
-        sq = np.where(mask, diff**2, 0.0)
-        n_valid = mask.sum(axis=1)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            d = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.nan)
-        valid = ~np.isnan(d)
-        weighted_sum[valid] += weight * d[valid]
-        weight_sum[valid] += weight
-
-    distance = np.full(n, np.nan, dtype=float)
-    valid = weight_sum > 0
-    distance[valid] = weighted_sum[valid] / weight_sum[valid]
-    return distance, sum(w for _, w in non_load_groups)
-
-
 def find_twins(
-    query: pd.Series,
+    query: pd.DataFrame,
     pool: pd.DataFrame,
     target_date: date,
     spec: ModelSpec = configs.PJM_RTO_HOURLY_SPEC,
@@ -292,18 +183,10 @@ def find_twins(
     feature_group_weights_override: dict[str, float] | None = None,
     funnel: _calendar.FunnelCounts | None = None,
 ) -> pd.DataFrame:
-    """Per-hour analog table. Shape: 24 * n_analogs rows.
+    """Per-HE analog table on the long pool. Shape: 24 * n_analogs rows.
 
-    Columns: hour_ending, rank, date, distance, weight, lmp.
-
-    ``feature_group_weights_override`` (when given) replaces the
-    spec-derived weights for this call only. Validated and renormalized
-    via ``_effective_weights``.
-
-    ``funnel`` (when given) accumulates per-stage candidate counts as the
-    pool is filtered down — see ``calendar.FunnelCounts``. Stage 0 (raw
-    history) is recorded here; subsequent stages are recorded inside
-    ``_candidate_pool`` and ``apply_calendar_filter``.
+    Columns: ``hour_ending``, ``rank``, ``date``, ``distance``, ``weight``,
+    ``lmp``.
     """
     out_cols = ["hour_ending", "rank", "date", "distance", "weight", "lmp"]
 
@@ -312,9 +195,9 @@ def find_twins(
     if funnel is not None:
         funnel.record(
             "raw history",
-            f"build_pool: {len(pool)} dates with feature coverage",
-            before=len(pool),
-            after=len(pool),
+            f"build_pool: {pool['date'].nunique()} dates with feature coverage",
+            before=pool["date"].nunique(),
+            after=pool["date"].nunique(),
         )
 
     work = _candidate_pool(
@@ -338,70 +221,73 @@ def find_twins(
         )
         return pd.DataFrame(columns=out_cols)
 
-    flt_radius = int(spec.flt_radius)
-    rows: list[dict] = []
+    # Index query rows by HE for quick lookup.
+    if "hour_ending" not in query.columns:
+        raise ValueError(
+            "find_twins: query must be a long-format DataFrame with"
+            " 'hour_ending' column (one row per HE)"
+        )
+    query_by_he = {int(r["hour_ending"]): r for _, r in query.iterrows()}
 
-    # Pre-compute broadcast (non-windowed) groups' combined distance (constant
-    # across hours). Windowed groups (load/solar/wind/net_load) are evaluated
-    # per HE below via a per-group weighted RMS-z so spec.feature_group_weights
-    # actually controls each group's share of the windowed distance — the
-    # prior implementation pooled all windowed cols into one RMS-z, which
-    # discarded within-windowed group weights and gave wind/solar a column-
-    # count-driven share (~3.2x their spec-intended weight on the FULL spec).
-    non_load_dist, non_load_weight = _combined_non_load_distance(
-        spec, work, query, weights
-    )
-    # Snapshot spec weights before the per-HE loop reassigns ``weights`` to
-    # the analog inverse-distance weights at the bottom of each iteration.
-    # (Renamed the analog vector to ``analog_weights`` below; the snapshot
-    # remains for safety against future refactors.)
+    rows: list[dict] = []
     group_weights: dict[str, float] = dict(weights)
-    load_weight = sum(
-        float(w) for g, w in group_weights.items() if _is_windowed_group(g)
-    )
-    if load_weight <= 0:
-        # No windowed groups in the spec; treat the dynamic window as the full
-        # remaining weight so distances stay finite.
-        load_weight = max(0.0, 1.0 - non_load_weight)
 
     for h in HOURS:
-        window_cols_set = set(_window_columns(h, flt_radius))
+        work_he = work[work["hour_ending"] == h]
+        if len(work_he) == 0:
+            continue
+        if h not in query_by_he:
+            continue
+        query_he = query_by_he[h]
 
-        # Per-group weighted RMS-z. Each windowed group computes a NaN-aware
-        # RMS-z over the intersection of its cols with the per-HE window
-        # (z-fit per group → scale-invariant per group), then groups combine
-        # via spec weights. The windowed-vs-broadcast outer combine below is
-        # unchanged.
-        weighted_d = np.zeros(len(work), dtype=float)
-        contributed = np.zeros(len(work), dtype=float)
+        # Per-group weighted sum-Euclidean across groups. Each group
+        # produces a NaN-aware d_group; groups combine via spec weights
+        # as a *sum* (no /contributed normalization) so partial coverage
+        # cannot underprice a row. Rows that fail to contribute to every
+        # non-zero-weight group get d=inf and are dropped — partial-
+        # coverage rows would otherwise beat fully-covered ones (e.g. a
+        # 2010 row with only calendar features matching DOW exactly
+        # would land at d=0 while a 2024 row with full coverage hits a
+        # higher honest distance).
+        nonzero_groups = [
+            (g, c)
+            for g, c in spec.feature_groups.items()
+            if group_weights.get(g, 0.0) > 0
+        ]
+        d = np.zeros(len(work_he), dtype=float)
+        full_coverage = np.ones(len(work_he), dtype=bool)
 
-        for group_name, group_cols in spec.feature_groups.items():
-            if not _is_windowed_group(group_name):
-                continue
-            w = float(group_weights.get(group_name, 0.0))
-            if w <= 0:
-                continue
-            windowed = [c for c in group_cols if c in window_cols_set]
+        for group_name, group_cols in nonzero_groups:
+            w = float(group_weights[group_name])
             cols_present = [
-                c for c in windowed if c in work.columns and c in query.index
+                c for c in group_cols if c in work_he.columns and c in query_he.index
             ]
             if not cols_present:
+                # Group has zero columns under this query/pool — treat as
+                # uniformly missing across all rows (no contribution, no
+                # exclusion either, since nothing to match against).
                 continue
 
-            pool_vals = work[cols_present].to_numpy(dtype=float)
-            query_vals = query[cols_present].to_numpy(dtype=float)
+            pool_vals = work_he[cols_present].to_numpy(dtype=float)
+            query_vals = np.asarray([query_he[c] for c in cols_present], dtype=float)
 
-            # Per-group nanmean/nanstd fire ``RuntimeWarning: Mean of empty
-            # slice`` and ``Degrees of freedom <= 0`` when a column is
-            # entirely NaN within the pool — happens at structurally-NaN
-            # edges (load_ramp_1h_h1, load_ramp_3h_h{1..3}) and for old
-            # pool dates outside the temperature parquet's coverage. The
-            # NaN-aware mask below handles them correctly downstream
-            # (those cols drop out of n_valid for each row); suppress the
-            # cosmetic warnings here so stdout stays readable.
+            # Query NaN-mask: if the query is fully missing for this group
+            # at this HE (e.g. load_ramp_* at HE=1 needs prior-day load
+            # which the query frame doesn't carry), there is nothing to
+            # match against — skip the group rather than letting it
+            # collapse the full-coverage gate to all-False.
+            query_finite = ~np.isnan(query_vals)
+            if not query_finite.any():
+                continue
+            cols_present = [c for c, ok in zip(cols_present, query_finite) if ok]
+            pool_vals = pool_vals[:, query_finite]
+            query_vals = query_vals[query_finite]
+
             with warnings.catch_warnings():
                 warnings.filterwarnings(
-                    "ignore", category=RuntimeWarning, message="Mean of empty slice"
+                    "ignore",
+                    category=RuntimeWarning,
+                    message="Mean of empty slice",
                 )
                 warnings.filterwarnings(
                     "ignore",
@@ -412,21 +298,12 @@ def find_twins(
                 stds = np.nanstd(pool_vals, axis=0)
             stds = np.where(stds == 0, 1.0, stds)
             pool_z = (pool_vals - means) / stds
-            query_z = ((query_vals - means) / stds).reshape(-1)
+            query_z = (query_vals - means) / stds
 
             diff = query_z - pool_z
             mask = ~np.isnan(diff)
             sq = np.where(mask, diff**2, 0.0)
             n_valid = mask.sum(axis=1)
-            # Sum-Euclidean over the group's windowed cols (sunny parity).
-            # Replaces the prior RMS-z (which divided by n_valid). The
-            # division normalized for missing-feature coverage, but that
-            # made candidates with one strong feature match and noise on
-            # the rest "look close" — the candidate set then drifts
-            # toward partial-coverage analogs rather than dates that
-            # match across all features simultaneously. Sum-Euclidean
-            # penalizes incomplete coverage by construction. n_valid > 0
-            # gate retained so all-NaN cols still produce NaN distance.
             with np.errstate(invalid="ignore"):
                 d_group = np.where(
                     n_valid > 0,
@@ -435,39 +312,17 @@ def find_twins(
                 )
 
             finite = np.isfinite(d_group)
-            weighted_d[finite] += w * d_group[finite]
-            contributed[finite] += w
+            d[finite] += w * d_group[finite]
+            full_coverage &= finite
 
-        # Combine groups: weighted average over groups that had any finite
-        # contribution. Rows with no windowed group contribution get inf.
-        denom = np.where(contributed > 0, contributed, 1.0)
-        d = np.where(contributed > 0, weighted_d / denom, np.inf)
+        d = np.where(full_coverage, d, np.inf)
 
-        if non_load_dist is not None:
-            total_w = load_weight + non_load_weight
-            valid_load = np.isfinite(d)
-            valid_nl = ~np.isnan(non_load_dist)
-            both = valid_load & valid_nl
-            combined = np.full_like(d, np.inf)
-            combined[both] = (
-                load_weight * d[both] + non_load_weight * non_load_dist[both]
-            ) / total_w
-            # Fall back to load-only when non-load is missing for a row.
-            load_only = valid_load & ~valid_nl
-            combined[load_only] = d[load_only]
-            d = combined
-
-        # Linear pre-selection age penalty: ``d *= 1 + age_days / half_life``.
-        # Applied BEFORE top-N argsort so older candidates are less likely
-        # to be picked at all. Replaces the previous post-selection
-        # exponential weight decay (which only changed how analogs blended,
-        # not which were selected). Faithful to sunny's
-        # ``calendar.linear_age_penalty``.
+        # Linear pre-selection age penalty (sunny parity).
         if recency_half_life_days and recency_half_life_days > 0:
             finite_mask = np.isfinite(d)
             if finite_mask.any():
                 d = d.copy()
-                pool_dates = work["date"].to_list()
+                pool_dates = work_he["date"].to_list()
                 d[finite_mask] = _calendar.linear_age_penalty(
                     d[finite_mask],
                     [pool_dates[i] for i in np.flatnonzero(finite_mask)],
@@ -475,13 +330,9 @@ def find_twins(
                     float(recency_half_life_days),
                 )
 
-        # Sort by (distance asc, date desc) so newer dates win on equal
-        # distance — sunny parity (sunny.engine.py:210 uses ``ascending=
-        # [True, False]`` on [distance, date]). ``np.lexsort`` reads keys
-        # right-to-left as primary→secondary, ascending; pass ``-date_ord``
-        # to invert the secondary sort to descending.
+        # Sort by (distance asc, date desc) — newer wins on ties.
         date_ord = np.array(
-            [pd.Timestamp(d_).toordinal() for d_ in work["date"]],
+            [pd.Timestamp(d_).toordinal() for d_ in work_he["date"]],
             dtype=np.int64,
         )
         order = np.lexsort((-date_ord, d))
@@ -492,34 +343,26 @@ def find_twins(
 
         d_top = d[order]
         eps = 1e-6
-        # Inverse-distance-squared analog weighting (sunny parity). Squared
-        # form concentrates blend weight on the nearest analog; linear
-        # form smears more uniformly across K. Empirically: when the
-        # nearest analog is a genuinely close match, squared returns a
-        # sharper forecast; when distances are clustered (no clearly-best
-        # neighbor), the two are nearly equivalent. See
-        # like_day_model_knn_sunny/.../engine.py:217 for the same formula.
         inv_dist = 1.0 / (d_top + eps) ** 2
         if inv_dist.sum() <= 0:
             analog_weights = np.full(len(d_top), 1.0 / max(1, len(d_top)))
         else:
             analog_weights = inv_dist / inv_dist.sum()
 
-        lmp_col = f"lmp_h{h}"
-        for rank, (idx_arr, dist, w) in enumerate(
+        # Materialize analog rows.
+        for rank, (idx_arr, dist, w_blend) in enumerate(
             zip(order, d_top, analog_weights), start=1
         ):
-            row = work.iloc[int(idx_arr)]
+            row = work_he.iloc[int(idx_arr)]
+            lmp_val = row.get("lmp", np.nan)
             rows.append(
                 {
                     "hour_ending": h,
                     "rank": rank,
                     "date": row["date"],
                     "distance": float(dist),
-                    "weight": float(w),
-                    "lmp": float(row.get(lmp_col, np.nan))
-                    if lmp_col in row.index
-                    else float("nan"),
+                    "weight": float(w_blend),
+                    "lmp": float(lmp_val) if pd.notna(lmp_val) else float("nan"),
                 }
             )
 

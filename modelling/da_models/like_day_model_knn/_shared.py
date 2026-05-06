@@ -1,13 +1,23 @@
 """Shared parquet loading + pool/query assembly for the three model builders.
 
-The per-model builder modules are thin wrappers around ``build_pool_from_spec``
-and ``build_query_row_from_spec`` here; the spec's ``domains`` field drives
-which features are pulled in and joined.
+After the T4 wide→long cutover, ``build_pool_from_spec`` returns a long
+DataFrame (one row per (date, hour_ending), 1 scalar value per feature)
+and ``build_query_row_from_spec`` returns a 24-row DataFrame for the
+target date. Domain pool builders still produce wide format internally
+(``{stem}_h1..{stem}_h24`` cols) — the melt step in
+``_melt_pool_to_long`` converts to long with sunny-compatible col names
+(``load_mw_at_hour``, ``temp_at_hour``, etc.). Spec ``feature_groups``
+reference the long col names.
+
+The per-model builder modules are thin wrappers around
+``build_pool_from_spec`` / ``build_query_row_from_spec``; the spec's
+``domains`` field drives which features are pulled in and joined.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from pathlib import Path
 
@@ -24,10 +34,17 @@ from da_models.common.data.lmp_pool import (
 from da_models.like_day_model_knn import configs
 from da_models.like_day_model_knn.domains import (
     DOMAIN_REGISTRY,
+    HOURLY_STEM_TO_LONG_COL,
     all_feature_cols,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Pattern to detect wide hourly cols of the form ``{stem}_h{N}`` where
+# N is in 1..24. Used by ``_melt_pool_to_long`` to identify which cols
+# need pivoting from wide to long.
+_HOURLY_COL_PATTERN = re.compile(r"^(.+)_h(\d+)$")
 
 
 def resolved_load_forecast_paths(cache_dir: Path | None) -> list[Path]:
@@ -145,35 +162,103 @@ def _build_system_energy_labels(df_sep: pd.DataFrame, hub: str) -> pd.DataFrame:
     return pivot.reset_index()
 
 
+def _melt_pool_to_long(wide_pool: pd.DataFrame) -> pd.DataFrame:
+    """Convert wide pool (24 hourly cols per stem) to long ((date, HE) rows).
+
+    For each ``{stem}_h{N}`` family of cols (N in 1..24), the 24 cols
+    are unpivoted into a single scalar col named per
+    ``HOURLY_STEM_TO_LONG_COL`` (e.g. ``load_h*`` → ``load_mw_at_hour``,
+    ``lmp_h*`` → ``lmp``). Stems not in the mapping are skipped with a
+    warning. Daily/broadcast cols (no ``_h{N}`` suffix) are joined on
+    ``date``, replicated across all 24 HE rows of each date.
+
+    Output schema: ``date``, ``hour_ending``, plus one scalar col per
+    melted stem and the broadcast cols.
+    """
+    if wide_pool is None or len(wide_pool) == 0:
+        return pd.DataFrame(columns=["date", "hour_ending"])
+    if "date" not in wide_pool.columns:
+        raise ValueError("_melt_pool_to_long: wide_pool missing 'date' column")
+
+    # Group cols by stem.
+    stems: dict[str, list[tuple[str, int]]] = {}  # stem -> [(col, he), ...]
+    broadcast_cols: list[str] = []
+    for col in wide_pool.columns:
+        if col == "date":
+            continue
+        m = _HOURLY_COL_PATTERN.match(col)
+        if m and 1 <= int(m.group(2)) <= 24:
+            stem = m.group(1)
+            he = int(m.group(2))
+            stems.setdefault(stem, []).append((col, he))
+        else:
+            broadcast_cols.append(col)
+
+    long_parts: list[pd.DataFrame] = []
+    for stem, col_he_pairs in stems.items():
+        long_col = HOURLY_STEM_TO_LONG_COL.get(stem)
+        if long_col is None:
+            logger.warning(
+                "_melt_pool_to_long: unknown stem %r (cols=%s) — skipping",
+                stem,
+                [c for c, _ in col_he_pairs],
+            )
+            continue
+        # Sort by HE so the melt produces a stable order (1..24).
+        col_he_pairs.sort(key=lambda t: t[1])
+        cols = [c for c, _ in col_he_pairs]
+        sub = wide_pool[["date"] + cols].melt(
+            id_vars="date",
+            value_vars=cols,
+            var_name="_he_col",
+            value_name=long_col,
+        )
+        # Extract HE number from col name.
+        sub["hour_ending"] = sub["_he_col"].apply(
+            lambda c: int(_HOURLY_COL_PATTERN.match(c).group(2))
+        )
+        sub = sub[["date", "hour_ending", long_col]]
+        long_parts.append(sub)
+
+    if not long_parts:
+        # No hourly stems found — return an empty long frame with broadcast.
+        skel = wide_pool[["date"]].copy()
+        skel["_he"] = [list(range(1, 25))] * len(skel)
+        skel = skel.explode("_he").rename(columns={"_he": "hour_ending"})
+        skel["hour_ending"] = skel["hour_ending"].astype(int)
+        long = skel
+    else:
+        long = long_parts[0]
+        for part in long_parts[1:]:
+            long = long.merge(part, on=["date", "hour_ending"], how="outer")
+
+    # Broadcast cols — joined on date, replicated across HE rows.
+    if broadcast_cols:
+        long = long.merge(wide_pool[["date"] + broadcast_cols], on="date", how="left")
+
+    return long.sort_values(["date", "hour_ending"]).reset_index(drop=True)
+
+
 def build_pool_from_spec(
     spec: configs.ModelSpec,
     hub: str = configs.HUB,
     cache_dir: Path | None = configs.CACHE_DIR,
     label_source: str = configs.LABEL_SOURCE,
 ) -> pd.DataFrame:
-    """One row per delivery date with all enabled-domain feature cols + 24
-    LMP labels.
+    """Long-format pool: one row per (date, hour_ending) for every delivery
+    date in history, carrying scalar feature values for that HE plus the
+    LMP label and broadcast features (outage/gas/calendar).
 
-    Domains are pulled from ``spec.domains`` and outer-joined on ``date``
-    so candidate days can compete on whatever subset of features they have
-    — the engine's NaN-aware RMS-z handles partial coverage. (Older dates
-    where solar/wind/gas/outages didn't exist still compete on load.)
-    LMP labels are then left-joined for the hub.
+    Domains' wide pool builders are pulled per ``spec.domains``,
+    outer-joined on ``date``, then ``_melt_pool_to_long`` pivots the
+    ``{stem}_h1..h24`` cols into single scalar long cols matching
+    sunny's naming (``load_mw_at_hour``, ``temp_at_hour``, etc.).
 
-    ``label_source`` controls what the ``lmp_h1..lmp_h24`` cols mean:
-
-      - ``"hub_lmp"`` (default): total DA LMP at ``hub`` from
-        ``loader.load_lmp_da`` -> ``build_lmp_labels``.
+    ``label_source``:
+      - ``"hub_lmp"`` (default): total DA LMP at ``hub``.
       - ``"system_energy"``: PJM RTO DA System Energy Price (LMP minus
-        congestion + loss) from ``loader.load_lmp_system_energy_da``.
-        SEP is system-wide so the hub filter only deduplicates per-hub
-        rows; the resulting labels are identical regardless of hub
-        choice. Use to train/forecast against the system-energy
-        component when isolating fundamentals from network effects.
-
-    Sunny parity for the ``label_source`` switch (sunny's
-    ``_shared.build_pool_from_spec`` accepts the same kwarg, with the
-    same dispatch logic — see _build_lmp_long).
+        congestion + loss). SEP is system-wide so the hub filter only
+        deduplicates per-hub rows.
     """
     if not spec.domains:
         raise ValueError(f"Spec '{spec.name}' has no domains.")
@@ -199,37 +284,48 @@ def build_pool_from_spec(
             f"Unknown label_source={label_source!r}; "
             "expected 'hub_lmp' or 'system_energy'."
         )
-    pool = feat.merge(df_labels, on="date", how="left")
-
-    feature_cols = all_feature_cols(spec.domains)
-    keep = ["date"] + feature_cols + LMP_HOUR_COLUMNS
-    pool = ensure_columns(pool, keep)[keep]
-    pool = pool.sort_values("date").reset_index(drop=True)
-
-    n_features_filled = int(pool[feature_cols].notna().any(axis=1).sum())
-    n_labels_filled = int(pool[LMP_HOUR_COLUMNS].notna().any(axis=1).sum())
-    logger.info(
-        "%s pool: %d rows x %d features (%d w/ features, %d w/ labels) — domains=%s",
-        spec.name,
-        len(pool),
-        len(feature_cols),
-        n_features_filled,
-        n_labels_filled,
-        spec.domains,
+    wide_pool = (
+        feat.merge(df_labels, on="date", how="left")
+        .sort_values("date")
+        .reset_index(drop=True)
     )
-    return pool
+
+    long_pool = _melt_pool_to_long(wide_pool)
+
+    # Coverage telemetry.
+    n_dates = long_pool["date"].nunique() if "date" in long_pool.columns else 0
+    n_rows = len(long_pool)
+    feature_long_cols = [
+        c for c in long_pool.columns if c not in ("date", "hour_ending")
+    ]
+    n_feature_cols = len(feature_long_cols)
+    has_lmp = "lmp" in long_pool.columns
+    n_with_lmp = int(long_pool["lmp"].notna().sum()) if has_lmp else 0
+    logger.info(
+        "%s pool (long): %d rows / %d unique dates x %d feature cols "
+        "(%d rows w/ lmp) — domains=%s, label_source=%s",
+        spec.name,
+        n_rows,
+        n_dates,
+        n_feature_cols,
+        n_with_lmp,
+        spec.domains,
+        label_source,
+    )
+    return long_pool
 
 
 def build_query_row_from_spec(
     spec: configs.ModelSpec,
     target_date: date,
     cache_dir: Path | None = configs.CACHE_DIR,
-) -> pd.Series:
-    """Single-row Series with all enabled-domain feature cols for ``target_date``.
+) -> pd.DataFrame:
+    """Long-format query: 24-row DataFrame keyed by (date, hour_ending),
+    one row per HE, carrying scalar feature values for the target date.
 
-    Each domain's query builder returns a one-row frame; results are
-    horizontally concatenated. Missing values stay NaN (the engine handles
-    NaN-aware distance per group).
+    Each domain's query builder returns a one-row wide frame for the
+    target date; the merged wide query is melted to long via
+    ``_melt_pool_to_long`` (no LMP since the query is unrealized).
     """
     if not spec.domains:
         raise ValueError(f"Spec '{spec.name}' has no domains.")
@@ -248,19 +344,33 @@ def build_query_row_from_spec(
             df = pd.DataFrame([empty])
         parts.append(df.iloc[[0]].reset_index(drop=True))
 
-    out = parts[0]
+    wide = parts[0]
     for p in parts[1:]:
-        out = out.merge(p, on="date", how="left")
+        wide = wide.merge(p, on="date", how="left")
 
-    feature_cols = all_feature_cols(spec.domains)
-    out = ensure_columns(out, ["date"] + feature_cols)[["date"] + feature_cols]
-    n_filled = int(pd.Series(out[feature_cols].iloc[0]).notna().sum())
+    long = _melt_pool_to_long(wide)
+    n_filled = int(
+        long.drop(columns=["date", "hour_ending"], errors="ignore")
+        .notna()
+        .any(axis=1)
+        .sum()
+    )
     logger.info(
-        "%s query for %s: %d/%d features filled — domains=%s",
+        "%s query for %s: %d/24 HE rows w/ any feature — domains=%s",
         spec.name,
         target_date,
         n_filled,
-        len(feature_cols),
         spec.domains,
     )
-    return out.iloc[0]
+    return long
+
+
+# ── Legacy compat ──────────────────────────────────────────────────────
+#
+# Some upstream callers still reference ``all_feature_cols`` (the wide
+# convention's catalog of every feature col across enabled domains).
+# Keep the import alive so those callers don't ImportError; the symbol
+# now returns long-format col names per domain.feature_groups.
+
+
+_ = all_feature_cols  # re-export for callers that haven't migrated yet

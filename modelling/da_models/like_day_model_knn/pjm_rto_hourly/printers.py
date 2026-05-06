@@ -362,6 +362,22 @@ def print_analog_features(
     target_dow = DAY_ABBR[target_date.weekday()]
     print_header("LIKE-DAY ANALOGS — Daily Features + Engine View", "=", 230)
     print(f"  Forecast: {target_date} ({target_dow})  |  Hub: {hub}")
+
+    # T4 long-pool guard. The wide-format reads below (load_h*, solar_h*,
+    # outage_total_mw scalar lookup, per-HE z-distance shading) all
+    # assume one row per date with 24 hourly cols per stem. Under the
+    # long-pool architecture the pool is row-per-(date, HE) and these
+    # reads return Series. Migration is queued for Session 2 of the T4
+    # rollout; for now print a notice and return so the rest of the
+    # pipeline (forecast table + quantile bands) still surfaces.
+    if pool is not None and "hour_ending" in pool.columns:
+        print(
+            "  [long-pool: print_analog_features needs migration to"
+            " row-filter reads — Session 2 of T4]"
+        )
+        print_divider("=", 230, dim=False)
+        return
+
     print(
         "  Each cell: value  (raw diff)  σ-gap   (GREEN = analog higher, RED = lower)   "
         "HE strip rank: █≤5  ▓≤15  ▒>15  ·=miss"

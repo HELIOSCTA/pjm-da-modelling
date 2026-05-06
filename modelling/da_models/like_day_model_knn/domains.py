@@ -29,7 +29,11 @@ from da_models.common.data import loader
 # Region used everywhere a region filter applies.
 RTO = "RTO"
 
-# Column names produced per domain (kept stable so engine/spec can reference).
+# Wide-format hourly col conventions used INSIDE pool builders (each
+# domain still pivots its source data to ``{stem}_h1..{stem}_h24`` —
+# no change to per-domain pool/query construction). The wide cols are
+# then melted to long-format scalars by ``_shared.build_pool_from_spec``;
+# spec ``feature_groups`` reference the long col names listed below.
 LOAD_HOURLY_COLS = [f"load_h{h}" for h in range(1, 25)]
 LOAD_RAMP_1H_HOURLY_COLS = [f"load_ramp_1h_h{h}" for h in range(1, 25)]
 LOAD_RAMP_3H_HOURLY_COLS = [f"load_ramp_3h_h{h}" for h in range(1, 25)]
@@ -40,6 +44,33 @@ TEMP_HOURLY_COLS = [f"temp_h{h}" for h in range(1, 25)]
 OUTAGE_LEVEL_COLS = ["outage_total_mw"]  # sunny parity: total only
 GAS_LEVEL_COLS = ["gas_m3_avg"]
 CALENDAR_LEVEL_COLS = ["dow_sin", "dow_cos", "is_weekend"]
+
+# Long-format scalar col names that ``feature_groups`` reference. These
+# are the cols on the post-melt (date, hour_ending) rows — sunny-compatible
+# names so cross-family code can share the schema.
+LOAD_AT_HOUR_COL = "load_mw_at_hour"
+SOLAR_AT_HOUR_COL = "solar_at_hour"
+WIND_AT_HOUR_COL = "wind_at_hour"
+NET_LOAD_AT_HOUR_COL = "net_load_at_hour"
+TEMP_AT_HOUR_COL = "temp_at_hour"
+LOAD_RAMP_1H_AT_HOUR_COL = "load_ramp_1h_at_hour"
+LOAD_RAMP_3H_AT_HOUR_COL = "load_ramp_3h_at_hour"
+LMP_AT_HOUR_COL = "lmp"
+
+# Wide-stem → long-col mapping used by the melt step in
+# ``_shared._melt_pool_to_long``. Stem here is the prefix BEFORE the
+# ``_h{N}`` suffix on a wide col (e.g. ``load_ramp_1h_h7`` → stem
+# ``load_ramp_1h``).
+HOURLY_STEM_TO_LONG_COL: dict[str, str] = {
+    "load": LOAD_AT_HOUR_COL,
+    "solar": SOLAR_AT_HOUR_COL,
+    "wind": WIND_AT_HOUR_COL,
+    "net_load": NET_LOAD_AT_HOUR_COL,
+    "temp": TEMP_AT_HOUR_COL,
+    "load_ramp_1h": LOAD_RAMP_1H_AT_HOUR_COL,
+    "load_ramp_3h": LOAD_RAMP_3H_AT_HOUR_COL,
+    "lmp": LMP_AT_HOUR_COL,
+}
 
 
 @dataclass(frozen=True)
@@ -142,13 +173,8 @@ RTO_LOAD_PROFILE = FeatureDomain(
         "single weight rather than five sub-bucket weights."
     ),
     feature_groups={
-        "load_level": LOAD_HOURLY_COLS,
+        "load_level": [LOAD_AT_HOUR_COL],
     },
-    # Raw weight 5.5 preserves the prior renormalized share (sum of the
-    # old five sub-bucket weights: 0.5 + 1 + 1 + 2 + 1) so this collapse
-    # is structural-only — same effective contribution to the windowed
-    # Euclidean as before. Retune separately if migrating toward sunny's
-    # weight profile (load_at_hour=3.0).
     feature_group_weights={
         "load_level": 3,
     },
@@ -182,8 +208,8 @@ def _build_solar_profile_query(
 
 SOLAR_PROFILE = FeatureDomain(
     name="solar_profile",
-    description="Solar — 24 hourly level cols (solar_h1..solar_h24).",
-    feature_groups={"solar_level": SOLAR_HOURLY_COLS},
+    description="Solar — scalar ``solar_at_hour`` per (date, HE) row.",
+    feature_groups={"solar_level": [SOLAR_AT_HOUR_COL]},
     feature_group_weights={"solar_level": 1.5},
     pool_builder=_build_solar_profile_pool,
     query_builder=_build_solar_profile_query,
@@ -212,8 +238,8 @@ def _build_wind_profile_query(
 
 WIND_PROFILE = FeatureDomain(
     name="wind_profile",
-    description="Wind — 24 hourly level cols (wind_h1..wind_h24).",
-    feature_groups={"wind_level": WIND_HOURLY_COLS},
+    description="Wind — scalar ``wind_at_hour`` per (date, HE) row.",
+    feature_groups={"wind_level": [WIND_AT_HOUR_COL]},
     feature_group_weights={"wind_level": 1.5},
     pool_builder=_build_wind_profile_pool,
     query_builder=_build_wind_profile_query,
@@ -263,7 +289,9 @@ RENEWABLE_PROFILE = FeatureDomain(
         "spec weight and one per-group distance, avoiding double-counting "
         "of renewable signal vs the split solar_profile + wind_profile."
     ),
-    feature_groups={"renewable_level": SOLAR_HOURLY_COLS + WIND_HOURLY_COLS},
+    feature_groups={
+        "renewable_level": [SOLAR_AT_HOUR_COL, WIND_AT_HOUR_COL],
+    },
     feature_group_weights={"renewable_level": 1.5},
     pool_builder=_build_renewable_profile_pool,
     query_builder=_build_renewable_profile_query,
@@ -310,11 +338,10 @@ RTO_NET_LOAD_PROFILE = FeatureDomain(
         "one ``net_load_level`` group, mirroring rto_load_profile."
     ),
     feature_groups={
-        "net_load_level": NET_LOAD_HOURLY_COLS,
+        "net_load_level": [NET_LOAD_AT_HOUR_COL],
     },
-    # Raw weight 5.5 preserves the prior renormalized share (sum of the
-    # five sub-bucket weights). Mirrors RTO_LOAD_PROFILE so the two
-    # domains contribute equally when both are enabled in a spec.
+    # Mirrors RTO_LOAD_PROFILE so the two demand domains contribute
+    # comparably when both are enabled. Sunny's net_load_at_hour=2.0.
     feature_group_weights={
         "net_load_level": 2,
     },
@@ -481,7 +508,7 @@ LOAD_RAMPS_PROFILE = FeatureDomain(
         "ramp and HE<=3 3h ramp are NaN (no in-day predecessor)."
     ),
     feature_groups={
-        "load_ramps": LOAD_RAMP_1H_HOURLY_COLS + LOAD_RAMP_3H_HOURLY_COLS,
+        "load_ramps": [LOAD_RAMP_1H_AT_HOUR_COL, LOAD_RAMP_3H_AT_HOUR_COL],
     },
     feature_group_weights={
         "load_ramps": 1.5,
@@ -520,7 +547,7 @@ TEMPERATURE_PROFILE = FeatureDomain(
         "fallback) so historical pool uses observed actuals and the "
         "query for a future date uses the forecast vintage."
     ),
-    feature_groups={"temp_level": TEMP_HOURLY_COLS},
+    feature_groups={"temp_level": [TEMP_AT_HOUR_COL]},
     feature_group_weights={"temp_level": 2.0},
     pool_builder=_build_temperature_profile_pool,
     query_builder=_build_temperature_profile_query,

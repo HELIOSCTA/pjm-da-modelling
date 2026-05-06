@@ -476,4 +476,11 @@ def run(
 
 
 if __name__ == "__main__":
+    raise NotImplementedError(
+        "T4: needs long-format migration. The wide-engine alternative"
+        " this script compares against was removed in the T4 cutover;"
+        " what remains of the comparison must be rewritten against the"
+        " long-format engine alone (or deleted if no longer useful)."
+        " Slated for T4 Session 2."
+    )
     run()

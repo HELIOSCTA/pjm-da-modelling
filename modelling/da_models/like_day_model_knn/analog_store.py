@@ -1,4 +1,5 @@
 """Parquet explainability store for like_day_model_knn backtests."""
+
 from __future__ import annotations
 
 import uuid
@@ -8,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from da_models.like_day_model_knn import configs
 from da_models.like_day_model_knn.configs import KnnModelConfig, ModelSpec
 
 HOURS = list(range(1, 25))
@@ -29,6 +29,15 @@ def write_analog_explainability(
     run_id = str(uuid.uuid4())
     output_dir = Path(output_dir) if output_dir is not None else DEFAULT_STORE_DIR
     _ensure_store_dirs(output_dir)
+
+    # T4 long-pool guard. The candidate-explainability builders below
+    # assume wide-format pools (load_h*, lmp_h*, distance_load_window
+    # cols, etc.). Under the long-pool architecture (row per (date, HE),
+    # scalar feature cols) those reads fail. Migration is queued for
+    # T4 Session 2; for now skip the parquet write so the forecast
+    # pipeline still completes.
+    if pool is not None and "hour_ending" in pool.columns:
+        return run_id
 
     work = _candidate_pool(
         pool=pool,
@@ -53,8 +62,12 @@ def write_analog_explainability(
 
     if spec.match_unit == "hour":
         candidates, feature_trace = _explain_hour_candidates(query, work, spec)
-        picks = _build_hour_picks(run_id, target_date, config, spec, analogs, candidates)
-        contributions = _build_hour_contributions(run_id, target_date, config, spec, picks)
+        picks = _build_hour_picks(
+            run_id, target_date, config, spec, analogs, candidates
+        )
+        contributions = _build_hour_contributions(
+            run_id, target_date, config, spec, picks
+        )
         selected = set(
             zip(
                 picks["hour_ending"].astype(int),
@@ -72,7 +85,9 @@ def write_analog_explainability(
     else:
         candidates, feature_trace = _explain_day_candidates(query, work, spec)
         picks = _build_day_picks(run_id, target_date, config, spec, analogs, candidates)
-        contributions = _build_day_contributions(run_id, target_date, config, spec, picks)
+        contributions = _build_day_contributions(
+            run_id, target_date, config, spec, picks
+        )
         trace = _build_selected_day_trace(
             run_id=run_id,
             target_date=target_date,
@@ -92,8 +107,12 @@ def write_analog_explainability(
 
     _write_table(output_dir / "analog_picks" / f"{run_id}.parquet", picks)
     _write_table(output_dir / "analog_feature_trace" / f"{run_id}.parquet", trace)
-    _write_table(output_dir / "hourly_contributions" / f"{run_id}.parquet", contributions)
-    _write_table(output_dir / "feature_price_correlations" / f"{run_id}.parquet", correlations)
+    _write_table(
+        output_dir / "hourly_contributions" / f"{run_id}.parquet", contributions
+    )
+    _write_table(
+        output_dir / "feature_price_correlations" / f"{run_id}.parquet", correlations
+    )
     return run_id
 
 
@@ -137,23 +156,27 @@ def _write_run_manifest(
     n_candidates: int,
     n_analogs: int,
 ) -> None:
-    row = pd.DataFrame([{
-        "run_id": run_id,
-        "created_at_utc": datetime.utcnow().isoformat(timespec="seconds"),
-        "target_date": str(target_date),
-        "model_name": spec.name,
-        "match_unit": spec.match_unit,
-        "description": spec.description,
-        "hub": config.hub,
-        "schema": config.schema,
-        "n_analogs": int(config.n_analogs),
-        "season_window_days": int(config.season_window_days),
-        "min_pool_size": int(config.min_pool_size),
-        "flt_radius": int(spec.flt_radius),
-        "n_pool": int(n_pool),
-        "n_candidates": int(n_candidates),
-        "n_selected_analog_rows": int(n_analogs),
-    }])
+    row = pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "created_at_utc": datetime.utcnow().isoformat(timespec="seconds"),
+                "target_date": str(target_date),
+                "model_name": spec.name,
+                "match_unit": spec.match_unit,
+                "description": spec.description,
+                "hub": config.hub,
+                "schema": config.schema,
+                "n_analogs": int(config.n_analogs),
+                "season_window_days": int(config.season_window_days),
+                "min_pool_size": int(config.min_pool_size),
+                "flt_radius": int(spec.flt_radius),
+                "n_pool": int(n_pool),
+                "n_candidates": int(n_candidates),
+                "n_selected_analog_rows": int(n_analogs),
+            }
+        ]
+    )
     _write_table(output_dir / "runs" / f"{run_id}.parquet", row)
 
 
@@ -197,31 +220,35 @@ def _explain_day_candidates(
             weight_sum[i] += group_weight
 
             for j in np.where(mask)[0]:
-                feature_rows.append({
-                    "date": work.iloc[i]["date"],
-                    "hour_ending": np.nan,
-                    "group": group,
-                    "group_weight": group_weight,
-                    "feature": cols_present[j],
-                    "target_value": query_vals[j],
-                    "candidate_value": pool_vals[i, j],
-                    "pool_mean": means[j],
-                    "pool_std": stds[j],
-                    "target_z": query_z[j],
-                    "candidate_z": pool_z[i, j],
-                    "z_delta": diff[j],
-                    "abs_z_delta": abs(diff[j]),
-                    "squared_delta": diff[j] ** 2,
-                    "n_valid_in_group": n_valid,
-                    "group_distance": group_distance,
-                    "weighted_group_distance": group_weight * group_distance,
-                })
+                feature_rows.append(
+                    {
+                        "date": work.iloc[i]["date"],
+                        "hour_ending": np.nan,
+                        "group": group,
+                        "group_weight": group_weight,
+                        "feature": cols_present[j],
+                        "target_value": query_vals[j],
+                        "candidate_value": pool_vals[i, j],
+                        "pool_mean": means[j],
+                        "pool_std": stds[j],
+                        "target_z": query_z[j],
+                        "candidate_z": pool_z[i, j],
+                        "z_delta": diff[j],
+                        "abs_z_delta": abs(diff[j]),
+                        "squared_delta": diff[j] ** 2,
+                        "n_valid_in_group": n_valid,
+                        "group_distance": group_distance,
+                        "weighted_group_distance": group_weight * group_distance,
+                    }
+                )
 
         group_distance_by_name[group] = group_distances
 
     candidates = _rank_candidates(work, weighted_sum, weight_sum)
     for group, values in group_distance_by_name.items():
-        candidates[f"distance_{group}"] = values[candidates["_source_pos"].to_numpy(dtype=int)]
+        candidates[f"distance_{group}"] = values[
+            candidates["_source_pos"].to_numpy(dtype=int)
+        ]
 
     feature_trace = pd.DataFrame(feature_rows)
     if len(feature_trace):
@@ -244,7 +271,8 @@ def _explain_hour_candidates(
 
     for hour in HOURS:
         cols_present = [
-            c for c in _window_columns(hour, flt_radius)
+            c
+            for c in _window_columns(hour, flt_radius)
             if c in work.columns and c in query.index
         ]
         if not cols_present:
@@ -258,7 +286,7 @@ def _explain_hour_candidates(
 
         diff = query_z - pool_z
         mask = ~np.isnan(diff)
-        sq = np.where(mask, diff ** 2, 0.0)
+        sq = np.where(mask, diff**2, 0.0)
         n_valid = mask.sum(axis=1)
         with np.errstate(invalid="ignore", divide="ignore"):
             distance = np.where(n_valid > 0, np.sqrt(sq.sum(axis=1) / n_valid), np.inf)
@@ -269,9 +297,12 @@ def _explain_hour_candidates(
         hour_candidates["distance"] = distance
         hour_candidates["active_weight_sum"] = 1.0
         hour_candidates["distance_load_window"] = distance
-        hour_candidates = hour_candidates[np.isfinite(hour_candidates["distance"])].copy()
+        hour_candidates = hour_candidates[
+            np.isfinite(hour_candidates["distance"])
+        ].copy()
         hour_candidates = hour_candidates.sort_values(
-            ["distance", "date"], ascending=[True, False],
+            ["distance", "date"],
+            ascending=[True, False],
         ).reset_index(drop=True)
         hour_candidates["rank"] = np.arange(1, len(hour_candidates) + 1)
         candidates.append(hour_candidates)
@@ -281,25 +312,27 @@ def _explain_hour_candidates(
             if len(valid_idx) == 0 or not np.isfinite(distance[i]):
                 continue
             for j in valid_idx:
-                feature_rows.append({
-                    "date": work.iloc[i]["date"],
-                    "hour_ending": hour,
-                    "group": "load_window",
-                    "group_weight": 1.0,
-                    "feature": cols_present[j],
-                    "target_value": query_vals[j],
-                    "candidate_value": pool_vals[i, j],
-                    "pool_mean": means[j],
-                    "pool_std": stds[j],
-                    "target_z": query_z[j],
-                    "candidate_z": pool_z[i, j],
-                    "z_delta": diff[i, j],
-                    "abs_z_delta": abs(diff[i, j]),
-                    "squared_delta": diff[i, j] ** 2,
-                    "n_valid_in_group": int(n_valid[i]),
-                    "group_distance": float(distance[i]),
-                    "weighted_group_distance": float(distance[i]),
-                })
+                feature_rows.append(
+                    {
+                        "date": work.iloc[i]["date"],
+                        "hour_ending": hour,
+                        "group": "load_window",
+                        "group_weight": 1.0,
+                        "feature": cols_present[j],
+                        "target_value": query_vals[j],
+                        "candidate_value": pool_vals[i, j],
+                        "pool_mean": means[j],
+                        "pool_std": stds[j],
+                        "target_z": query_z[j],
+                        "candidate_z": pool_z[i, j],
+                        "z_delta": diff[i, j],
+                        "abs_z_delta": abs(diff[i, j]),
+                        "squared_delta": diff[i, j] ** 2,
+                        "n_valid_in_group": int(n_valid[i]),
+                        "group_distance": float(distance[i]),
+                        "weighted_group_distance": float(distance[i]),
+                    }
+                )
 
     cand = pd.concat(candidates, ignore_index=True) if candidates else pd.DataFrame()
     trace = pd.DataFrame(feature_rows)
@@ -341,14 +374,18 @@ def _build_day_picks(
     candidates: pd.DataFrame,
 ) -> pd.DataFrame:
     distance_cols = [c for c in candidates.columns if c.startswith("distance_")]
-    detail = candidates[["date", "active_weight_sum"] + distance_cols].drop_duplicates("date")
+    detail = candidates[["date", "active_weight_sum"] + distance_cols].drop_duplicates(
+        "date"
+    )
     picks = analogs.merge(detail, on="date", how="left")
     picks = picks.rename(columns={"date": "analog_date"})
     picks = _add_run_columns(picks, run_id, target_date, config, spec)
     picks["match_unit"] = "day"
     picks["hour_ending"] = np.nan
     picks["analog_date"] = picks["analog_date"].astype(str)
-    picks["weight_pct"] = pd.to_numeric(picks["weight"], errors="coerce") / picks["weight"].sum()
+    picks["weight_pct"] = (
+        pd.to_numeric(picks["weight"], errors="coerce") / picks["weight"].sum()
+    )
     _add_top_distance_group(picks)
     return picks
 
@@ -472,9 +509,18 @@ def _build_day_contributions(
             lmp = row.get(f"lmp_h{hour}")
             if pd.isna(lmp):
                 continue
-            rows.append(_contribution_row(
-                run_id, target_date, config, spec, row, hour, weight, float(lmp),
-            ))
+            rows.append(
+                _contribution_row(
+                    run_id,
+                    target_date,
+                    config,
+                    spec,
+                    row,
+                    hour,
+                    weight,
+                    float(lmp),
+                )
+            )
     return pd.DataFrame(rows)
 
 
@@ -492,9 +538,18 @@ def _build_hour_contributions(
             continue
         hour = int(row["hour_ending"])
         weight = float(row["weight"])
-        rows.append(_contribution_row(
-            run_id, target_date, config, spec, row, hour, weight, float(lmp),
-        ))
+        rows.append(
+            _contribution_row(
+                run_id,
+                target_date,
+                config,
+                spec,
+                row,
+                hour,
+                weight,
+                float(lmp),
+            )
+        )
     return pd.DataFrame(rows)
 
 
@@ -543,18 +598,20 @@ def _build_feature_price_correlations(
                     continue
                 y = pd.to_numeric(pool[lmp_col], errors="coerce")
                 valid = x.notna() & y.notna()
-                rows.append({
-                    "run_id": run_id,
-                    "target_date": str(target_date),
-                    "model_name": spec.name,
-                    "hub": config.hub,
-                    "group": group,
-                    "feature": feature,
-                    "hour_ending": hour,
-                    "n": int(valid.sum()),
-                    "pearson_corr": _corr(x[valid], y[valid], "pearson"),
-                    "spearman_corr": _corr(x[valid], y[valid], "spearman"),
-                })
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "target_date": str(target_date),
+                        "model_name": spec.name,
+                        "hub": config.hub,
+                        "group": group,
+                        "feature": feature,
+                        "hour_ending": hour,
+                        "n": int(valid.sum()),
+                        "pearson_corr": _corr(x[valid], y[valid], "pearson"),
+                        "spearman_corr": _corr(x[valid], y[valid], "spearman"),
+                    }
+                )
     return pd.DataFrame(rows)
 
 
