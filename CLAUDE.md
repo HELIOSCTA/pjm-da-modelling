@@ -172,6 +172,24 @@ Hydration: the body sets `suppressHydrationWarning` because browser
 extensions inject attributes that trip Next.js's mismatch warning on
 the dark background. Don't remove it.
 
+### Cron + caching
+
+When scaffolding a `frontend/app/api/cron/*` handler, a new entry in
+`frontend/vercel.json`, or any data endpoint that needs to be fast,
+follow `.claude/standards/frontend_cron_caching.md`. Read that file
+before writing the code.
+
+Headline rules from that doc:
+
+- Data endpoints read from a Postgres `*_snapshot` table; cron jobs
+  write to it. Source marts are never queried on the request path.
+- One cron path = one file = one job. Schedules are staggered by
+  minute offset so warmers don't pile up.
+- Cron handlers are thin — auth + call a `lib/server/snapshots/*`
+  module + return timing JSON. Real work lives in the snapshot module.
+- Every data endpoint response includes `lastRefreshed` so staleness
+  is observable in the UI.
+
 ### Vercel project setup
 
 - **Root Directory:** `frontend` (set in the Vercel dashboard so the
