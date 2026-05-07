@@ -52,22 +52,17 @@ from da_models.like_day_model_knn.pjm_rto_hourly.forecast import (  # noqa: E402
     build_quantiles_table,
     hourly_forecast_from_hour_analogs,
 )
-from da_models.common.evaluation.metrics import (  # noqa: E402
-    evaluate_shape,
-    evaluate_shape_onpeak,
-)
 from da_models.like_day_model_knn.pjm_rto_hourly.metrics import evaluate_forecast  # noqa: E402
 from da_models.like_day_model_knn.pjm_rto_hourly.printers import (  # noqa: E402
     print_config,
     print_forecast,
     print_pool_funnel,
     print_quantiles,
-    print_shape,
 )
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
-TARGET_DATE: date | None = None  # None -> tomorrow (date.today() + 1d)
+TARGET_DATE: date | None = None  # None -> tomorrow (date.today() + timedelta(days=1))
 # Sunny-aligned spec: load + load_ramp_1h + load_ramp_3h + solar + wind +
 # net_load + temperature (windowed) plus outage + gas + calendar (broadcast).
 # Replaces the legacy 5-feature ``pjm_rto_hourly`` spec — see CLAUDE.md /
@@ -98,6 +93,47 @@ def _naive_last_week(pool: pd.DataFrame, target_date: date) -> np.ndarray | None
     if actuals is None:
         return None
     return np.array([actuals[h] for h in HOURS], dtype=float)
+
+
+_BLOCK_INDICES: dict[str, np.ndarray] = {
+    "OnPeak": np.array(range(7, 23), dtype=int),
+    "OffPeak": np.array(list(range(0, 7)) + [23], dtype=int),
+    "Flat": np.array(range(0, 24), dtype=int),
+}
+
+
+def _block_level_metrics(
+    actual_arr: np.ndarray,
+    forecast_arr: np.ndarray,
+    naive_full: np.ndarray | None,
+) -> dict[str, dict[str, float]]:
+    """Per-block level metrics. Returns {block: {mae, rmse, mape, rmae}} with
+    NaN entries when inputs miss values or denominators degenerate."""
+    out: dict[str, dict[str, float]] = {}
+    for name, idx in _BLOCK_INDICES.items():
+        a = actual_arr[idx]
+        f = forecast_arr[idx]
+        nan_row = {k: float("nan") for k in ("mae", "rmse", "mape", "rmae")}
+        if np.isnan(a).any() or np.isnan(f).any():
+            out[name] = nan_row
+            continue
+        err = f - a
+        mae_ = float(np.mean(np.abs(err)))
+        rmse_ = float(np.sqrt(np.mean(err**2)))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mape_arr = np.abs(err) / np.where(a == 0, np.nan, np.abs(a))
+        mape_ = (
+            float(np.nanmean(mape_arr) * 100.0)
+            if np.isfinite(mape_arr).any()
+            else float("nan")
+        )
+        rmae_ = float("nan")
+        if naive_full is not None and not np.isnan(naive_full[idx]).any():
+            naive_mae = float(np.mean(np.abs(naive_full[idx] - a)))
+            if naive_mae > 0:
+                rmae_ = mae_ / naive_mae
+        out[name] = {"mae": mae_, "rmse": rmse_, "mape": mape_, "rmae": rmae_}
+    return out
 
 
 def run(
@@ -241,24 +277,7 @@ def run(
     )
 
     metrics: dict = {}
-    if has_actuals and len(df_forecast) > 0:
-        merged = df_forecast.copy()
-        merged["actual_lmp"] = merged["hour_ending"].map(actuals)
-        merged = merged.dropna(subset=["actual_lmp"])
-        if len(merged) > 0:
-            y_true = merged["actual_lmp"].to_numpy(dtype=float)
-            y_naive = None
-            naive_full = (
-                y_naive_override
-                if y_naive_override is not None
-                else _naive_last_week(pool, resolved_date)
-            )
-            if naive_full is not None:
-                y_naive = naive_full[merged["hour_ending"].astype(int).values - 1]
-            metrics = evaluate_forecast(y_true, merged, quantiles, y_naive=y_naive)
-
-    shape: dict = {}
-    shape_onpeak: dict = {}
+    block_level: dict = {}
     if has_actuals and len(df_forecast) > 0:
         point_col = (
             "point_forecast" if "point_forecast" in df_forecast.columns else "q_0.50"
@@ -271,28 +290,99 @@ def run(
         )
         actual_arr = np.array([actuals.get(h, np.nan) for h in HOURS], dtype=float)
         forecast_arr = np.array([fc_by_he.get(h, np.nan) for h in HOURS], dtype=float)
-        shape = evaluate_shape(actual_arr, forecast_arr)
-        shape_onpeak = evaluate_shape_onpeak(actual_arr, forecast_arr)
+        naive_full = (
+            y_naive_override
+            if y_naive_override is not None
+            else _naive_last_week(pool, resolved_date)
+        )
+
+        merged = df_forecast.copy()
+        merged["actual_lmp"] = merged["hour_ending"].map(actuals)
+        merged = merged.dropna(subset=["actual_lmp"])
+        if len(merged) > 0:
+            y_true = merged["actual_lmp"].to_numpy(dtype=float)
+            y_naive = (
+                naive_full[merged["hour_ending"].astype(int).values - 1]
+                if naive_full is not None
+                else None
+            )
+            metrics = evaluate_forecast(y_true, merged, quantiles, y_naive=y_naive)
+
+        block_level = _block_level_metrics(actual_arr, forecast_arr, naive_full)
+
+    in_band_80: list[bool | None] = []
+    crps_per_hour = np.full(24, np.nan)
+    if has_actuals and quantiles_table is not None and len(quantiles_table) > 0:
+        p10_rows = quantiles_table[quantiles_table["Type"] == "P10"]
+        p90_rows = quantiles_table[quantiles_table["Type"] == "P90"]
+        if len(p10_rows) and len(p90_rows):
+            p10 = p10_rows.iloc[0]
+            p90 = p90_rows.iloc[0]
+            for h in HOURS:
+                actual_h = actuals.get(h) if actuals else None
+                lo = p10.get(f"HE{h}")
+                hi = p90.get(f"HE{h}")
+                if actual_h is None or pd.isna(lo) or pd.isna(hi):
+                    in_band_80.append(None)
+                else:
+                    in_band_80.append(bool(lo <= actual_h <= hi))
+
+        if has_actuals and len(df_forecast) > 0:
+            merged_full = df_forecast.copy()
+            merged_full["actual_lmp"] = merged_full["hour_ending"].map(actuals)
+            merged_full = merged_full.dropna(subset=["actual_lmp"])
+            for _, mr in merged_full.iterrows():
+                h_idx = int(mr["hour_ending"]) - 1
+                if not (0 <= h_idx < 24):
+                    continue
+                actual_h = float(mr["actual_lmp"])
+                per_q = []
+                for q in quantiles:
+                    col = f"q_{q:.2f}"
+                    if col in merged_full.columns and pd.notna(mr[col]):
+                        p_val = float(mr[col])
+                        e = actual_h - p_val
+                        per_q.append(max(q * e, (q - 1.0) * e))
+                if per_q:
+                    crps_per_hour[h_idx] = 2.0 * float(np.mean(per_q))
 
     if not quiet:
         from da_models.like_day_model_knn.pjm_rto_hourly.printers import (
             print_analog_features,
+            print_band_calibration,
         )
+        from utils.logging_utils import print_divider, print_header
 
         print_config(config, spec, resolved_date, day_type)
         print_pool_funnel(funnel, resolved_date, day_type, config.hub)
         print_analog_features(analogs, pool, query, resolved_date, config.hub)
-        print_forecast(output_table, metrics if metrics else None)
-        print_shape(shape if shape else None, shape_onpeak if shape_onpeak else None)
+
+        print_header(
+            f"LIKE-DAY FORECAST — {config.hub} ($/MWh)  |  {resolved_date}",
+            "=",
+            120,
+        )
         print_quantiles(quantiles_table)
+        print_forecast(
+            output_table,
+            block_level=block_level if block_level else None,
+        )
+        print_band_calibration(
+            output_table,
+            quantiles_table,
+            in_band_80=in_band_80 if in_band_80 else None,
+            crps_per_hour=crps_per_hour,
+        )
+        print()
+        print_divider("=", 120, dim=False)
+        print()
 
     return {
         "output_table": output_table,
         "quantiles_table": quantiles_table,
         "analogs": analogs,
         "metrics": metrics,
-        "shape": shape,
-        "shape_onpeak": shape_onpeak,
+        "block_level": block_level,
         "forecast_date": str(resolved_date),
         "day_type": day_type,
         "has_actuals": has_actuals,

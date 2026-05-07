@@ -263,7 +263,6 @@ def _run_scenario(
             "rmse": metrics.get("rmse"),
             "rmae": metrics.get("rmae"),
             "crps": metrics.get("crps"),
-            "mean_pinball": metrics.get("mean_pinball"),
             "coverage_80pct": metrics.get("coverage_80pct"),
             "coverage_90pct": metrics.get("coverage_90pct"),
             "sharpness_80pct": metrics.get("sharpness_80pct"),

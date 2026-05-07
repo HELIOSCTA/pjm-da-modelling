@@ -23,7 +23,6 @@ _MODELLING_ROOT = Path(__file__).resolve().parents[4]
 if str(_MODELLING_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODELLING_ROOT))
 
-import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from colorama import Fore, Style, init as colorama_init  # noqa: E402
 
@@ -31,9 +30,6 @@ colorama_init()
 
 from da_models.common.forecast.output import actuals_from_pool  # noqa: E402
 from da_models.like_day_model_knn import configs as like_day_configs  # noqa: E402
-from da_models.common.evaluation.metrics import (  # noqa: E402
-    evaluate_shape,
-)
 from da_models.naive_baselines._shared import build_lmp_only_pool  # noqa: E402
 from da_models.naive_baselines.pjm_rto_hourly.pipelines.forecast_single_day import (  # noqa: E402
     run as naive_run,
@@ -203,76 +199,6 @@ def _print_comparison(
     print()
 
 
-def _print_shape_metrics(rows: list[dict], target_date: date) -> None:
-    ok = [r for r in rows if r["status"] == "ok"]
-    if not ok:
-        return
-    actual_list = ok[0].get("hourly_actual")
-    if actual_list is None or any(v is None for v in actual_list):
-        return
-    actual = np.asarray(actual_list, dtype=float)
-
-    shape_rows: list[dict] = []
-    for r in ok:
-        forecast_list = r.get("hourly_forecast") or [None] * 24
-        if any(v is None for v in forecast_list):
-            shape_rows.append({"baseline_name": r.get("baseline_name", r["baseline"])})
-            continue
-        forecast = np.asarray(forecast_list, dtype=float)
-        s = evaluate_shape(actual, forecast)
-        shape_rows.append({"baseline_name": r.get("baseline_name", r["baseline"]), **s})
-
-    df = pd.DataFrame(shape_rows)
-    df = df.sort_values(
-        "variogram_score_p05",
-        ascending=True,
-        na_position="last",
-    ).reset_index(drop=True)
-
-    cols = [
-        "baseline_name",
-        "variogram_score_p05",
-        "peak_height_err",
-        "peak_at_actual_hour_err",
-        "time_of_peak_err",
-        "valley_height_err",
-        "valley_at_actual_hour_err",
-        "time_of_valley_err",
-        "peak_window_mae",
-        "first_diff_mae",
-    ]
-    formatters = {
-        "variogram_score_p05": lambda v: f"{v:>8.4f}" if pd.notna(v) else "     n/a",
-        "peak_height_err": lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
-        "peak_at_actual_hour_err": lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
-        "time_of_peak_err": lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
-        "valley_height_err": lambda v: f"{v:+7.2f}" if pd.notna(v) else "    n/a",
-        "valley_at_actual_hour_err": lambda v: (
-            f"{v:+7.2f}" if pd.notna(v) else "    n/a"
-        ),
-        "time_of_valley_err": lambda v: f"{int(v):+3d}h" if pd.notna(v) else "  n/a",
-        "peak_window_mae": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
-        "first_diff_mae": lambda v: f"{v:>7.2f}" if pd.notna(v) else "    n/a",
-    }
-
-    a_max = float(np.max(actual))
-    a_min = float(np.min(actual))
-    a_argmax = int(np.argmax(actual))
-    a_argmin = int(np.argmin(actual))
-    print("=" * 130)
-    print(
-        f"  SHAPE METRICS — {target_date}  (signed err = forecast - actual; sorted by variogram ascending)"
-    )
-    print(
-        f"  Actual: peak ${a_max:.2f} at HE{a_argmax + 1}   valley ${a_min:.2f} at HE{a_argmin + 1}"
-    )
-    print("=" * 130)
-    print()
-    with pd.option_context("display.max_rows", None, "display.width", None):
-        print(df[cols].to_string(index=False, formatters=formatters))
-    print()
-
-
 def _print_per_baseline_detail(rows: list[dict], target_date: date, hub: str) -> None:
     ok = [r for r in rows if r["status"] == "ok"]
     if not ok:
@@ -371,7 +297,6 @@ def run(
         rows.append(row)
 
     _print_comparison(rows, resolved_date, hub, actuals_summary)
-    _print_shape_metrics(rows, resolved_date)
     _print_per_baseline_detail(rows, resolved_date, hub)
     return rows
 

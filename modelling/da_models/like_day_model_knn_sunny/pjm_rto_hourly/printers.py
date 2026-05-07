@@ -748,8 +748,6 @@ def print_forecast(table: pd.DataFrame, metrics: dict | None) -> None:
             print(f"  Coverage: {' | '.join(cov_parts)}")
         if metrics.get("sharpness_90pct") is not None:
             print(f"  Sharpness (90%PI width): ${metrics['sharpness_90pct']:.2f}/MWh")
-        if "mean_pinball" in metrics:
-            print(f"  Mean Pinball Loss: {metrics['mean_pinball']:.4f}")
         if "crps" in metrics:
             print(f"  CRPS: {metrics['crps']:.4f}")
 

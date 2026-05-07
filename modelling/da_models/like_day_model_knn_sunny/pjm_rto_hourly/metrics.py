@@ -4,8 +4,6 @@ Duplicated from ``like_day_model_knn/pjm_rto_hourly/metrics.py`` to keep
 the cross-family import rule clean (sunny imports from common/ only).
 GEFCom2014 conventions; numbers are directly comparable to the sibling
 package's terminal report.
-
-Skips ``evaluate_shape`` — Sunny's pipeline doesn't print shape metrics.
 """
 
 from __future__ import annotations
@@ -16,22 +14,6 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-
-def pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, q: float) -> float:
-    delta = y_true - y_pred
-    return float(np.mean(np.maximum(q * delta, (q - 1) * delta)))
-
-
-def mean_pinball_loss(
-    y_true: np.ndarray, y_pred_df: pd.DataFrame, quantiles: list[float]
-) -> float:
-    losses: list[float] = []
-    for q in quantiles:
-        col = f"q_{q:.2f}"
-        if col in y_pred_df.columns:
-            losses.append(pinball_loss(y_true, y_pred_df[col].to_numpy(dtype=float), q))
-    return float(np.mean(losses)) if losses else float("nan")
 
 
 def rmae(y_true: np.ndarray, y_pred: np.ndarray, y_naive: np.ndarray) -> float:
@@ -66,13 +48,15 @@ def sharpness(lower: np.ndarray, upper: np.ndarray) -> float:
 
 
 def crps(y_true: np.ndarray, y_pred_df: pd.DataFrame, quantiles: list[float]) -> float:
+    """CRPS approximated via trapezoidal integration of the asymmetric
+    quantile loss ρ_q(y, p) = max(q·(y-p), (q-1)·(y-p))."""
     losses: list[tuple[float, float]] = []
     for q in quantiles:
         col = f"q_{q:.2f}"
         if col in y_pred_df.columns:
-            losses.append(
-                (q, pinball_loss(y_true, y_pred_df[col].to_numpy(dtype=float), q))
-            )
+            delta = y_true - y_pred_df[col].to_numpy(dtype=float)
+            ql = float(np.mean(np.maximum(q * delta, (q - 1) * delta)))
+            losses.append((q, ql))
     if len(losses) < 2:
         return float("nan")
     losses.sort(key=lambda x: x[0])
@@ -108,15 +92,7 @@ def evaluate_forecast(
         if y_naive is not None:
             results["rmae"] = rmae(y_true, y_point, y_naive)
 
-    results["mean_pinball"] = mean_pinball_loss(y_true, y_pred_df, quantiles)
     results["crps"] = crps(y_true, y_pred_df, quantiles)
-
-    for q in quantiles:
-        col = f"q_{q:.2f}"
-        if col in y_pred_df.columns:
-            results[f"pinball_{q:.2f}"] = pinball_loss(
-                y_true, y_pred_df[col].to_numpy(dtype=float), q
-            )
 
     for name, q_lo, q_hi in (
         ("80pct", 0.10, 0.90),
