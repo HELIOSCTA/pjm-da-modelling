@@ -54,7 +54,7 @@ def _build_url(
     return url
 
 
-@api_poll_policy(max_seconds=POLL_CEILING_SECONDS)
+@api_poll_policy(max_seconds=POLL_CEILING_SECONDS, wait_seconds=1)
 def _wait_for_data(url: str) -> requests.Response:
     """Poll the PJM API until a non-empty response is returned.
 
@@ -62,6 +62,11 @@ def _wait_for_data(url: str) -> requests.Response:
     and waits with exponential jitter before retrying.
     """
     response = requests.get(url)
+
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After", "60")
+        raise DataNotYetAvailable(f"Rate limited; retry after {retry_after}s")
+
     response.raise_for_status()
 
     if not response.content:
