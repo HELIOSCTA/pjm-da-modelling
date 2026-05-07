@@ -1,0 +1,29 @@
+Bilateral Deals,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+Trade Date,Trade Time,Deal ID,Leg ID,Orig ID,B/S,Product,Hub,Strip,Begin Date,End Date,Option,Strike,Strike2,Style,CounterParty,Price,Price Units,Qty Per Period,Periods,Total Quantity,Qty Units,Trader,Memo,Clearing Venue,User ID,Source,USI,Authorized Trader ID,CDI Override,By Pass MQR,Trading Company,CounterParty User,MIC,CC,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+Cleared Deals,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+Trade Date,Trade Time,Deal ID,Leg ID,Orig ID,B/S,Product,Hub,Contract,Begin Date,End Date,Clearing Acct,Cust Acct,Clearing Firm,Price,Price Units,Option,Strike,Strike2,Style,Lots,Total Quantity,Qty Units,TT,BRK,Trader,Memo,Clearing Venue,User ID,Source,Link ID,USI,Authorized Trader ID,Location,Meter,Lead Time,Waiver Ind,Trade Time (micros),CDI Override,By Pass MQR,Broker Name,Trading Company,MIC,CC
+24-Mar-26,11:40:46 AM GMT,6.1E+13,,118346133,Bought,Peak Futures,PJM WH RT,HE 0800-HE 2300,24-Mar-26,24-Mar-26,HELGHELI,,Clear Street LLC,50.5,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,11:40:46.040677 AM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDP
+24-Mar-26,01:57:44 PM GMT,6.1E+13,,271246342,Sold,Peak Futures,PJM WH RT,HE 0800-HE 2300,24-Mar-26,24-Mar-26,HELGHELI,,Clear Street LLC,43.5,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,01:57:44.213355 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDP
+26-Mar-26,02:26:58 PM GMT,6.1E+13,,189725082,Sold,Peak Futures,PJM WH DA (Daily),Next Day,27-Mar-26,27-Mar-26,HELGHELI,,Clear Street LLC,48,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,02:26:58.358811 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+26-Mar-26,04:04:33 PM GMT,6.1E+13,,512179373,Sold,Peak Futures,PJM WH DA (Daily),Next Day,27-Mar-26,27-Mar-26,HELGHELI,,Clear Street LLC,50.5,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,04:04:33.748896 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+8-Apr-26,03:12:59 PM GMT,6.1E+13,,798201300,Sold,Peak Futures,PJM WH DA (Daily),Next Day,9-Apr-26,9-Apr-26,HELGHELI,,Clear Street LLC,46.75,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:12:59.776607 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+8-Apr-26,03:12:59 PM GMT,6.1E+13,,887658975,Sold,Peak Futures,PJM WH DA (Daily),Next Day,9-Apr-26,9-Apr-26,HELGHELI,,Clear Street LLC,47,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:12:59.776607 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+14-Apr-26,03:02:10 PM GMT,6.1E+13,,630064686,Sold,Peak Futures,PJM WH DA (Daily),Next Day,15-Apr-26,15-Apr-26,HELGHELI,,Clear Street LLC,119.5,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:02:10.867242 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+21-Apr-26,02:08:18 PM GMT,6.1E+13,,989607475,Sold,Peak Futures,PJM WH RT,Next Day,22-Apr-26,22-Apr-26,HELGHELI,,Clear Street LLC,59.35,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,02:08:18.827215 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDP
+21-Apr-26,02:08:23 PM GMT,6.1E+13,,989607475,Sold,Peak Futures,PJM WH RT,Next Day,22-Apr-26,22-Apr-26,HELGHELI,,Clear Street LLC,59.35,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,02:08:23.063537 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDP
+22-Apr-26,06:28:27 PM GMT,6.1E+13,,912340621,Bought,Peak Futures,PJM WH RT,HE 0800-HE 2300,22-Apr-26,22-Apr-26,HELGHELI,,Clear Street LLC,65.1,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,06:28:27.895589 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDP
+22-Apr-26,06:28:42 PM GMT,6.1E+13,,912340621,Bought,Peak Futures,PJM WH RT,HE 0800-HE 2300,22-Apr-26,22-Apr-26,HELGHELI,,Clear Street LLC,65.1,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,06:28:42.771136 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDP
+29-Apr-26,03:23:45 PM GMT,6.1E+13,,307206771,Sold,Peak Futures,PJM WH DA (Daily),Next Day,30-Apr-26,30-Apr-26,HELGHELI,,Clear Street LLC,56.75,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:23:45.654188 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+29-Apr-26,03:33:40 PM GMT,6.1E+13,,307206771,Sold,Peak Futures,PJM WH DA (Daily),Next Day,30-Apr-26,30-Apr-26,HELGHELI,,Clear Street LLC,56.75,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:33:40.005720 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+30-Apr-26,03:28:56 PM GMT,6.1E+13,,133945219,Bought,Peak Futures,PJM WH DA (Daily),Next Day,1-May-26,1-May-26,HELGHELI,,Clear Street LLC,46.75,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:28:56.900243 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+30-Apr-26,03:51:19 PM GMT,6.1E+13,,884961001,Bought,Peak Futures,PJM WH DA (Daily),Next Day,1-May-26,1-May-26,HELGHELI,,Clear Street LLC,46.75,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,03:51:19.511964 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+1-May-26,05:45:29 PM GMT,6.1E+13,,273360665,Sold,Peak Futures,PJM WH DA (Daily),Next Day,4-May-26,4-May-26,HELGHELI,,Clear Street LLC,48,USD / MWh,,,,,1,800,MWh,T,,"Keaveny, A",,,akeaveny,WebICE,,,,,,,,05:45:29.346778 PM GMT,,N,,Helios Commodity Advisors Ltd.,IFED,PDA
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+Futures Deals,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+Trade Date,Trade Time,Deal ID,Leg ID,Orig ID,B/S,Product,Hub,Contract,Clearing Acct,Cust Acct,Clearing Firm,Price,Price Units,Option,Strike,Strike 2,Style,Lots,Total Quantity,Qty Units,TT,Trader,User ID,BRK,Memo,Source,Link ID,USI,Authorized Trader ID,Waiver Ind,Trade Time (micros),CDI Override,By Pass MQR,Broker Name,Trading Company,MIC,CC,,,,,,

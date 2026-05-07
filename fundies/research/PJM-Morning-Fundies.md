@@ -1,15 +1,83 @@
 
-## 2026-05-01 (Friday)
+### Trading
+### Notes
+### Reading
+
+## 2026-05-06 (Wednesday)
 
 ### Trading
-- Late to trading today. Edi lifting 65.5 ... dont miss it for a penny
+### Fundies
 
-### Notes
+#### Bearish
+
+### Reading
+
+## 2026-05-06 (Wednesday)
+
+### Trading
+### Fundies
+
+#### Bearish
+
+- Nuclear coming in stronger DoD
+  - BV, Susquehanna, LaSalle
+
+- Outages bearish .. forced still coming in strong
+
+- Coal / Gas Stronger DoD
+  - Coal in AEP
+
+- Clouds over South 
+  - South Load weaker 2gw DoD
+
+- Constraints
+  - Pleasant (See note from Gridstatus)
+  - Conaston weaker with yesterday's clear but came in stro
+
+- Outages
+  - Brandon Shores / Wagner 1 day
+  - Graceton May 8th to June 6th
+
+### Reading
+
+Daytime DA Dominion Congestion (say that three times fast) increased considerably d/d as a result of stronger Pleasant View XF coverage.
+
+Unlike yesterday, where cooling load was the major demand factor, cloud coverage and lighting load are the major demand risks today, with low-level cloud coverage and precipitation already blanketing much of the I-95 corridor.
+
+Solar generation is expected to be considerably more suppressed day-over-day, which should help to limit S-N flows into Data Center alley, though ongoing transmission work in and around the area will keep some pressure on constraints like Pleasant View XF and Ox XF, likely over the afternoon and evening.
+
+Despite stronger daytime coverage, weaker DA congestion verified in the evening, largely due to the drop in peak load due to less cooling load.
+
+Energy price risks will be a concern across the RTO as load could begin to flatten out above expectations due to BTM solar suppression and daytime lighting load.
+
+## 2026-05-05 (Tuesday)
+
+### Trading
+- Late to trading today. Edi lifting 65.5 ... "dont miss it for a penny"
+  - DA came in soft .. thought VIRTS we're going to bled through .. weak MCC tmw
+
+### Fundies
 - Outages
 - Clouds / temps in the south
 - Nukes coming back
 
 ### Reading
+- #### Gridstatus note on congestion
+Despite cooling load tracking below the RTO's forecast, explosive Dominion congestion has emerged in the form of Pleasant View XF, beginning in the early morning.
+
+The likely driver for more bullish congestion d/d appears to be the start of an additional line outage in Northern Virginia on the Brambleton 230kV network.
+
+This outage, combined with others in the area, including multiple 500kV line outages in central Virginia, appears to be putting additional pressure on the already stressed Dominion network, particularly in power-hungry Northern Virginia.
+
+Recent upside has primarily been seen in Northern Virginia, while WHUB congestion has turned heavily negative as Pleasant View XF and Ox XF begin to heavily bind as temperatures in data center alley pick up over the afternoon.
+
+- #### Gridstatus note on congestion
+Cooling load is expected to develop over the evening peak in Dominion, but keep a lookout for some load underperformance risk over the morning and afternoon.
+
+As was the case during last month's heat wave, PJM modeled a relatively quick increase in expected cooling load over the late morning and afternoon. Even as temperatures will push into the low 80s by the early afternoon, the lack of any humidity, plus cooler conditions yesterday and overnight, will help to limit how quickly cooling load builds. In some ways, the RTO forecast exhibits more of a summer load curve with cooling load building in quickly over the morning rather than a springtime load forecast, with warm temperatures but none of the added impacts of oftentimes oppressive Virginia humidity.
+
+The increase in evening peak load is expected to drive some rounds of price volatility, particularly with risk at Ladysmith CB and Pleasant View XF, but the price premium may not emerge in full force until the mid-afternoon as load starts to rebound more in line with the forecast.
+
 - #### Gridstatus note on congestion
 Unsettled conditions are expected across the East Coast tomorrow as storms are forecasted to form along the leading edge of a cold front.
 
