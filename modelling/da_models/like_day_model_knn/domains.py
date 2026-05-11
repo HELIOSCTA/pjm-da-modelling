@@ -106,6 +106,67 @@ def _to_date(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s).dt.date
 
 
+def _select_query_vintage(df: pd.DataFrame) -> pd.DataFrame:
+    """Pick the right vintage for a single-target-date forecast query.
+
+    Caller is expected to have already filtered ``df`` to a single
+    ``target_date``. This helper then chooses which vintage row(s) to
+    keep:
+
+      1. **Strict D+1 vintage** (``as_of_date == target_date - 1``).
+         Used when present — preserves historical backtest semantics
+         (DA-cutoff is always the canonical "what we knew at decision
+         time" snapshot).
+      2. **Latest available vintage** as a fallback. When the strict
+         D+1 vintage is missing — typical for ``target_date >= today + 2``,
+         where no D+1 publish exists yet — pick the row(s) with the
+         most-recent ``as_of_date``. This is the same rule that powers
+         the loader's ``latest_only=True`` mode and unlocks D+2 / D+3
+         / ... forecasts.
+
+    Returns the input frame unchanged when no ``as_of_date`` column is
+    present (live marts that don't carry vintages) or the frame is
+    empty.
+    """
+    if df is None or len(df) == 0 or "as_of_date" not in df.columns:
+        return df
+    df = df.copy()
+    df["as_of_date"] = _to_date(df["as_of_date"])
+    delta = (
+        pd.to_datetime(df["date"], errors="coerce")
+        - pd.to_datetime(df["as_of_date"], errors="coerce")
+    ).dt.days
+    d1 = df[delta == 1]
+    if len(d1) > 0:
+        return d1
+    return df[df["as_of_date"] == df["as_of_date"].max()]
+
+
+def _select_query_lead_days(df: pd.DataFrame) -> pd.DataFrame:
+    """Variant of ``_select_query_vintage`` for feeds that store the
+    vintage as a ``lead_days`` column instead of an ``as_of_date`` (PJM
+    outages forecast — published once daily with rows for lead_days
+    0..7).
+
+    Caller is expected to have already filtered ``df`` to a single
+    target date. This helper then chooses which row to keep:
+
+      1. **lead_days=1** (DA-cutoff) when present — preserves backtest
+         semantics on historical target_dates.
+      2. **Smallest available lead_days** as a fallback. For
+         target_date = today + N where N >= 2, no lead_days=1 row
+         exists yet (that would be tomorrow's publish), but today's
+         publish carries a lead_days=N row covering it. Picking
+         min(lead_days) selects today's vintage.
+    """
+    if df is None or len(df) == 0 or "lead_days" not in df.columns:
+        return df
+    d1 = df[df["lead_days"] == 1]
+    if len(d1) > 0:
+        return d1
+    return df[df["lead_days"] == df["lead_days"].min()]
+
+
 def _hourly_load_profile(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
     """Wide pivot of hourly load: one col per HE, named load_h1..load_h24."""
     return _hourly_value_profile(df, value_col, output_prefix="load")
@@ -142,6 +203,14 @@ def _hourly_value_profile(
 
 
 # ── rto_load_profile ─────────────────────────────────────────────────────
+
+# Multi-day-horizon support for the meteo_* domain query builders is
+# routed through ``_select_query_vintage`` (defined above): D+1 vintage
+# preferred for backtest reproducibility, latest-available vintage as
+# fallback for D+2 / D+3 / ... target dates. The PJM-native query
+# builders below still hard-filter to the DA-cutoff vintage — extending
+# them is a separate PR (PJM-native horizon is shorter and the
+# load_load_forecast loader already filters to lead_days=1 by default).
 
 
 def _build_rto_load_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
@@ -377,11 +446,16 @@ def _build_outages_level_pool(cache_dir: Path | None) -> pd.DataFrame:
 def _build_outages_level_query(
     target_date: date, cache_dir: Path | None
 ) -> pd.DataFrame:
-    df = loader.load_outages_forecast_history(cache_dir=cache_dir, lead_days=1)
+    # Load all vintages (lead_days=None) and let _select_query_lead_days
+    # pick the right row: lead_days=1 for historical / D+1 targets,
+    # smallest available lead_days (= most recent publish) for D+2..D+7
+    # future targets.
+    df = loader.load_outages_forecast_history(cache_dir=cache_dir, lead_days=None)
     df = df[df["region"].astype(str) == RTO].copy()
     date_col = "forecast_date" if "forecast_date" in df.columns else "date"
     df["date"] = _to_date(df[date_col])
     df = df[df["date"] == target_date]
+    df = _select_query_lead_days(df)
     if len(df) == 0:
         empty = {"date": target_date, **{c: np.nan for c in OUTAGE_LEVEL_COLS}}
         return pd.DataFrame([empty])
@@ -609,6 +683,212 @@ CALENDAR_LEVEL = FeatureDomain(
 )
 
 
+# ── Meteologica-fed sibling domains ──────────────────────────────────────
+# Mirror the PJM-fed supply/demand domains above but read from
+# ``load_meteologica_supply_demand_coalesced`` (Meteologica forecast →
+# PJM RT fallback). Single source decision per (region, date) for all
+# four series, so the identity ``net_load = load - solar - wind`` holds
+# within each pool row by construction. Region scope held to RTO for
+# parity with the PJM variant; Meteologica also publishes sub-zones.
+
+
+def _build_meteo_rto_load_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_meteologica_supply_demand_coalesced(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO]
+    return _hourly_value_profile(df, "load_mw", output_prefix="load")
+
+
+def _build_meteo_rto_load_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_meteologica_load_forecast(cache_dir=cache_dir).copy()
+    df = df[df["region"].astype(str) == RTO]
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    df = _select_query_vintage(df)
+    return _hourly_load_profile(df, "forecast_load_mw")
+
+
+METEO_RTO_LOAD_PROFILE = FeatureDomain(
+    name="meteo_rto_load_profile",
+    description=(
+        "Meteologica RTO load — 24 hourly cols (load_h1..load_h24) as a "
+        "single ``load_level`` group. Pool from "
+        "``load_meteologica_supply_demand_coalesced`` (Meteologica forecast → "
+        "PJM RT fallback); query from the DA-cutoff Meteologica load forecast."
+    ),
+    feature_groups={
+        "load_level": [LOAD_AT_HOUR_COL],
+    },
+    feature_group_weights={
+        "load_level": 3,
+    },
+    pool_builder=_build_meteo_rto_load_profile_pool,
+    query_builder=_build_meteo_rto_load_profile_query,
+)
+
+
+def _build_meteo_solar_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_meteologica_supply_demand_coalesced(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO]
+    return _hourly_value_profile(df, "solar_mw", output_prefix="solar")
+
+
+def _build_meteo_solar_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_meteologica_solar_forecast(cache_dir=cache_dir).copy()
+    df = df[df["region"].astype(str) == RTO]
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    df = _select_query_vintage(df)
+    return _hourly_value_profile(df, "solar_forecast", output_prefix="solar")
+
+
+METEO_SOLAR_PROFILE = FeatureDomain(
+    name="meteo_solar_profile",
+    description="Meteologica solar — scalar ``solar_at_hour`` per (date, HE) row.",
+    feature_groups={"solar_level": [SOLAR_AT_HOUR_COL]},
+    feature_group_weights={"solar_level": 1.5},
+    pool_builder=_build_meteo_solar_profile_pool,
+    query_builder=_build_meteo_solar_profile_query,
+)
+
+
+def _build_meteo_wind_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_meteologica_supply_demand_coalesced(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO]
+    return _hourly_value_profile(df, "wind_mw", output_prefix="wind")
+
+
+def _build_meteo_wind_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_meteologica_wind_forecast(cache_dir=cache_dir).copy()
+    df = df[df["region"].astype(str) == RTO]
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    df = _select_query_vintage(df)
+    return _hourly_value_profile(df, "wind_forecast", output_prefix="wind")
+
+
+METEO_WIND_PROFILE = FeatureDomain(
+    name="meteo_wind_profile",
+    description="Meteologica wind — scalar ``wind_at_hour`` per (date, HE) row.",
+    feature_groups={"wind_level": [WIND_AT_HOUR_COL]},
+    feature_group_weights={"wind_level": 1.5},
+    pool_builder=_build_meteo_wind_profile_pool,
+    query_builder=_build_meteo_wind_profile_query,
+)
+
+
+def _build_meteo_renewable_profile_pool(cache_dir: Path | None) -> pd.DataFrame:
+    df = loader.load_meteologica_supply_demand_coalesced(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO]
+    solar_pool = _hourly_value_profile(df, "solar_mw", output_prefix="solar")
+    wind_pool = _hourly_value_profile(df, "wind_mw", output_prefix="wind")
+    return solar_pool.merge(wind_pool, on="date", how="outer")
+
+
+def _build_meteo_renewable_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    solar_q = _build_meteo_solar_profile_query(target_date, cache_dir)
+    wind_q = _build_meteo_wind_profile_query(target_date, cache_dir)
+    return solar_q.merge(wind_q, on="date", how="outer")
+
+
+METEO_RENEWABLE_PROFILE = FeatureDomain(
+    name="meteo_renewable_profile",
+    description=(
+        "Meteologica combined solar+wind — 48 hourly cols (solar_h1..solar_h24, "
+        "wind_h1..wind_h24) as a single ``renewable_level`` group. Mirrors "
+        "``renewable_profile`` but sourced from Meteologica forecasts with "
+        "PJM RT fallback."
+    ),
+    feature_groups={
+        "renewable_level": [SOLAR_AT_HOUR_COL, WIND_AT_HOUR_COL],
+    },
+    feature_group_weights={"renewable_level": 1.5},
+    pool_builder=_build_meteo_renewable_profile_pool,
+    query_builder=_build_meteo_renewable_profile_query,
+)
+
+
+def _build_meteo_rto_net_load_profile_pool(
+    cache_dir: Path | None,
+) -> pd.DataFrame:
+    df = loader.load_meteologica_supply_demand_coalesced(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO]
+    return _hourly_value_profile(df, "net_load_mw", output_prefix="net_load")
+
+
+def _build_meteo_rto_net_load_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    df = loader.load_meteologica_net_load_forecast(cache_dir=cache_dir).copy()
+    df = df[df["region"].astype(str) == RTO]
+    df["date"] = _to_date(df["date"])
+    df = df[df["date"] == target_date]
+    df = _select_query_vintage(df)
+    return _hourly_value_profile(df, "net_load_forecast_mw", output_prefix="net_load")
+
+
+METEO_RTO_NET_LOAD_PROFILE = FeatureDomain(
+    name="meteo_rto_net_load_profile",
+    description=(
+        "Meteologica RTO net load (load - solar - wind) — 24 hourly cols "
+        "(net_load_h1..net_load_h24) as a single ``net_load_level`` group. "
+        "Pool from ``load_meteologica_supply_demand_coalesced``; query from "
+        "the DA-cutoff Meteologica net-load forecast (lead_days=1)."
+    ),
+    feature_groups={
+        "net_load_level": [NET_LOAD_AT_HOUR_COL],
+    },
+    feature_group_weights={
+        "net_load_level": 2,
+    },
+    pool_builder=_build_meteo_rto_net_load_profile_pool,
+    query_builder=_build_meteo_rto_net_load_profile_query,
+)
+
+
+def _build_meteo_load_ramps_profile_pool(
+    cache_dir: Path | None,
+) -> pd.DataFrame:
+    df = loader.load_meteologica_supply_demand_coalesced(cache_dir=cache_dir)
+    df = df[df["region"].astype(str) == RTO]
+    load = _hourly_value_profile(df, "load_mw", output_prefix="load")
+    return _compute_load_ramps_wide(load)
+
+
+def _build_meteo_load_ramps_profile_query(
+    target_date: date, cache_dir: Path | None
+) -> pd.DataFrame:
+    load = _build_meteo_rto_load_profile_query(target_date, cache_dir)
+    return _compute_load_ramps_wide(load)
+
+
+METEO_LOAD_RAMPS_PROFILE = FeatureDomain(
+    name="meteo_load_ramps_profile",
+    description=(
+        "Derived intra-day load ramps (Meteologica) — load_ramp_1h_h{HE} = "
+        "load_h{HE} - load_h{HE-1}, load_ramp_3h_h{HE} = load_h{HE} - "
+        "load_h{HE-3}. Both ramps share a single ``load_ramps`` feature "
+        "group. HE=1 1h ramp and HE<=3 3h ramp are NaN (no in-day "
+        "predecessor)."
+    ),
+    feature_groups={
+        "load_ramps": [LOAD_RAMP_1H_AT_HOUR_COL, LOAD_RAMP_3H_AT_HOUR_COL],
+    },
+    feature_group_weights={
+        "load_ramps": 1.5,
+    },
+    pool_builder=_build_meteo_load_ramps_profile_pool,
+    query_builder=_build_meteo_load_ramps_profile_query,
+)
+
+
 # ── Registry ─────────────────────────────────────────────────────────────
 
 DOMAIN_REGISTRY: dict[str, FeatureDomain] = {
@@ -622,6 +902,12 @@ DOMAIN_REGISTRY: dict[str, FeatureDomain] = {
     OUTAGES_LEVEL.name: OUTAGES_LEVEL,
     GAS_LEVEL.name: GAS_LEVEL,
     CALENDAR_LEVEL.name: CALENDAR_LEVEL,
+    METEO_RTO_LOAD_PROFILE.name: METEO_RTO_LOAD_PROFILE,
+    METEO_LOAD_RAMPS_PROFILE.name: METEO_LOAD_RAMPS_PROFILE,
+    METEO_SOLAR_PROFILE.name: METEO_SOLAR_PROFILE,
+    METEO_WIND_PROFILE.name: METEO_WIND_PROFILE,
+    METEO_RENEWABLE_PROFILE.name: METEO_RENEWABLE_PROFILE,
+    METEO_RTO_NET_LOAD_PROFILE.name: METEO_RTO_NET_LOAD_PROFILE,
 }
 
 

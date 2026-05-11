@@ -231,10 +231,40 @@ PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC = ModelSpec(
     flt_radius=0,
 )
 
+# Meteologica-fed sibling of PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC. Same feature
+# set on the same per-HE engine, but the supply/demand domains
+# (load + load_ramps + renewable + net_load) read from
+# ``load_meteologica_supply_demand_coalesced`` instead of PJM's own
+# coalescer. Outage / gas / weather / calendar domains are source-agnostic
+# and shared with the PJM variant.
+METEO_RTO_HOURLY_SUNNY_ALIGNED_SPEC = ModelSpec(
+    name="meteo_rto_hourly_sunny_aligned",
+    description=(
+        "Meteologica RTO sunny feature set on the per-HE engine. "
+        "Domains: meteo load + meteo load_ramps (1h+3h) + meteo renewable "
+        "(solar+wind) + meteo net_load + temperature (windowed scalar) + "
+        "outage (total only) + gas + calendar (broadcast). flt_radius=0 "
+        "matches scalar at the target HE only — sunny-equivalent."
+    ),
+    match_unit="hour",
+    domains=(
+        "meteo_rto_load_profile",
+        "meteo_load_ramps_profile",
+        "meteo_renewable_profile",
+        "meteo_rto_net_load_profile",
+        "temperature_profile",
+        "outages_level",
+        "gas_level",
+        "calendar_level",
+    ),
+    flt_radius=0,
+)
+
 MODEL_REGISTRY: dict[str, ModelSpec] = {
     PJM_RTO_HOURLY_SPEC.name: PJM_RTO_HOURLY_SPEC,
     PJM_RTO_HOURLY_FULL_SPEC.name: PJM_RTO_HOURLY_FULL_SPEC,
     PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name: PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC,
+    METEO_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name: METEO_RTO_HOURLY_SUNNY_ALIGNED_SPEC,
 }
 
 DEFAULT_MODEL: str = PJM_RTO_HOURLY_SPEC.name

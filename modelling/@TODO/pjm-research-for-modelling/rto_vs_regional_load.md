@@ -137,7 +137,7 @@ that should be called out.
 - Cross-family rule: this lives under `like_day_model_knn_sunny/`. It
   may import from `common/` and from sibling modules under
   `like_day_model_knn_sunny/`. It must NOT import from
-  `like_day_model_knn/` or `naive_baselines/`.
+  `like_day_model_knn/`.
 - Use `load_meteologica_supply_demand_coalesced()` as the single
   source for the bundle; don't compose net_load from per-series
   coalescers.

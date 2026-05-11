@@ -256,6 +256,76 @@ def _print_meteo_supply_demand_region_block(
         print(table.to_string(index=False, formatters=_FORMATTERS))
 
 
+def _print_forward_horizon(
+    pl,
+    cache_dir: Path | None,
+    regions: tuple[str, ...],
+) -> None:
+    """Print the forward multi-day horizon from the latest publish.
+
+    Uses ``latest_only=True`` against the unified supply-demand bundle.
+    Filters to Meteologica forecast rows only (RT rows are noise here).
+    Identity check max |delta| should still be ~0 for the forward
+    section because the unified loader holds it by construction.
+    """
+    print_header("Forward horizon (latest publish, all regions)")
+
+    with pl.timer("load coalesced Meteologica supply-demand bundle (latest_only=True)"):
+        latest = loader.load_meteologica_supply_demand_coalesced(
+            cache_dir=cache_dir, latest_only=True
+        )
+        if set(regions) != set(REGIONS):
+            latest = latest[latest["region"].astype(str).isin(regions)].copy()
+
+    if latest.empty:
+        pl.warning("latest_only frame is empty; no forward horizon to print.")
+        return
+
+    fcst = latest[latest["source"] == "meteologica"]
+    if fcst.empty:
+        pl.warning("No forecast rows in latest_only frame.")
+        return
+
+    pl.info(
+        f"As of {fcst['as_of_date'].max()}: "
+        f"{fcst['date'].nunique()} forecast_date(s) "
+        f"({fcst['date'].min()} -> {fcst['date'].max()})"
+    )
+
+    for region in regions:
+        print_section(f"{region} supply-demand bundle — forward horizon")
+        table = _meteo_supply_demand_wide_for_region(latest, region)
+        table = table[table["Source"] == "Meteologica"]
+        if table.empty:
+            pl.warning(f"No forward-horizon rows for region={region}.")
+            continue
+
+        delta_rows = table[table["Type"] == "delta (rep-impl)"]
+        he_vals = delta_rows[HE_COLS].to_numpy(dtype=float)
+        max_abs = float(np.nanmax(np.abs(he_vals))) if he_vals.size else 0.0
+        pl.info(f"{region}: identity check max |delta| = {max_abs:,.2f} MW")
+
+        table = table.sort_values(["Date", "Type"], ascending=[True, True]).reset_index(
+            drop=True
+        )
+        type_order = {t: i for i, t in enumerate(_TYPE_ORDER)}
+        table["_type_idx"] = table["Type"].map(type_order)
+        table = (
+            table.sort_values(["Date", "_type_idx"], ascending=[True, True])
+            .drop(columns="_type_idx")
+            .reset_index(drop=True)
+        )
+        with pd.option_context(
+            "display.max_rows",
+            None,
+            "display.max_columns",
+            None,
+            "display.width",
+            None,
+        ):
+            print(table.to_string(index=False, formatters=_FORMATTERS))
+
+
 def run(
     regions: tuple[str, ...] = REGIONS,
     cache_dir: Path | None = CACHE_DIR,
@@ -268,12 +338,14 @@ def run(
 
     pl = init_logging(name="check_loaders_meteo_net_load", log_dir=LOG_DIR)
     try:
+        _print_forward_horizon(pl, cache_dir, regions)
+
         lookback_label = (
             f"last {lookback_days}d" if lookback_days is not None else "all dates"
         )
-        print_header(f"meteo_supply_demand_coalesced ({lookback_label})")
+        print_header(f"Historical realization ({lookback_label})")
 
-        with pl.timer("load coalesced Meteologica supply-demand bundle (all regions)"):
+        with pl.timer("load coalesced Meteologica supply-demand bundle (lead_days=1)"):
             coalesced = loader.load_meteologica_supply_demand_coalesced(
                 cache_dir=cache_dir,
             )

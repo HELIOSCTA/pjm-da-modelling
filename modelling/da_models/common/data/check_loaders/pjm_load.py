@@ -174,6 +174,56 @@ def _print_pjm_load_region_block(
         print(table.to_string(index=False, formatters=_FORMATTERS))
 
 
+def _print_forward_horizon(
+    pl,
+    cache_dir: Path | None,
+    regions: tuple[str, ...],
+) -> None:
+    """Print the forward multi-day horizon from the latest PJM load publish.
+
+    Uses ``latest_only=True``. PJM's native load forecast typically only
+    covers D+1 (the DA-cutoff vintage), so this section may show a single
+    forecast_date — that's expected, not a bug.
+    """
+    print_header("Forward horizon (latest publish, all regions)")
+
+    with pl.timer("load coalesced PJM load (latest_only=True)"):
+        latest = loader.load_load_coalesced(cache_dir=cache_dir, latest_only=True)
+
+    if latest.empty:
+        pl.warning("latest_only frame is empty; no forward horizon to print.")
+        return
+
+    fcst = latest[latest["source"] == "forecast"]
+    if fcst.empty:
+        pl.warning("No forecast rows in latest_only frame.")
+        return
+
+    pl.info(
+        f"As of {fcst['as_of_date'].max()}: "
+        f"{fcst['date'].nunique()} forecast_date(s) "
+        f"({fcst['date'].min()} -> {fcst['date'].max()})"
+    )
+
+    for region in regions:
+        print_section(f"{region} load — forward horizon")
+        table = _pjm_load_wide_for_region(latest, region)
+        table = table[table["Source"] == "Forecast"]
+        if table.empty:
+            pl.warning(f"No forward-horizon rows for region={region}.")
+            continue
+        table = table.sort_values("Date", ascending=True).reset_index(drop=True)
+        with pd.option_context(
+            "display.max_rows",
+            None,
+            "display.max_columns",
+            None,
+            "display.width",
+            None,
+        ):
+            print(table.to_string(index=False, formatters=_FORMATTERS))
+
+
 def run(
     regions: tuple[str, ...] = REGIONS,
     cache_dir: Path | None = CACHE_DIR,
@@ -186,12 +236,14 @@ def run(
 
     pl = init_logging(name="check_loaders_pjm_load", log_dir=LOG_DIR)
     try:
+        _print_forward_horizon(pl, cache_dir, regions)
+
         lookback_label = (
             f"last {lookback_days}d" if lookback_days is not None else "all dates"
         )
-        print_header(f"load_load_coalesced ({lookback_label})")
+        print_header(f"Historical realization ({lookback_label})")
 
-        with pl.timer("load coalesced PJM load (all regions)"):
+        with pl.timer("load coalesced PJM load (lead_days=1)"):
             coalesced = loader.load_load_coalesced(cache_dir=cache_dir)
 
         if coalesced.empty:

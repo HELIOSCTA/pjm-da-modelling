@@ -42,6 +42,7 @@ def write_analog_explainability(
     query: pd.DataFrame,
     analogs: pd.DataFrame,
     output_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> str:
     """Append a single run's analog tables to the parquet store.
 
@@ -50,10 +51,15 @@ def write_analog_explainability(
     The ``query`` arg is accepted for API stability with the pre-T4
     signature but isn't currently persisted — the spec snapshot in the
     run manifest is enough to reproduce it.
+
+    ``run_id`` lets the caller thread the same identifier into other
+    artefacts (e.g. the blob forecast publisher). Default ``None``
+    generates a fresh UUID, preserving prior behaviour.
     """
     del query  # reserved for API stability; not persisted yet
 
-    run_id = str(uuid.uuid4())
+    if run_id is None:
+        run_id = str(uuid.uuid4())
     output_dir = Path(output_dir) if output_dir is not None else DEFAULT_STORE_DIR
     _ensure_store_dirs(output_dir)
 

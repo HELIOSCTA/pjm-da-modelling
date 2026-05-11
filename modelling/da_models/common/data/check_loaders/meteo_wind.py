@@ -176,6 +176,53 @@ def _print_meteo_wind_region_block(
         print(table.to_string(index=False, formatters=_FORMATTERS))
 
 
+def _print_forward_horizon(
+    pl,
+    cache_dir: Path | None,
+    regions: tuple[str, ...],
+) -> None:
+    """Print the forward multi-day horizon from the latest publish."""
+    print_header("Forward horizon (latest publish, all regions)")
+
+    with pl.timer("load coalesced Meteologica wind (latest_only=True)"):
+        latest = loader.load_meteologica_wind_coalesced(
+            cache_dir=cache_dir, latest_only=True
+        )
+
+    if latest.empty:
+        pl.warning("latest_only frame is empty; no forward horizon to print.")
+        return
+
+    fcst = latest[latest["source"] == "meteologica"]
+    if fcst.empty:
+        pl.warning("No forecast rows in latest_only frame.")
+        return
+
+    pl.info(
+        f"As of {fcst['as_of_date'].max()}: "
+        f"{fcst['date'].nunique()} forecast_date(s) "
+        f"({fcst['date'].min()} -> {fcst['date'].max()})"
+    )
+
+    for region in regions:
+        print_section(f"{region} wind — forward horizon")
+        table = _meteo_wind_wide_for_region(latest, region)
+        table = table[table["Source"] == "Meteologica"]
+        if table.empty:
+            pl.warning(f"No forward-horizon rows for region={region}.")
+            continue
+        table = table.sort_values("Date", ascending=True).reset_index(drop=True)
+        with pd.option_context(
+            "display.max_rows",
+            None,
+            "display.max_columns",
+            None,
+            "display.width",
+            None,
+        ):
+            print(table.to_string(index=False, formatters=_FORMATTERS))
+
+
 def run(
     regions: tuple[str, ...] = REGIONS,
     cache_dir: Path | None = CACHE_DIR,
@@ -188,12 +235,14 @@ def run(
 
     pl = init_logging(name="check_loaders_meteo_wind", log_dir=LOG_DIR)
     try:
+        _print_forward_horizon(pl, cache_dir, regions)
+
         lookback_label = (
             f"last {lookback_days}d" if lookback_days is not None else "all dates"
         )
-        print_header(f"load_meteologica_wind_coalesced ({lookback_label})")
+        print_header(f"Historical realization ({lookback_label})")
 
-        with pl.timer("load coalesced Meteologica wind (all regions)"):
+        with pl.timer("load coalesced Meteologica wind (lead_days=1)"):
             coalesced = loader.load_meteologica_wind_coalesced(cache_dir=cache_dir)
 
         if coalesced.empty:

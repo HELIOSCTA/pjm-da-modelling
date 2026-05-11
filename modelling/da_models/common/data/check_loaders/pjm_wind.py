@@ -119,6 +119,53 @@ def build_pjm_wind_table(
     return _pjm_wind_wide(coalesced)
 
 
+def _print_forward_horizon(
+    pl,
+    cache_dir: Path | None,
+) -> None:
+    """Print the forward horizon from the latest PJM wind publish.
+
+    PJM's native wind forecast is system-wide (RTO) and typically only
+    covers D+1.
+    """
+    print_header("Forward horizon (latest publish)")
+
+    with pl.timer("load coalesced PJM wind (latest_only=True)"):
+        latest = loader.load_wind_coalesced(cache_dir=cache_dir, latest_only=True)
+
+    if latest.empty:
+        pl.warning("latest_only frame is empty; no forward horizon to print.")
+        return
+
+    fcst = latest[latest["source"] == "forecast"]
+    if fcst.empty:
+        pl.warning("No forecast rows in latest_only frame.")
+        return
+
+    pl.info(
+        f"As of {fcst['as_of_date'].max()}: "
+        f"{fcst['date'].nunique()} forecast_date(s) "
+        f"({fcst['date'].min()} -> {fcst['date'].max()})"
+    )
+
+    print_section("RTO wind — forward horizon")
+    table = _pjm_wind_wide(latest)
+    table = table[table["Source"] == "Forecast"]
+    if table.empty:
+        pl.warning("No forward-horizon rows.")
+        return
+    table = table.sort_values("Date", ascending=True).reset_index(drop=True)
+    with pd.option_context(
+        "display.max_rows",
+        None,
+        "display.max_columns",
+        None,
+        "display.width",
+        None,
+    ):
+        print(table.to_string(index=False, formatters=_FORMATTERS))
+
+
 def run(
     cache_dir: Path | None = CACHE_DIR,
     lookback_days: int | None = LOOKBACK_DAYS,
@@ -130,12 +177,14 @@ def run(
 
     pl = init_logging(name="check_loaders_pjm_wind", log_dir=LOG_DIR)
     try:
+        _print_forward_horizon(pl, cache_dir)
+
         lookback_label = (
             f"last {lookback_days}d" if lookback_days is not None else "all dates"
         )
-        print_header(f"load_wind_coalesced ({lookback_label})")
+        print_header(f"Historical realization ({lookback_label})")
 
-        with pl.timer("load coalesced PJM wind (RTO)"):
+        with pl.timer("load coalesced PJM wind (lead_days=1)"):
             coalesced = loader.load_wind_coalesced(cache_dir=cache_dir)
 
         if coalesced.empty:
