@@ -55,6 +55,8 @@ sources:
         description: "PJM real-time long-running constraint penalty-factor overrides from PJM Data Miner 2 (rt_default_mv_override feed). Reference table pulled in full each run. One row per (constraint_name, contingency_description, effective_day); terminate_day = 9999-12-31 for currently-active overrides."
       - name: rt_short_term_mv_override
         description: "PJM real-time short-term (event) constraint penalty-factor overrides from PJM Data Miner 2 (rt_short_term_mv_override feed). Event log pulled in full each run. One row per (constraint_name, contingency_description, effective_datetime_utc) with precise UTC and EPT effective/terminate timestamps."
+      - name: agg_definitions
+        description: "PJM aggregate-pnode -> bus-pnode mappings from PJM Data Miner 2 agg_definitions feed. SCD2 with composite PK (agg_pnode_id, bus_pnode_id, effective_date_ept) and terminate_date_ept = '9999-12-31' sentinel for currently-active rows. Currently-active subset is ~28k rows across ~1.2k aggregates (HUBs, ZONEs, RESID_AGG_FTRs, EHV groups). bus_pnode_factor sums to 1.0 per agg_pnode_id (proportional weights; some hubs are unequal-weighted). Bridge from market geography to constituent bus pnodes for LMP queries and brief enrichment - no PSS/E bus mapping is published, so joins to physical topology require name-based matching."
 
   - name: gridstatus_v1
     schema: gridstatus

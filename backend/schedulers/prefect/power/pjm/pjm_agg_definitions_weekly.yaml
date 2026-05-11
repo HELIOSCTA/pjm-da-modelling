@@ -1,0 +1,38 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Aggregate Definitions (weekly) ──────
+  # Static reference data — PJM updates aggregate-pnode → bus-pnode
+  # memberships only when new generators come online, retire, or hub
+  # weights are revised. In practice this happens a few times a year.
+  # Weekly cadence is plenty; daily would be wasteful.
+  #
+  # Source feed: https://api.pjm.com/api/v1/agg_definitions
+  # Lands in:    pjm.agg_definitions
+  # Built mart:  pjm_da_modelling_cleaned.pjm_agg_definitions_active
+  #
+  # Use case: bridge from market geography (HUBs, ZONEs) to constituent
+  # bus pnodes for LMP queries, brief enrichment, and zone-tagging on
+  # outage rows.
+
+  - name: PJM Aggregate Definitions Weekly
+    entrypoint: schedulers/prefect/power/pjm/pjm_agg_definitions_weekly_flows.py:pjm_agg_definitions_weekly
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, agg_definitions, reference_data]
+    schedules:
+
+      # ────── Weekly run Sunday 06:00 MST — off-peak, no API contention ──────
+      - cron: "0 6 * * 0"
+        timezone: "America/Denver"
