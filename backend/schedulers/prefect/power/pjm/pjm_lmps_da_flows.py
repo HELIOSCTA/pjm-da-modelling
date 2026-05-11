@@ -9,8 +9,15 @@ from prefect import flow
 
 
 from backend.settings import DBT_PROJECT_DIR, DBT_SCHEMA
-from backend.schedulers.prefect.power.pjm.pjm_lmps_da_notifications import notify_da_lmps
-from backend.utils import logging_utils, pipeline_run_logger, azure_postgresql_utils, model_cache_utils
+from backend.schedulers.prefect.power.pjm.pjm_lmps_da_notifications import (
+    notify_da_lmps,
+)
+from backend.utils import (
+    logging_utils,
+    pipeline_run_logger,
+    azure_postgresql_utils,
+    model_cache_utils,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +34,17 @@ def run_dbt(select: str) -> None:
     )
     dbt_logger.header("dbt")
     dbt_logger.section(f"Running dbt: select={select}")
-    result = dbtRunner().invoke([
-        "run",
-        "--select", select,
-        "--project-dir", DBT_PROJECT_DIR,
-        "--profiles-dir", DBT_PROJECT_DIR,
-    ])
+    result = dbtRunner().invoke(
+        [
+            "run",
+            "--select",
+            select,
+            "--project-dir",
+            DBT_PROJECT_DIR,
+            "--profiles-dir",
+            DBT_PROJECT_DIR,
+        ]
+    )
     if not result.success:
         dbt_logger.error(f"dbt run failed: {result.exception}")
         raise RuntimeError(f"dbt run failed: {result.exception}")
@@ -43,7 +55,8 @@ def run_dbt(select: str) -> None:
 def pjm_lmps_da():
     """Day-Ahead Hourly LMPs — poll PJM API with tenacity retries, upsert to PostgreSQL, run dbt."""
     run = pipeline_run_logger.PipelineRunLogger(
-        pipeline_name="pjm_lmps_da", source="power",
+        pipeline_name="pjm_lmps_da",
+        source="power",
     )
     run.start()
     try:
@@ -55,8 +68,11 @@ def pjm_lmps_da():
         target_date = (datetime.now() + relativedelta(days=1)).strftime("%Y-%m-%d")
         notify_da_lmps(target_date)
 
-        # ────── 3. Rebuild incremental LMP hourly mart (+ upstream) ──────
-        run_dbt(f"+{MART}")
+        # ────── 3. Rebuild incremental LMP hourly mart (+ upstream + downstream) ──────
+        # Trailing `+` includes downstream models (e.g. pjm_lmps_daily) so the
+        # daily aggregates stay fresh for downstream consumers like the
+        # scorecard mart.
+        run_dbt(f"+{MART}+")
 
         # ────── 4. Pull mart from Postgres and export to parquet ──────
         df = azure_postgresql_utils.pull_from_db(f"SELECT * FROM {DBT_SCHEMA}.{MART}")
