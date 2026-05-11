@@ -14,20 +14,11 @@ Each tier hands a payload to the next so the funnel stays causally tight: yester
 
 Tenure on each outage (`days_out`) is reported inline, so durable network signatures are still visible without a multi-day window.
 
-## Pre-flight: always-fresh MCP server
+## MCP server
 
-**First step — always.** Run the pre-flight before anything else:
+Health is auto-managed by the `PreToolUse` hook `.claude/hooks/mcp_health_check.py`, which fires before any `mcp__pjm-views__*` tool call: pings `/openapi.json`, only kicks `backend.mcp_server.ensure_running` if the port is unreachable. Steady state is a ~50ms localhost GET.
 
-```bash
-python -m backend.mcp_server.ensure_running
-```
-
-The script kills any process bound to port 8000, spawns a fresh detached uvicorn against the current code on disk, and waits up to 30s for `/openapi.json` to respond.
-
-- Exit 0 → MCP healthy. Continue.
-- Exit non-zero → **STOP IMMEDIATELY.** Point user at `backend/mcp_server/logs/server.log`. Do not synthesize.
-
-Do not call view builders directly via Python under any circumstance. There is no fallback path — if MCP can't be brought up, this command produces no output.
+If the hook reports a restart failure, the tool call is blocked with the failure stderr surfaced to the model — STOP and point user at `backend/mcp_server/logs/server.log`. Do not synthesize and do not call view builders directly via Python; there is no fallback path.
 
 ## Anchor date selection
 
@@ -51,10 +42,10 @@ The brief consumes three MCP endpoints from `http://localhost:8000`. Brief is si
 3. `/views/historical_outages_for_constraints?format=json&bus_ids=<csv>&start_date=<anchor>&end_date=<anchor>&binding_hours=<repeated>` —
    Tier 3. Outages whose `[start_datetime, end_datetime]` overlaps `<anchor>` AND whose buses match the Tier-2 bus_ids set. **Tenure** (`days_out`) is the durability signal — long-tenure outages are structural even though we only see one day of binding. Note the endpoint expects `binding_hours` as **repeated query params** (`&binding_hours=1&binding_hours=2&...`), not CSV.
 
-After hitting each endpoint, save the JSON response into per-view subfolders under `backend/mcp_server/briefings/`:
+After hitting each endpoint, save the JSON response into per-view subfolders under `backend/mcp_server/runs/views/`:
 
 ```
-backend/mcp_server/briefings/
+backend/mcp_server/runs/views/
 ├── lmps_dart_realization/<YYYY-MM-DD>.json
 ├── constraints_rt_dart_network/<YYYY-MM-DD>.json
 └── historical_outages_for_constraints/<YYYY-MM-DD>.json
@@ -91,11 +82,12 @@ From `/views/lmps_dart_realization` (use the `<yesterday>` row of `daily_summary
 
 From `/views/constraints_rt_dart_network` for `<yesterday>` only (single-day window).
 
-- **Top-N table** (top 12, sorted by `|dart_total_price|` desc):
-  | Constraint | kV | Bus Pair | RT $ | DART $ | Hours | HE Range |
-  |---|---:|---|---:|---:|---:|---|
+- **Top-N table** (top 12, sorted by `|wh_lmp_impact|` if available else `|dart_total_price|` desc):
+  | Constraint | kV | Bus Pair | RT $ | DART $ | WH $/MWh | Hours | HE Range |
+  |---|---:|---|---:|---:|---:|---:|---|
 
   HE Range: compact list (e.g. `HE 6-17, 20, 23`).
+- **WH $/MWh column.** For each top-N constraint with a matched PSS/E branch, call `/views/hub_impact?hub_name=WESTERN%20HUB&from_bus=<from_bus_psse>&to_bus=<to_bus_psse>&shadow_price=<rt_total_price>` and render `hub_lmp_impact_dollars_per_mwh` (signed). Negative = constraint's binding *relieved* WH LMP yesterday; positive = stress. Surfacing this column flags days when the raw-RT-$ ranking misled the trader (e.g. a $300 binder that was actually WH-relief). Unmatched branches → `n/a`.
 - **Voltage tier note**: % of total RT $ at 500+ kV vs 345 kV vs ≤230 kV. Heavy 500 kV = network-backbone story; heavy ≤230 kV = local subtransmission.
 - **Match coverage**: `matched / ambiguous / unmatched of <total>` distinct (constraint, contingency) pairs. Surface unmatched count — those are constraints PSS/E couldn't tag, so Tier 3 is silent on them.
 - **Hand-off**: union of `bus_ids` across top-N + union of binding HEs → Tier 3 input.
@@ -128,7 +120,7 @@ From `/views/historical_outages_for_constraints?bus_ids=<csv>&start_date=<yester
 - ASCII-only in tables. `→` arrows in narrative prose only — not in Python output capture (cp1252 issues on Windows).
 - Money formatting: `,234` no decimals for shadow-price totals; `$XX.XX` (2 decimals) for LMP/DART scalars.
 - Header carries `run_date` (today), `settle_date` (anchor — date of the data shown), and `lag_days` (how many days behind today-1 the anchor is — typically 0, 2, or 3).
-- Save synthesized markdown to `backend/mcp_server/briefings/morning_brief_<YYYY-MM-DD>.md` — filename uses **run date** (today). Overwrite if regenerated same day.
+- Save synthesized markdown to `backend/mcp_server/runs/synthesized/morning_brief_<YYYY-MM-DD>.md` — filename uses **run date** (today). Overwrite if regenerated same day.
 - Offer to:
   - Prepend to `fundies/research/PJM-Pre-DA-Morning.md` (newest first, create if absent)
   - Or append a "5 AM Pre-DA Brief" section under today's `PJM-Morning-Fundies.md` entry

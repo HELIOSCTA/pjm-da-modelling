@@ -51,7 +51,7 @@ from backend.mcp_server.views.transmission_outages import build_network_view_mod
 
 today = date.today()
 target = today + timedelta(days=1)
-base = 'backend/mcp_server/briefings'
+base = 'backend/mcp_server/runs/views'
 buses, branches = load_network()
 
 # DA constraints — tomorrow
@@ -79,10 +79,10 @@ EOF
 ```
 
 Either path drops dated JSON snapshots into per-view subfolders
-under `backend/mcp_server/briefings/`:
+under `backend/mcp_server/runs/views/`:
 
 ```
-backend/mcp_server/briefings/
+backend/mcp_server/runs/views/
 ├── constraints_da_network/
 │   └── 2026-05-01.json
 └── transmission_outages_network/
@@ -111,7 +111,9 @@ E.g.:
 The matched + ambiguous constraints from
 `/views/constraints_da_network`, filtered to those with non-null
 `da_total_price` (i.e., actually binding tomorrow), sorted by
-`da_total_price` descending. Show top 12–15.
+**`|hub_lmp_impact|`** (WESTERN HUB) when available, falling back
+to `da_total_price` descending for unmatched branches. Show top
+12–15.
 
 For each row:
 - Constraint (truncated to ~30 chars)
@@ -121,6 +123,11 @@ For each row:
   `parsed_single_station` for XFMR / PS, `interface` label otherwise
 - PSS/E bus pair (`from_bus_psse ↔ to_bus_psse`)
 - Total $, hours bound, on-peak vs off-peak split
+- **WH $/MWh** — call
+  `/views/hub_impact?hub_name=WESTERN%20HUB&from_bus=<from_bus_psse>&to_bus=<to_bus_psse>&shadow_price=<da_total_price>`
+  and render `hub_lmp_impact_dollars_per_mwh` (signed; negative =
+  constraint binding *relieves* WH LMP). Mark unmatched branches
+  `n/a`.
 - MVA rating
 - Top 2–3 1-hop neighbors (from the `neighbors` list) — these are
   the parallel paths that absorb redirected flow
@@ -207,7 +214,7 @@ Examples of bullet shapes:
   these are sums over many hours so 4-significant-digits is enough).
 - Include `target_date` and current `as_of` (today) at top.
 - Save the synthesized markdown to
-  `backend/mcp_server/briefings/da_constraints_<YYYY-MM-DD>.md`
+  `backend/mcp_server/runs/synthesized/da_constraints_<YYYY-MM-DD>.md`
   where `<YYYY-MM-DD>` is the **target_date** (tomorrow), not
   the run date. One file per target — overwrite if regenerated
   the same day.

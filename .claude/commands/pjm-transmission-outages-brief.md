@@ -1,246 +1,146 @@
 ---
-description: Generate a PJM transmission outages morning brief — network-context first, then Active / Starting / Ending detail sections.
+description: Generate a PJM transmission outages morning brief — orchestrator that invokes 4 specialist subagents in parallel and stitches a headline-first ~150-word brief.
 ---
 
-# PJM Transmission Outages Brief
+# PJM Transmission Outages Brief — Orchestrator
 
-Generate a daily brief covering active / upcoming / returning transmission
-outages, framed by the PJM PSS/E network model context.
+You are the orchestrator. Your job is **not** to analyze outages
+yourself — you delegate to four specialist subagents, then stitch
+their digests into a single headline-first brief.
 
-## Pre-flight: always-fresh MCP server
+The specialists encode all the hard rules (risk_flag overrides
+voltage, consecutive ticket chain dedup, materiality thresholds,
+zone-column mandatory, sub-zone coverage, etc.). Don't re-implement
+those rules here.
 
-**First step — always.** Run the pre-flight before anything else:
+## MCP server
 
-```bash
-python -m backend.mcp_server.ensure_running
+Health is auto-managed by the `PreToolUse` hook
+`.claude/hooks/mcp_health_check.py`. If a subagent returns a
+hook-restart-failed error, STOP and point the user at
+`backend/mcp_server/logs/server.log` — do not synthesize.
+
+## Apply pending orchestrator feedback (always first)
+
+Before invoking specialists, Read
+`backend/mcp_server/runs/orchestrator/feedback.md` if it exists.
+This file holds rules for the **synthesis layer** — how the headline
+is composed, watchlist composition, section ordering, output style.
+Apply any rules listed there in addition to the rules below. If a
+feedback rule conflicts with these prompt instructions, **the
+feedback rule wins**. If the file doesn't exist or is empty, proceed
+normally.
+
+Note: each specialist also reads its own `feedback.md` independently
+before generating — you don't need to fan that out. You only own
+synthesis-layer feedback.
+
+## Step 1 — invoke all four specialists IN PARALLEL
+
+Use the Agent tool to fork all four subagents in a **single message
+with four tool-use blocks** so they run concurrently. Sequential
+invocation is 4x slower — don't do it.
+
+| Subagent | Deliverable |
+|---|---|
+| `outage-constraint-overlap` | top outage → constraint → $ triples for tomorrow's DA, with historical precedent |
+| `outage-delta-analyst` | last-24h feed delta (CLEARED / NEW / REVISED), or "quiet" |
+| `outage-network-curator` | active-outage network context: hotspots + top by rating + risk-flagged sub-500 + unmatched gaps |
+| `outage-7d-arc` | week-ahead calendar arc + starting/ending tables + watchlist |
+
+Each persists its raw output to its own subfolder under
+`backend/mcp_server/runs/<view>/<YYYY-MM-DD>.md`. The Agent
+tool returns each digest as the subagent's final message.
+
+## Step 2 — synthesize the brief
+
+Compose the final brief in this exact order:
+
+```
+# PJM Transmission Outages Brief — <day-of-week>, <YYYY-MM-DD>
+
+## Headline
+<1-2 lines: the single most important thing today. Pulled from the
+strongest specialist signal — usually constraint-overlap's top row
+OR a CLEARED >=500 kV silent removal from the delta. Name the
+specific facility, zone, and timing.>
+
+## Outage -> constraint -> price (anchor)
+<Verbatim digest from outage-constraint-overlap. This is the lead
+section because it's the price link.>
+
+## 24h feed delta
+<Verbatim digest from outage-delta-analyst. If the analyst returned
+its "feed is quiet" line, render the section header and a single
+italicized line. Otherwise show the full digest.>
+
+## Network context — active
+<Verbatim digest from outage-network-curator.>
+
+## Week ahead — calendar
+<Verbatim digest from outage-7d-arc.>
+
+## Watchlist (3-5 trader-actionable items)
+<This is YOUR synthesis layer — not pass-through. Pull 3-5 bullets
+that cross-cut the specialists' findings, especially:
+- Starting outages (7d-arc) that compound onto already-binding
+  constraints (constraint-overlap)
+- CLEARED tickets (delta) that affect anchor constraints
+- Risk-flagged 230 kV outages (network-curator) where the
+  trader needs to watch for surprise binding
+Lead each bullet with the zone. Name the specific facility.>
 ```
 
-The script kills any process bound to port 8000 (whether it's the
-existing MCP server or a stale uvicorn), spawns a fresh detached
-uvicorn against the current code on disk, and waits up to 30s for
-`/openapi.json` to respond.
+## Step 3 — persist + offer downstream landing
 
-- Exit 0 → MCP is healthy. Continue with the data-source steps below.
-- Exit non-zero → **STOP IMMEDIATELY.** Tell the user the server failed
-  to come up and point them at the log:
-  `backend/mcp_server/logs/server.log`. Do not synthesize a brief.
-
-Do not call view builders directly via Python under any circumstance.
-There is no fallback path — if MCP can't be brought up, this command
-produces no output.
-
-## Data sources
-
-The brief consumes four MCP endpoints from `http://localhost:8000`:
-
-1. `/views/transmission_outages_network?format=json&max_neighbors=5`
-   — match coverage + matched/ambiguous/unmatched outages with bus IDs
-   and 1-hop neighbors
-2. `/views/transmission_outages_active?format=json` — regional summary +
-   notable outages
-3. `/views/transmission_outages_window_7d?format=json` — 7-day forward
-   outlook (locked + planned)
-4. `/views/transmission_outages_changes_24h_snapshot?format=json` — last
-   24h NEW + REVISED + CLEARED tickets, driven by an SCD2 snapshot diff.
-   Each REVISED ticket carries `prev_*` fields and a `diff_text`
-   summarizing what changed (state transition, est_return shift,
-   risk-flag flip, cause edit). CLEARED is the unique value-add over
-   `_simple`: tickets that disappeared from the source feed without an
-   explicit return — silent clears that show up nowhere else.
-
-After hitting each endpoint, save the JSON response into per-view
-subfolders under `backend/mcp_server/briefings/`:
+Save the synthesized markdown to:
 
 ```
-backend/mcp_server/briefings/
-├── transmission_outages_active/
-│   └── 2026-05-01.json
-├── transmission_outages_window_7d/
-│   └── 2026-05-01.json
-├── transmission_outages_changes_24h_snapshot/
-│   └── 2026-05-01.json
-└── transmission_outages_network/
-    └── 2026-05-01.json
+backend/mcp_server/runs/synthesized/transmission_outages_<YYYY-MM-DD>.md
 ```
 
-All gitignored except the README.
+Top-level (gitignored). Overwrite if regenerated the same day.
 
-## Brief structure (output format)
+Then offer to:
 
-Lead with network context, then time-slice into three detail sections.
+- **Prepend** to `fundies/research/PJM-Transmission-Outages.md`
+  (newest-first)
+- Or **append** a "Transmission Outages" section under today's
+  `PJM-Morning-Fundies.md` entry
 
-### 0. Top-line stats table
+Don't act without confirmation.
 
-One table at the top:
+## Step 4 — close with a feedback invitation
 
-| | | |
-|---|---:|---|
-| Active outages ≥230 kV | <total_active> | scope: LINE/XFMR/PS |
-| Located in PSS/E network | <matched + ambiguous> (<match_rate_pct>%) | <matched> unique-matched, <ambiguous> multi-match |
-| Currently in effect | <count days_out >= 0 and (days_to_return is null or > 0)> | started, not yet returning |
-| Starting next 7 days | <count -7 <= days_out < 0> | flag if there's a single-day cluster |
-| Ending next 7 days | <count 0 <= days_to_return <= 7> | call out today's count |
+After persisting the brief, end your response to the user with a
+short single-line invitation:
 
-### 1. Network context
+> Spot a miss or false-positive? Run `/brief-feedback` to log a rule
+> the next run will pick up automatically.
 
-- **Substation hotspots**: substations with ≥2 concurrent active outages
-  meeting *either* (a) max kV ≥ 345, OR (b) any risk-flagged ticket
-  regardless of voltage. The risk-flag escape hatch matters because
-  some of the most important constraints are 230 kV double-circuit
-  events on tie corridors (e.g., GRACETON-MANOR). Show as a table:
-  substation, # outages, max kV, risk count, types.
-- **Implicit hotspots**: when outages at *different* substations all
-  converge on the same other bus (e.g., multiple lines into ELMONT4).
-  Look for shared `to_bus_psse` across active 500 kV outages.
-- **Topology framing**: 2-3 bullets identifying where redundancy is
-  *thin* vs *rich*, using the `neighbors` list per matched outage.
-- **Network gaps**: count of unmatched outages and a representative
-  list. Two sub-counts: ≥345 kV unmatched (model-newness gap), AND
-  any-kV unmatched with `risk_flag=True` (these must be surfaced
-  even though we can't compute their topology). Don't drop unmatched
-  risk-flagged outages from the brief just because they aren't in
-  PSS/E — list them by name with their schedule.
+That's it — don't run the feedback flow yourself. The user invokes
+`/brief-feedback` only when they have something specific to log.
 
-### 2. Active — currently in effect
+## Style rules (orchestrator level)
 
-**Two sub-tables, in this order:**
+- **ASCII only** in tables. `→` arrows in narrative prose only.
+- **Bold** for $/MWh magnitudes, MW ratings, days-out tenure values.
+- **Day-of-week on every date** in prose ("Sat 5/10", not "5/10").
+- Reference date at the top.
+- Don't pad. If a section is quiet, render the quiet line and move on.
+- Cap final brief at ~150 words of synthesis (headline + watchlist),
+  plus the verbatim specialist digests. Total brief should fit in
+  one screen for fast morning scan.
 
-**2a. Top 8-10 outages by `rating_mva`, ≥500 kV.** For each, include a
-brief "key alternates" note pulled from the `neighbors` list of the
-network endpoint — what's parallel to the outage, with rating.
+## Anti-patterns (don't)
 
-**2b. Risk-flagged outages below 500 kV (separate table, do not skip).**
-Any active outage with `risk_flag=True` and `kV < 500` belongs here —
-this is the catch for 230 kV / 345 kV tie-line risks that the rating
-sort would otherwise hide. Common examples: GRACETON-MANOR (230 kV,
-BC zone), DPL-zone double-circuit work. Include any concurrent
-follow-on tickets at the same facility (search the planned/Received
-window for the same `from_station/to_station` pair) so a 4/27 → 5/10
-event isn't missed when its 5/8 → 6/6 follow-on is also booked.
-
-Filter: `days_out >= 0` AND (`days_to_return` is None or `days_to_return > 0`)
-
-### 3. Starting — outages that begin in next 7 days
-
-Filter: `days_out` between -7 and -1 (negative because outage hasn't
-started yet)
-
-Show as a table sorted by start date:
-- 500+ kV section first
-- 345 kV section after
-- Highlight any single-day clusters (e.g., "Sat 5/4 cluster")
-- Flag high-risk new outages with [HR] marker
-- Note compound effects: when a starting outage shares a substation
-  with an already-active outage, call it out (e.g., "+ already-out
-  XFMR at ELMONT4 — substation has 3 simultaneous reductions during
-  5/4–5/8")
-
-### 4. Ending — outages returning in next 7 days
-
-Filter: `0 <= days_to_return <= 7`
-
-Two sub-sections:
-- **Returning today** (days_to_return == 0) — relief delivered,
-  with note on whether parallel paths were already absorbing load
-  (use neighbors list to assess)
-- **Returning later this week** — sorted by days_to_return ascending
-
-For each ≥500 kV row include rating; for 345 kV summarize by region
-+ count if there's a coordinated maintenance window (multiple at same
-substation).
-
-### 5. Last 24h delta
-
-Drive from the snapshot endpoint. Goal is to flag what *moved* since
-yesterday's brief — most days will be quiet, but the snapshot is the
-only feed that catches silent clears and material revisions. Three
-sub-buckets, each only rendered if non-empty:
-
-**5a. CLEARED ≥230 kV.** Any ticket in `cleared_tickets` (kV ≥ 230,
-LINE/XFMR/PS). These are the high-signal entries — the source feed
-dropped them without an explicit return. Surface every one by name
-with its last-known schedule and risk_flag. Even a single CLEARED
-500 kV ticket should lead the section.
-
-**5b. NEW high-impact.** Filter `new_tickets` to (kV ≥ 345 OR
-risk_flag=True). Drop one-day relay-maintenance blips beyond the
-7-day window unless they're risk-flagged. Show as a short table:
-facility, zone, kV/equip, start → return, risk, cause.
-
-**5c. REVISED — material only.** Filter `revised_tickets` for
-*material* `diff_text`:
-- state transition (Approved → Active, Active → Complete)
-- `est_return` pulled in or pushed out by >2 days
-- `risk_flag` flipped to True (newly elevated)
-- kV ≥ 345 facilities only — drop sub-345 churn
-Render as bullet list grouped by facility, quoting the `diff_text`
-verbatim. Suppress trivial revisions (cause-text edits, equipment-count
-changes, same-day est_return nudges).
-
-If all three buckets are empty, render a single line: "No material
-24h delta — feed is quiet." Don't pad.
-
-### 6. Trading lens
-
-3-5 bullets synthesizing the network + schedule view:
-- Identify the single biggest event of the next 7 days (compound effect
-  + voltage class + duration)
-- Note any chronic structural constraints (>60 days out, ≥500 kV)
-- Highlight regional bias (long/short for DA congestion)
-- Flag any "noise" returns where parallel paths were already routing
-  load (high redundancy = small DA impact)
-- Calendar arc: which day of the week is the constraint trough vs peak
-- Reflect §5 deltas where they matter: a CLEARED 500 kV ticket or a
-  newly-risk-flagged corridor changes today's read; cite the specific
-  facility
-
-## Style notes
-
-- Match the user's existing fundies-brief tone in
-  `fundies/research/PJM-Morning-Fundies.md` — tight bullets, **bold**
-  for numbers, concrete dates with day-of-week, "TODAY / TOMORROW"
-  framing where relevant.
-- ASCII-only in any tables (use `→`-style arrows in narrative prose
-  only — not in code-output capture, which can hit cp1252 issues on
-  Windows).
-- Include reference_date at top.
-- Save the synthesized markdown to
-  `backend/mcp_server/briefings/transmission_outages_<YYYY-MM-DD>.md`
-  (top level, gitignored; one file per generation date — overwrite if
-  regenerated the same day). Also offer to:
-  - Prepend to `fundies/research/PJM-Transmission-Outages.md`
-    (newest-first)
-  - Or append a section to today's `PJM-Morning-Fundies.md` entry
-
-## Caveats to surface in-brief
-
-- The PSS/E model is from Sept 2021. Substations newer than that
-  (e.g., MARS2 in DOM-N) won't match. Surface unmatched count.
-- The `_changes_24h_snapshot` endpoint went live 2026-05-06 (early vs
-  the original ~2026-05-08 target). If the snapshot ever returns 503
-  again — fall back to `_changes_24h_simple` and surface a brief
-  caveat that CLEARED/diff-text fields are unavailable.
-- **Consecutive ticket chains**: a single physical outage can be
-  represented as a sequence of back-to-back tickets at the same
-  facility (e.g., GRACETON-MANOR 4/27 → 5/10 followed by 5/8 → 6/6).
-  When summarizing, dedupe-by-facility and report the *combined*
-  effective window, plus call out any short overlap windows where
-  both tickets are simultaneously active (double-circuit risk).
-
-## Lessons learned
-
-- **2026-05-04 GRACETON miss.** Original brief omitted GRACETON-MANOR
-  entirely because (a) hotspot threshold was kV ≥ 345, (b) the line is
-  unmatched in PSS/E (model gap), and (c) the Active section was
-  capped at ≥500 kV. Fix: hotspot threshold now drops to 230 kV when
-  any concurrent ticket is risk-flagged; Active section now includes
-  a separate "risk-flagged below 500 kV" sub-table; unmatched
-  risk-flagged outages are surfaced by name in Network gaps even when
-  topology is unknown.
-
-## Reference example
-
-The first run of this brief produced output saved at
-`backend/mcp_server/briefings/network_full.json` etc. The corresponding markdown is
-in chat history (see "PJM Transmission Outages Brief — 2026-05-01"
-with the network-first structure).
+- Don't re-implement specialist filter rules. They live in the
+  subagent prompts; edit those instead.
+- Don't invoke specialists sequentially. Single message with four
+  Agent tool-use blocks.
+- Don't paraphrase specialist outputs. Pass through verbatim; the
+  scoring already happened in their context.
+- Don't add a "trading lens" section that duplicates Watchlist.
+  The Watchlist IS the trading lens.
+- Don't fall back to live SQL or `parse_psse_raw` queries. The
+  specialists own the data layer; you own the stitching only.

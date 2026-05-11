@@ -18,27 +18,18 @@ Each tier hands a concrete drilldown payload to the next so the brief
 stays causally connected (top zones → top hubs → binding hours →
 constraint bus IDs → outages on those buses).
 
-## Pre-flight: always-fresh MCP server
+## MCP server
 
-**First step — always.** Run the pre-flight before anything else:
+Health is auto-managed by the `PreToolUse` hook
+`.claude/hooks/mcp_health_check.py`, which fires before any
+`mcp__pjm-views__*` tool call: it pings `/openapi.json` and only kicks
+`backend.mcp_server.ensure_running` if the port is unreachable.
+Steady state is a ~50ms localhost GET.
 
-```bash
-python -m backend.mcp_server.ensure_running
-```
-
-The script kills any process bound to port 8000 (whether it's the
-existing MCP server or a stale uvicorn), spawns a fresh detached
-uvicorn against the current code on disk, and waits up to 30s for
-`/openapi.json` to respond.
-
-- Exit 0 → MCP is healthy. Continue with the data-source steps below.
-- Exit non-zero → **STOP IMMEDIATELY.** Tell the user the server failed
-  to come up and point them at the log:
-  `backend/mcp_server/logs/server.log`. Do not synthesize a brief.
-
-Do not call view builders directly via Python under any circumstance.
-There is no fallback path — if MCP can't be brought up, this command
-produces no output.
+If the hook reports a restart failure, the tool call is blocked with
+the failure stderr surfaced to the model — STOP and point the user at
+`backend/mcp_server/logs/server.log`. Do not synthesize a brief and do
+not call view builders directly via Python; there is no fallback path.
 
 ## Data sources
 
@@ -58,10 +49,10 @@ The brief consumes four MCP endpoints from `http://localhost:8000`:
    Tier 4. Outages on or near the bus set from Tier 3.
 
 After hitting each endpoint, save the JSON response into per-view
-subfolders under `backend/mcp_server/briefings/`:
+subfolders under `backend/mcp_server/runs/views/`:
 
 ```
-backend/mcp_server/briefings/
+backend/mcp_server/runs/views/
 ├── lmps_daily_summary/<YYYY-MM-DD>.json
 ├── lmps_hourly_summary/<YYYY-MM-DD>.json
 ├── constraints_da_network/<YYYY-MM-DD>.json
@@ -117,11 +108,23 @@ the stress lives.
 From `/views/constraints_da_network?binding_hours=<csv>&top_n=10`.
 Which assets set the price in the stressed hours.
 
-- **Top-N table** (top 10-12, sorted by `binding_price`):
+- **Top-N table** (top 10-12, sorted by `|hub_lmp_impact|` if
+  available, else by raw `binding_price`):
   - Constraint name (truncated ~30 chars), contingency, kV, route
-    (`from→to` or `single`), `from_bus↔to_bus`, binding $, hours
-    bound, MVA rating, top 2-3 neighbors
+    (`from→to` or `single`), `from_bus↔to_bus`, binding $,
+    **WH $/MWh** (signed hub-LMP impact), hours bound, MVA rating,
+    top 2-3 neighbors
   - Group by voltage tier (500+ kV first, then 345 kV, then ≤230 kV)
+- **Hub LMP impact column.** For each top-N constraint with a
+  matched PSS/E branch, call
+  `/views/hub_impact?hub_name=WESTERN%20HUB&from_bus=<from_bus_psse>&to_bus=<to_bus_psse>&shadow_price=<binding_price>`
+  (single hub call per constraint; cache is in-memory). Render
+  `hub_lmp_impact_dollars_per_mwh` in the WH $/MWh column —
+  **sign matters**: negative means the constraint's binding actually
+  decreases WH LMP (relief), positive means stress. Mark unmatched
+  branches `n/a` and surface them in the caveats. When the
+  WH-impact ranking diverges from the raw-shadow ranking, call it
+  out in the trading lens.
 - **Network match note**: % matched / ambiguous / unmatched. Flag
   if unmatched ≥30% — Tier 4 link will be partial.
 - **Interface constraints** (zonal aggregations like `APSOUTH`) get
@@ -170,7 +173,7 @@ Why the constraints are binding.
   `$XX.XX` (2 decimals) for LMP scalars.
 - Include `target_date` (tomorrow) and `as_of` (today, post-DA) at top.
 - Save synthesized markdown to
-  `backend/mcp_server/briefings/da_results_<target_date>.md` —
+  `backend/mcp_server/runs/synthesized/da_results_<target_date>.md` —
   filename uses TARGET date (tomorrow), one file per target,
   overwrite if regenerated same day.
 - Offer to:

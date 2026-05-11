@@ -1,6 +1,29 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(./modelling/data/cache/**)",
+      "Read(./backend/cache/**)",
+      "Read(./backend/dbt/**/target/**)",
+      "Read(./backend/dbt/**/dbt_packages/**)",
+      "Read(./frontend/.next/**)",
+      "Read(./frontend/node_modules/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./**/*.parquet)"
+    ]
+  },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__pjm-views__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/mcp_health_check.py\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
