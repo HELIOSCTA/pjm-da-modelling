@@ -2,15 +2,137 @@
 ### Trading
 ### Notes
 ### Reading
+- #### Gridstatus
 
-## 2026-05-06 (Wednesday)
+## 2026-05-11 (Monday)
 
 ### Trading
-### Fundies
+### Notes
 
-#### Bearish
+- Forecasts
+  - Renewables are much healither tomorrow. Clouds more north over MidA.
+  - Load is stronger in the south for morning ramp.
+
+- DA Constraints
+  - Flagging CONASTON seeing it this morning again and over the weekend. (Salem is 100%)
+
+- Outages
+  - A third Conaston 230 kV circuit (CONASTON-NORTHWES 2310, risk-flagged, ETR 6/19) entered service Mon 5/11 on top of the chronic CONASTON-OTTCRKPL 2302 (179 d out, ETR 7/31) and GRACETON-MANOR (risk-flagged, through 6/1)
+
+- Price Prediction
+  - System will be 40-42 with $2-4 congestion
+  - Model is biased higher from outages
 
 ### Reading
+
+- #### Gridstatus
+
+Light Conastone - Peach Bottom congestion was priced throughout today's DA due to cloud coverage and precipitation in Virginia.
+
+It's a cloudy start to the day for portions of PJM along the I-95 corridor as the remnants of yesterday's unsettled weather push out of the region. Precipitation and low-level cloud coverage are concentrated in Virginia, which could drive stronger daytime load overperformance and solar suppression.
+
+The nuclear stack, and particularly the fleet in the Mid-Atlantic, has gotten healthier over the weekend with the full return of Salem on the source of Conastone - Peach Bottom.
+
+## 2026-05-08 (Friday)
+
+
+### Trading
+### Notes
+### Reading
+
+- #### Gridstatus
+
+For the first time since April 4th, over 30 GW of nuclear generation is online in PJM.
+
+Two units have continued to ramp up over the past day: Salem 2 and Braidwood 2.
+
+While the two units are helping increase baseload nuclear generation and put some downward pressure on energy prices, even as relatively mild conditions are present across the RTO, both units are major sources of systemic congestion in their respective regions.
+
+Salem, located on the southern coast of New Jersey, is a top source for N-S congestion, often with double-digit estimated shift factors, which could amplify risk on Sunday as cooling load returns in Dominion.
+
+Braidwood is a major source for W-E wind-driven flows out of COMED, which we have seen pick up this week due to unsettled weather in Eastern PJM.
+
+Outages are continuing to trend downward as we approach summer, which will help to shift risk back to more systemic constraints rather than notable outage-driven constraints that have popped up over the last 3 months.
+
+- #### Gridstatus
+
+Mother's Day is this Sunday, so let's take a look at historical load patterns and see if there are visible demand impacts.
+
+As we've seen from school closures and other holidays, a change in people's day-to-day lives can have clear impacts on system-wide demand.
+
+Over the past 5 years, Mother's Day has seen load slightly underperform the RTO's forecast, often to a higher degree than the prior and following days, though the pattern is less clear. While overall load tends to come in softer, there is less rhyme or reason to the timing of the underperformance.
+
+Load tends to come in slightly weaker during the afternoon, while impacts over the peaks have been more mixed.
+
+This trend is different than what we have seen on holidays like Good Friday and Halloween. Even non-bank holidays that occur during the work week, such as Good Friday and Patriots' Day, have stronger bearish demand impacts on the morning load ramp as school and business closures shift patterns primarily during HE 7&8. On the other hand, Halloween has more bearish demand impacts over the evening, when Trick-or-Treating is in full swing.
+
+Rather than being the reason behind major load misses, it appears that Mother's Day can drive some marginal suppression during the daytime, amplifying load underperformance that was likely bound to occur on otherwise mild late Spring Sundays, rather than being the sole driver.
+
+Models currently point to an unsettled day on Sunday, which could negate any slight suppression the holiday would otherwise drive.
+
+
+## 2026-05-07 (Thursday)
+
+### Trading
+
+### Fundies
+
+- Lower Solar (Clouds) over West
+- Stronger Solar in South .. Congestion/DA constraints impacts?
+
+- Wind impacts?
+
+- Outages should be similar DoD
+
+- Nuclear 
+  - BV is stronger
+
+- Coal looks a little weaker DoD (which units)
+
+Outages
+- GOOSE
+- Graceton
+- Chalk Point
+
+RT/DA Constraints
+- CONASTON-NORTHWES 2310 B 230 KV
+- ECLIPSE_115KVECL-PIN_1_LN
+- PLEASNTV TX3 XFORMER H 500 KV
+
+### Reading
+
+#### Gridstatus
+Strong flows from CPLE have so far helped to quell congestion volatility in PJM.
+
+Demand is unfolding in a manner that would set the stage for classic N-S congestion, as Mid-Atlantic load is underperforming forecasts and South load continues to overperform due to persistent cloud coverage.
+
+Flows from North Carolina into Southern Virginia appear to be helping to mitigate volatility, helping to limit some of the need for power to flow from Pennsylvania and due south. Additionally, we have seen this load underperformance help to keep energy prices suppressed, as weak load in the Mid-A and West has helped to offset the overperformance in the South.
+
+While flows have helped to push back on some risk, the fundamentals still point to some volatility emerging, particularly if these flows drop and during BathCo's expected afternoon pump, which would come during the lowest point in the expected Mid-A demand curve and when underperformance would be at its greatest.
+
+#### Gridstatus
+Mother's Day is this Sunday, so let's take a look at historical load patterns and see if there are visible demand impacts.
+
+As we've seen from school closures and other holidays, a change in people's day-to-day lives can have clear impacts on system-wide demand.
+
+Over the past 5 years, Mother's Day has seen load slightly underperform the RTO's forecast, often to a higher degree than the prior and following days, though the pattern is less clear. While overall load tends to come in softer, there is less rhyme or reason to the timing of the underperformance.
+
+Load tends to come in slightly weaker during the afternoon, while impacts over the peaks have been more mixed.
+
+This trend is different than what we have seen on holidays like Good Friday and Halloween. Even non-bank holidays that occur during the work week, such as Good Friday and Patriots' Day, have stronger bearish demand impacts on the morning load ramp as school and business closures shift patterns primarily during HE 7&8. On the other hand, Halloween has more bearish demand impacts over the evening, when Trick-or-Treating is in full swing.
+
+Rather than being the reason behind major load misses, it appears that Mother's Day can drive some marginal suppression during the daytime, amplifying load underperformance that was likely bound to occur on otherwise mild late Spring Sundays, rather than being the sole driver.
+
+Models currently point to an unsettled day on Sunday, which could negate any slight suppression the holiday would otherwise drive.
+
+#### Gridstatus
+Conastone - Northwest and other N-S constraints could see added risk today as cloud coverage is expected to lead to divergent load patterns in PJM.
+
+Clouds are quickly pushing out of the Mid-Atlantic, on the source of the constraint. PJM has revised its Mid-Atlantic forecast down, expecting a deeper daytime demand trough as the combination of reduced lighting load and in areas along I-95, increased BTM solar.
+
+It's a different story in the South, as low-level cloud coverage is expected to remain in place throughout the day, increasing the risk of load overperformance, as we saw this morning. Not only is load strength on the sink a concern, but solar generation is expected to be heavily suppressed. There is a risk that seeing source-side load underperformance paired with sink-side load overperformance, combined with a generally weak supply stack, will drive volatility.
+
+I tend to lean towards the risk coming in as Conastone - Northwest rather than Pleasant View XF, given the lack of solar generation and mild temperatures in VA, as we saw verify yesterday, though nearby outages keep some pressure on this constraint, as we saw by today's lingering DA coverage.
 
 ## 2026-05-06 (Wednesday)
 
