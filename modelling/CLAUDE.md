@@ -14,11 +14,14 @@ Cross-family imports flow forward only: every model family
 from `common/`, but never from a sibling family. If a utility is
 shared, lift it to `common/`.
 
-When a forecaster is ready to surface in the frontend, publish via
-the `pjm_model_outputs.forecast_runs` Postgres mart — see the root
-`CLAUDE.md` "Cross-subtree contracts" section.
-
-All forecaster families MUST publish via `from da_models.common.publish import publish_forecast_run`. Each family owns `build_payload` and `extract_onpeak_forecast` in its own `publish.py`; the shared function owns the row layout (and the `da_lmp_total_onpeak_forecast` column) and delegates the actual DDL + write to `utils.azure_postgresql_utils.upsert_to_azure_postgresql` (which creates the `pjm_model_outputs` schema + `forecast_runs` table on first run, then upserts on the PK). Centralization is enforced structurally: there is exactly one `publish_forecast_run` symbol in `modelling/`, in `common/publish.py`. Pipelines compose `build_payload(...)` -> `extract_onpeak_forecast(payload)` -> `publish_forecast_run(...)`, passing `run_date` (the forecast vintage) alongside `target_date` (the delivery date). See `da_models/PUBLISHING.md` for the registry of every model and its `forecast_runs` mapping, plus the "adding a new forecaster" checklist.
+Forecasters here are **research / standalone** — `run(...)` computes, prints,
+and returns a result dict; nothing in `modelling/` writes Postgres. Publishing
+to the `pjm_model_outputs.forecast_runs` mart (the seam the frontend reads) is
+owned exclusively by the scheduled copies under `backend/modelling/da_models/`,
+via `backend.modelling.da_models.common.publish.publish_forecast_run` — see
+`backend/modelling/README.md` and the root `CLAUDE.md` "Cross-subtree
+contracts" section. When you change a forecaster here, port the change to its
+`backend/modelling/` twin if it should reach the frontend.
 
 ## Layout pointers
 

@@ -17,8 +17,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from da_models.common.configs import HOURS
-from da_models.common.forecast.output import actuals_from_pool
+from backend.modelling.da_models.common.configs import HOURS
+from backend.modelling.da_models.common.forecast.output import actuals_from_pool
 
 logger = logging.getLogger(__name__)
 

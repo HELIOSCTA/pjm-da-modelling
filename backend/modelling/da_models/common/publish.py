@@ -41,19 +41,11 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from datetime import date
-from pathlib import Path
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-# ``credentials`` and ``utils.azure_postgresql_utils`` are flat modules under
-# modelling/, not part of the da_models editable install. modelling/ is put on
-# sys.path lazily inside publish_forecast_run() so this module stays importable
-# without it. parents[2] from modelling/da_models/common/publish.py -> modelling/.
-_MODELLING_ROOT = Path(__file__).resolve().parents[2]
 
 _SCHEMA = "pjm_model_outputs"
 _TABLE = "forecast_runs"
@@ -104,10 +96,8 @@ def publish_forecast_run(
     ``payload`` is stored as jsonb. Returns ``(model_name, target_date,
     run_id)`` for caller logging.
     """
-    if str(_MODELLING_ROOT) not in sys.path:
-        sys.path.insert(0, str(_MODELLING_ROOT))
-    import credentials  # noqa: PLC0415  modelling/credentials.py (flat module)
-    from utils.azure_postgresql_utils import upsert_to_azure_postgresql  # noqa: PLC0415
+    import backend.credentials as credentials  # noqa: PLC0415
+    from backend.utils.azure_postgresql_utils import upsert_to_azure_postgresql  # noqa: PLC0415
 
     row = pd.DataFrame(
         [

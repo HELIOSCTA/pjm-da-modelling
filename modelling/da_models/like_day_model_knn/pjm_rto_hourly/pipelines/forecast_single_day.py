@@ -60,7 +60,6 @@ from da_models.like_day_model_knn.pjm_rto_hourly.printers import (  # noqa: E402
     print_pool_funnel,
     print_quantiles,
 )
-from da_models.common.publish import publish_forecast_run  # noqa: E402
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
@@ -73,23 +72,14 @@ RUN_DATE: date | None = None
 # Replaces the legacy 5-feature ``pjm_rto_hourly`` spec — see CLAUDE.md /
 # domains.py for the rationale (path B sunny alignment).
 MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
-# Frontend ingestion identity — decoupled from the spec key (above) so
-# swapping spec features (e.g. sunny-aligned -> v2) doesn't break the
-# published model_name and orphan historical runs in the picker. The
-# published name is what the frontend reads; the spec key is internal.
-PUBLISHED_MODEL_NAME: str = "pjm_rto_hourly"
-PUBLISHED_MODEL_FAMILY: str = "like_day"
 FLT_RADIUS: int = configs.PJM_RTO_HOURLY_SUNNY_ALIGNED_SPEC.flt_radius
 N_ANALOGS: int | None = None  # None -> configs.DEFAULT_N_ANALOGS
 SEASON_WINDOW_DAYS: int | None = None  # None -> configs.SEASON_WINDOW_DAYS
 MIN_POOL_SIZE: int | None = None  # None -> configs.MIN_POOL_SIZE
 WRITE_ANALOG_STORE: bool = True
 ANALOG_STORE_DIR: Path | None = None  # None -> DEFAULT_STORE_DIR
-# The pipeline always publishes the run to pjm_model_outputs.forecast_runs
-# (one row, upserted via da_models.common.publish.publish_forecast_run) so the
-# frontend can read it. Batch/backtest callers that must NOT write a row per
-# date pass publish=False to run().
-PUBLISH: bool = True
+# This pipeline does not publish -- the scheduled backend/modelling/ copy is the
+# sole writer of pjm_model_outputs.forecast_runs.
 
 # 80% PI (P10/P90) + IQR (P25/P75) + median. P01/P05/P95/P99 are dropped
 # because they're statistically unreliable with 20 analogs — they pin to
@@ -162,7 +152,6 @@ def run(
     min_pool_size: int | None = MIN_POOL_SIZE,
     write_analog_store: bool = WRITE_ANALOG_STORE,
     analog_store_dir: Path | None = ANALOG_STORE_DIR,
-    publish: bool = PUBLISH,
     quantiles: tuple[float, ...] | list[float] | None = None,
     display_quantiles: tuple[float, ...] | list[float] | None = None,
     pool: pd.DataFrame | None = None,
@@ -294,38 +283,6 @@ def run(
         analogs=analogs,
         pool=pool,
     )
-
-    if publish:
-        from da_models.like_day_model_knn.pjm_rto_hourly.publish import (  # noqa: PLC0415
-            build_payload,
-            extract_onpeak_forecast,
-        )
-
-        payload = build_payload(
-            df_forecast=df_forecast,
-            quantiles_table=quantiles_table,
-            analogs=analogs,
-            pool=pool,
-            output_table=output_table,
-            target_date=resolved_date,
-            run_date=resolved_run_date,
-            model_name=PUBLISHED_MODEL_NAME,
-            model_family=PUBLISHED_MODEL_FAMILY,
-            run_id=run_id,
-            hub=config.hub,
-            day_type=day_type,
-            n_analogs=int(config.n_analogs),
-            quantiles=quantiles,
-        )
-        publish_forecast_run(
-            model_name=PUBLISHED_MODEL_NAME,
-            model_family=PUBLISHED_MODEL_FAMILY,
-            target_date=resolved_date,
-            run_date=resolved_run_date,
-            run_id=run_id,
-            payload=payload,
-            da_lmp_total_onpeak_forecast=extract_onpeak_forecast(payload),
-        )
 
     metrics: dict = {}
     block_level: dict = {}

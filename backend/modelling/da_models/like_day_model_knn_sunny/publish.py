@@ -1,10 +1,15 @@
-"""Build the run-JSON payload for meteo_rto_hourly and extract its OnPeak
-forecast for the shared publisher.
+"""Build the run-JSON payload for the like_day_model_knn_sunny forecaster
+(model_name ``pjm_rto_hourly_sunny``) and extract its OnPeak forecast for the
+shared publisher.
 
-Mirror of ``pjm_rto_hourly/publish.py`` — same payload shape, same
-extraction logic. Kept as a standalone copy to honor the rule that
-meteo_rto_hourly must not import from its pjm sibling. See
-``modelling/da_models/common/publish.py`` for the upsert.
+See ``modelling/da_models/common/publish.py`` for the upsert. The sunny variant
+is a KNN like-day forecaster (single hub, per-HE point + quantiles, weighted
+analog days), so this ``publish.py`` mirrors
+``like_day_model_knn/pjm_rto_hourly/publish.py``. ``build_payload`` builds the
+model-specific payload; ``extract_onpeak_forecast`` pulls the OnPeak HE 8-23
+point forecast out of the payload's ``blocks[]`` array. (It lives at the family
+root rather than under ``pjm_rto_hourly/`` so a future sunny sibling can reuse
+it without crossing the forward-import boundary into ``like_day_model_knn``.)
 """
 
 from __future__ import annotations
@@ -16,11 +21,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from da_models.common.configs import HOURS
-from da_models.common.forecast.output import actuals_from_pool
+from backend.modelling.da_models.common.configs import HOURS
+from backend.modelling.da_models.common.forecast.output import actuals_from_pool
 
 logger = logging.getLogger(__name__)
 
+# OnPeak hours for analog DA OnPeak LMP averaging. Matches the convention
+# in common/forecast/output.py (HE8..HE23) used everywhere else on the desk.
 _ONPEAK_HOURS: list[int] = list(range(8, 24))
 
 
@@ -39,6 +46,10 @@ def _build_hourly(
     actuals_hourly: dict[int, float] | None,
     quantiles: list[float],
 ) -> list[dict[str, Any]]:
+    """Reshape df_forecast (24 rows, q_0.10..q_0.90) into the JSON hourly array.
+
+    Always emits 24 entries (HE1..HE24), filling missing values with None.
+    """
     fc_by_he: dict[int, dict[str, float]] = {}
     point_col = (
         "point_forecast" if "point_forecast" in df_forecast.columns else "q_0.50"
@@ -70,6 +81,7 @@ _QUANTILE_LABELS: tuple[str, ...] = ("P10", "P25", "P50", "Forecast", "P75", "P9
 
 
 def _build_blocks(quantiles_table: pd.DataFrame) -> list[dict[str, Any]]:
+    """Extract OnPeak / OffPeak / Flat x P10..P90+Forecast (18 rows)."""
     out: list[dict[str, Any]] = []
     if quantiles_table is None or len(quantiles_table) == 0:
         return out
@@ -98,6 +110,13 @@ def _build_analogs(
     pool: pd.DataFrame,
     target_date: date,
 ) -> list[dict[str, Any]]:
+    """Aggregate the 24xK analog picks into one row per unique analog date.
+
+    weight_share is normalised so the array sums to 1.0 across all unique
+    analog dates (matches the printer's ``w`` column). da_onpk_lmp is the
+    realised OnPeak DA LMP (HE8..HE23 mean) for the analog date, looked
+    up via ``actuals_from_pool``.
+    """
     if analogs is None or len(analogs) == 0:
         return []
 
@@ -124,6 +143,8 @@ def _build_analogs(
     out: list[dict[str, Any]] = []
     for _, r in grp.iterrows():
         analog_date = r["date"]
+        # `date` from the analogs frame is already a python date or pandas
+        # Timestamp; coerce to date for downstream consistency.
         if isinstance(analog_date, pd.Timestamp):
             analog_date_obj = analog_date.date()
         else:
@@ -171,8 +192,13 @@ def build_payload(
     created_at_utc: datetime | None = None,
     created_at_local: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build the run-JSON payload (dict). Pure function; no IO."""
-    del output_table
+    """Build the run-JSON payload (dict). Pure function; no IO.
+
+    ``created_at_utc`` / ``created_at_local`` default to "now" -- pass
+    explicit values when you want the payload's timestamps to match
+    the row's columns.
+    """
+    del output_table  # actuals are pulled from the pool below
 
     actuals_hourly = actuals_from_pool(pool, target_date)
     n_unique_analog_dates = (
@@ -181,6 +207,9 @@ def build_payload(
     if created_at_utc is None:
         created_at_utc = datetime.now(timezone.utc).replace(microsecond=0)
     if created_at_local is None:
+        # Naive local-machine wall-clock time. Stored in Postgres as
+        # `timestamp without time zone` so the literal MST value is
+        # preserved without conversion.
         created_at_local = datetime.now().replace(microsecond=0)
 
     return {
@@ -204,10 +233,11 @@ def build_payload(
 def extract_onpeak_forecast(payload: dict) -> float | None:
     """Pull the OnPeak HE 8-23 point forecast out of ``payload['blocks']``.
 
-    Same shape as the pjm_rto_hourly extractor: KNN payloads encode
-    blocks as ``{block, quantile_label, value}``; the headline number is
-    ``block='OnPeak' AND quantile_label='Forecast'``. Returns None when
-    the block is missing or the value is None.
+    KNN payloads encode blocks as ``{block, quantile_label, value}``;
+    the headline number is the row with ``block='OnPeak'`` and
+    ``quantile_label='Forecast'`` (the deterministic point -- see
+    ``_QUANTILE_LABELS``). Returns None when the block is missing or
+    the value is None.
     """
     blocks = payload.get("blocks") or []
     for entry in blocks:

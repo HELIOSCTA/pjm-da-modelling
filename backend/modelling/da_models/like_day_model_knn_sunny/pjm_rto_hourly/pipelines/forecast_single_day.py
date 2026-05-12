@@ -12,7 +12,7 @@ actuals are present). Tunable defaults live as module-level constants.
 
 Usage::
 
-    python -m da_models.like_day_model_knn_sunny.pjm_rto_hourly.pipelines.forecast_single_day
+    python -m backend.modelling.da_models.like_day_model_knn_sunny.pjm_rto_hourly.pipelines.forecast_single_day
     python modelling/da_models/like_day_model_knn_sunny/pjm_rto_hourly/pipelines/forecast_single_day.py
 """
 
@@ -23,22 +23,23 @@ import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
-_MODELLING_ROOT = Path(__file__).resolve().parents[4]
-if str(_MODELLING_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MODELLING_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[6]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from da_models.like_day_model_knn_sunny import configs  # noqa: E402
-from da_models.like_day_model_knn_sunny.pjm_rto_hourly import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn_sunny import configs  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn_sunny.pjm_rto_hourly import (  # noqa: E402
     forecast,
     metrics as metrics_mod,
     printers,
 )
-from da_models.like_day_model_knn_sunny.pjm_rto_hourly.builder import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn_sunny.pjm_rto_hourly.builder import (  # noqa: E402
     build_pool,
 )
+from backend.modelling.da_models.common.publish import publish_forecast_run  # noqa: E402
 
 
 # ── Defaults ──────────────────────────────────────────────────────────
@@ -46,13 +47,20 @@ TARGET_DATE: date | None = None  # None -> tomorrow
 # Forecast vintage -- the date the run is produced (None -> date.today()).
 RUN_DATE: date | None = None
 MODEL_NAME: str = configs.PJM_RTO_HOURLY_SUNNY_SPEC.name
+# Frontend ingestion identity for pjm_model_outputs.forecast_runs -- stable,
+# decoupled from the spec key (the published name is what the frontend reads).
+PUBLISHED_MODEL_NAME: str = "pjm_rto_hourly_sunny"
+PUBLISHED_MODEL_FAMILY: str = "like_day"
 N_ANALOGS: int | None = None  # None -> configs.DEFAULT_N_ANALOGS
 SEASON_WINDOW_DAYS: int | None = None
 MIN_POOL_SIZE: int | None = None
 LABEL_SOURCE: str = configs.LABEL_SOURCE
 RECENCY_HALF_LIFE_DAYS: float | None = None
-# This pipeline does not publish -- the scheduled backend/modelling/ copy is the
-# sole writer of pjm_model_outputs.forecast_runs.
+# The pipeline always publishes the run to pjm_model_outputs.forecast_runs
+# (one row, upserted via backend.modelling.da_models.common.publish.publish_forecast_run) so the
+# frontend can read it. Batch/backtest callers that must NOT write a row per
+# date pass publish=False to run().
+PUBLISH: bool = True
 
 # Quantiles for the printed bands table (P25..P75) AND the wider levels
 # (P10/P90, P05/P95, P01/P99) that evaluate_forecast uses for 80/90/98%
@@ -105,6 +113,7 @@ def run(
     quantiles: tuple[float, ...] | list[float] | None = None,
     display_quantiles: tuple[float, ...] | list[float] | None = None,
     pool: pd.DataFrame | None = None,
+    publish: bool = PUBLISH,
     quiet: bool = False,
     y_naive_override: np.ndarray | None = None,
     feature_group_weights_override: dict[str, float] | None = None,
@@ -187,6 +196,38 @@ def run(
         resolved_date, df_forecast, display_q, analogs=analogs
     )
 
+    if publish:
+        from backend.modelling.da_models.like_day_model_knn_sunny.publish import (  # noqa: PLC0415
+            build_payload,
+            extract_onpeak_forecast,
+        )
+
+        payload = build_payload(
+            df_forecast=df_forecast,
+            quantiles_table=quantiles_table,
+            analogs=analogs,
+            pool=pool,
+            output_table=result["output_table"],
+            target_date=resolved_date,
+            run_date=resolved_run_date,
+            model_name=PUBLISHED_MODEL_NAME,
+            model_family=PUBLISHED_MODEL_FAMILY,
+            run_id=run_id,
+            hub=resolved_cfg.hub,
+            day_type=day_type,
+            n_analogs=int(resolved_cfg.n_analogs),
+            quantiles=quantiles_list,
+        )
+        publish_forecast_run(
+            model_name=PUBLISHED_MODEL_NAME,
+            model_family=PUBLISHED_MODEL_FAMILY,
+            target_date=resolved_date,
+            run_date=resolved_run_date,
+            run_id=run_id,
+            payload=payload,
+            da_lmp_total_onpeak_forecast=extract_onpeak_forecast(payload),
+        )
+
     metrics: dict = {}
     if result["has_actuals"] and len(df_forecast) > 0:
         actuals_long = pool[pool["date"] == resolved_date]
@@ -214,7 +255,7 @@ def run(
 
     if not quiet:
         # Need a query frame for the analog-features printer's per-HE z sub-strips.
-        from da_models.like_day_model_knn_sunny.pjm_rto_hourly.builder import (
+        from backend.modelling.da_models.like_day_model_knn_sunny.pjm_rto_hourly.builder import (
             build_query_row,
         )
 

@@ -17,8 +17,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from da_models.baseline_meteo_da_price import ice_anchor
-from da_models.common.configs import HOURS
+from backend.modelling.da_models.baseline_meteo_da_price import ice_anchor
+from backend.modelling.da_models.common.configs import HOURS
 
 logger = logging.getLogger(__name__)
 

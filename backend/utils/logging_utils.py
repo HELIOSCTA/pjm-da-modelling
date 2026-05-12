@@ -3,7 +3,7 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Union, List
+from typing import Optional, Union
 from contextlib import contextmanager
 
 from backend.utils import (
@@ -11,16 +11,17 @@ from backend.utils import (
 )
 
 # Global logger instance
-_logger_instance: Optional['PipelineLogger'] = None
+_logger_instance: Optional["PipelineLogger"] = None
 
 
 # ANSI color codes
 class Colors:
     """ANSI escape codes for terminal colors."""
+
     RESET = "\033[0m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
-    
+
     # Foreground colors
     BLACK = "\033[30m"
     RED = "\033[31m"
@@ -30,7 +31,7 @@ class Colors:
     MAGENTA = "\033[35m"
     CYAN = "\033[36m"
     WHITE = "\033[37m"
-    
+
     # Bright foreground colors
     BRIGHT_BLACK = "\033[90m"
     BRIGHT_RED = "\033[91m"
@@ -40,7 +41,7 @@ class Colors:
     BRIGHT_MAGENTA = "\033[95m"
     BRIGHT_CYAN = "\033[96m"
     BRIGHT_WHITE = "\033[97m"
-    
+
     # Background colors
     BG_RED = "\033[41m"
     BG_GREEN = "\033[42m"
@@ -95,8 +96,7 @@ def get_level_icon(levelno: int) -> str:
 def get_prefect_run_logger():
     """Import Prefect lazily so non-Prefect scripts do not initialize plugins."""
     if not (
-        os.environ.get("PREFECT__FLOW_RUN_ID")
-        or os.environ.get("PREFECT__TASK_RUN_ID")
+        os.environ.get("PREFECT__FLOW_RUN_ID") or os.environ.get("PREFECT__TASK_RUN_ID")
     ):
         return None
 
@@ -128,32 +128,33 @@ def supports_color() -> bool:
     # Check for explicit disable
     if os.environ.get("NO_COLOR"):
         return False
-    
+
     # Check for explicit enable
     if os.environ.get("FORCE_COLOR"):
         return True
-    
+
     # Check if stdout is a TTY
     if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
         return False
-    
+
     # Windows-specific handling
     if sys.platform == "win32":
         try:
             # Enable ANSI escape sequences on Windows 10+
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
             kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
             return True
         except Exception:
             return os.environ.get("TERM") == "xterm"
-    
+
     return True
 
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter that adds colors to log output."""
-    
+
     def __init__(
         self,
         fmt: Optional[str] = None,
@@ -164,59 +165,58 @@ class ColoredFormatter(logging.Formatter):
         super().__init__(fmt, datefmt)
         self.use_colors = use_colors and supports_color()
         self.use_icons = use_icons
-        
+
         # Store the original format and create a colored version
         self._original_fmt = fmt
         if self.use_colors and fmt:
             # Replace the location placeholders with a single custom field
             self._colored_fmt = fmt.replace(
-                "%(filename)s:%(funcName)s:%(lineno)d",
-                "%(colored_location)s"
+                "%(filename)s:%(funcName)s:%(lineno)d", "%(colored_location)s"
             )
         else:
             self._colored_fmt = fmt
-    
+
     def format(self, record: logging.LogRecord) -> str:
         # Save original values
         original_levelname = record.levelname
         original_msg = record.msg
-        
+
         if self.use_colors:
             color = LEVEL_COLORS.get(record.levelno, Colors.RESET)
-            
+
             # Color the level name
             record.levelname = f"{color}{record.levelname}{Colors.RESET}"
-            
+
             # Create colored location string
             record.colored_location = (
                 f"{Colors.CYAN}{record.filename}{Colors.RESET}:"
                 f"{Colors.BRIGHT_MAGENTA}{record.funcName}{Colors.RESET}:"
                 f"{Colors.YELLOW}{record.lineno}{Colors.RESET}"
             )
-            
+
             # Color the message based on level
             if record.levelno >= logging.ERROR:
                 record.msg = f"{color}{record.msg}{Colors.RESET}"
             elif record.levelno == logging.WARNING:
                 record.msg = f"{color}{record.msg}{Colors.RESET}"
-            
+
             # Temporarily swap format string
             self._style._fmt = self._colored_fmt
-        
+
         # Add icons
         if self.use_icons:
             icon = get_level_icon(record.levelno)
             record.levelname = f"{icon} {record.levelname}"
-        
+
         # Format the record
         result = super().format(record)
-        
+
         # Restore original values and format
         record.levelname = original_levelname
         record.msg = original_msg
         if self.use_colors:
             self._style._fmt = self._original_fmt
-        
+
         return result
 
 
@@ -303,6 +303,42 @@ def get_logger() -> logging.Logger:
     return logging.getLogger()
 
 
+def print_header(title: str, char: str = "=", length: int = 60) -> None:
+    """Standalone colored header banner -- same look as PipelineLogger.header()
+    but prints directly to stdout without the log formatter prefix, so it
+    composes cleanly with wide tables. Use for major section breaks."""
+    line = char * length
+    centered = f" {title} ".center(length, char)
+    print()
+    if supports_color():
+        print(f"{Colors.BRIGHT_CYAN}{line}{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.BRIGHT_CYAN}{centered}{Colors.RESET}")
+        print(f"{Colors.BRIGHT_CYAN}{line}{Colors.RESET}")
+    else:
+        print(line)
+        print(centered)
+        print(line)
+
+
+def print_section(title: str, side_len: int = 10) -> None:
+    """Standalone sub-section divider -- mirrors PipelineLogger.section()."""
+    side = get_divider_char() * side_len
+    print()
+    if supports_color():
+        print(f"{Colors.BRIGHT_BLUE}{side} {title} {side}{Colors.RESET}")
+    else:
+        print(f"{side} {title} {side}")
+
+
+def print_divider(char: str = "-", length: int = 40, dim: bool = True) -> None:
+    """Standalone divider line -- mirrors PipelineLogger.divider()."""
+    line = char * length
+    if dim and supports_color():
+        print(f"{Colors.DIM}{line}{Colors.RESET}")
+    else:
+        print(line)
+
+
 def init_logging(
     name: str = "logger",
     log_dir: Union[str, Path] = "logs",
@@ -312,9 +348,9 @@ def init_logging(
     use_colors: bool = True,
     use_icons: bool = True,
     capture_root: bool = True,
-) -> 'PipelineLogger':
+) -> "PipelineLogger":
     """Initialize the global logging configuration.
-    
+
     Args:
         name: Logger name
         log_dir: Directory for log files
@@ -326,10 +362,10 @@ def init_logging(
         capture_root: Also configure root logger to capture standard logging calls
     """
     global _logger_instance
-    
+
     if _logger_instance is not None:
         _logger_instance.close()
-    
+
     _logger_instance = PipelineLogger(
         name=name,
         log_dir=log_dir,
@@ -340,7 +376,7 @@ def init_logging(
         use_icons=use_icons,
         capture_root=capture_root,
     )
-    
+
     return _logger_instance
 
 
@@ -354,7 +390,7 @@ def close_logging() -> None:
 
 class PipelineLogger:
     """Simple pipeline logger with file and console output, with color support."""
-    
+
     def __init__(
         self,
         name: str = "pipeline",
@@ -379,42 +415,47 @@ class PipelineLogger:
         self.use_colors = use_colors
         self.use_icons = use_icons
         self.capture_root = capture_root
-        
-        self.log_format = log_format or "%(asctime)s | %(levelname)-8s | %(filename)s:%(funcName)s:%(lineno)d | %(message)s"
-        
+
+        self.log_format = (
+            log_format
+            or "%(asctime)s | %(levelname)-8s | %(filename)s:%(funcName)s:%(lineno)d | %(message)s"
+        )
+
         self._log_file_path: Optional[Path] = None
         self._file_handler: Optional[logging.FileHandler] = None
         self._console_handler: Optional[logging.StreamHandler] = None
         self._prefect_handler: Optional[PrefectHandler] = None
         self._has_errors = False
-        
+
         # Create logger
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
         self.logger.handlers = []  # Clear existing handlers
         self.logger.propagate = False  # Add this line
-        
+
         self._setup_logging()
-    
+
     def _setup_logging(self) -> None:
         """Configure file and console handlers."""
         # File handler (no colors)
         if self.log_to_file:
             self.log_dir.mkdir(parents=True, exist_ok=True)
-            
+
             mst_timestamp = file_utils.get_mst_timestamp()
-            current_datetime = mst_timestamp.strftime('%a_%b_%d_%H%M').lower()
+            current_datetime = mst_timestamp.strftime("%a_%b_%d_%H%M").lower()
 
             self._log_file_path = self.log_dir / f"{self.name}_{current_datetime}.log"
-            
+
             file_formatter = PlainFormatter(self.log_format, datefmt=self.date_format)
-            
-            self._file_handler = logging.FileHandler(self._log_file_path, encoding='utf-8')
+
+            self._file_handler = logging.FileHandler(
+                self._log_file_path, encoding="utf-8"
+            )
             # self._file_handler.setLevel(self.level)
             self._file_handler.setLevel(logging.INFO)
             self._file_handler.setFormatter(file_formatter)
             self.logger.addHandler(self._file_handler)
-        
+
         # Console handler (with colors)
         if self.log_to_console:
             console_formatter = ColoredFormatter(
@@ -423,12 +464,12 @@ class PipelineLogger:
                 use_colors=self.use_colors,
                 use_icons=self.use_icons,
             )
-            
+
             self._console_handler = logging.StreamHandler(sys.stdout)
             self._console_handler.setLevel(self.level)
             self._console_handler.setFormatter(console_formatter)
             self.logger.addHandler(self._console_handler)
-        
+
         # Prefect handler (forwards logs to Prefect UI)
         prefect_formatter = PlainFormatter(self.log_format, datefmt=self.date_format)
         self._prefect_handler = PrefectHandler()
@@ -441,11 +482,11 @@ class PipelineLogger:
             root_logger = logging.getLogger()
             root_logger.setLevel(self.level)
             root_logger.handlers = []  # Clear existing handlers
-            
+
             # Add file handler to root logger
             if self._file_handler:
                 root_logger.addHandler(self._file_handler)
-            
+
             # Add console handler to root logger
             if self._console_handler:
                 root_logger.addHandler(self._console_handler)
@@ -453,10 +494,9 @@ class PipelineLogger:
             # Add Prefect handler to root logger
             if self._prefect_handler:
                 root_logger.addHandler(self._prefect_handler)
-    
+
         # NOTE: Silence Prefect loggers
         self._silence_noisy_loggers()
-
 
     def _silence_noisy_loggers(self):
         """Silence verbose third-party loggers.
@@ -488,34 +528,34 @@ class PipelineLogger:
     def log_file_path(self) -> Optional[Path]:
         """Return the path to the current log file."""
         return self._log_file_path
-    
+
     @property
     def has_errors(self) -> bool:
         """Check if any errors have been logged."""
         return self._has_errors
-    
+
     # Logging methods
     def debug(self, msg: str) -> None:
         self.logger.debug(msg)
-    
+
     def info(self, msg: str) -> None:
         self.logger.info(msg)
-    
+
     def warning(self, msg: str) -> None:
         self.logger.warning(msg)
-    
+
     def error(self, msg: str) -> None:
         self._has_errors = True
         self.logger.error(msg)
-    
+
     def exception(self, msg: str) -> None:
         self._has_errors = True
         self.logger.exception(msg)
-    
+
     def critical(self, msg: str) -> None:
         self._has_errors = True
         self.logger.critical(msg)
-    
+
     def success(self, msg: str) -> None:
         """Log a success message (INFO level with green color)."""
         marker = "✓" if supports_unicode() else "+"
@@ -524,7 +564,7 @@ class PipelineLogger:
             self.logger.info(colored_msg)
         else:
             self.logger.info(f"{marker} {msg}")
-    
+
     # Formatting utilities
     def header(self, title: str, char: str = "=", length: int = 60) -> None:
         """Print a colored header."""
@@ -538,7 +578,7 @@ class PipelineLogger:
             self.info(char * length)
             self.info(f" {title} ".center(length, char))
             self.info(char * length)
-    
+
     def section(self, title: str) -> None:
         """Print a colored section divider."""
         divider = get_divider_char() * 10
@@ -555,7 +595,7 @@ class PipelineLogger:
             self.info(f"{Colors.DIM}{char * length}{Colors.RESET}")
         else:
             self.info(char * length)
-    
+
     @contextmanager
     def timer(self, name: str):
         """Context manager for timing operations with colored output."""
@@ -571,25 +611,29 @@ class PipelineLogger:
         finally:
             elapsed = (datetime.now() - start_time).total_seconds()
             if self.use_colors and supports_color():
-                self.info(f"{Colors.BRIGHT_GREEN}{done_label}: {name} ({elapsed:.2f}s){Colors.RESET}")
+                self.info(
+                    f"{Colors.BRIGHT_GREEN}{done_label}: {name} ({elapsed:.2f}s){Colors.RESET}"
+                )
             else:
                 self.info(f"{done_label}: {name} ({elapsed:.2f}s)")
-    
-    def progress(self, current: int, total: int, prefix: str = "", width: int = 30) -> None:
+
+    def progress(
+        self, current: int, total: int, prefix: str = "", width: int = 30
+    ) -> None:
         """Print a colored progress bar."""
         percent = current / total if total > 0 else 0
         filled = int(width * percent)
         filled_char, empty_char = get_progress_chars()
         bar = filled_char * filled + empty_char * (width - filled)
-        
+
         if self.use_colors and supports_color():
             color = Colors.BRIGHT_GREEN if percent >= 1 else Colors.BRIGHT_YELLOW
             msg = f"{prefix} {color}[{bar}]{Colors.RESET} {percent:.1%} ({current}/{total})"
         else:
             msg = f"{prefix} [{bar}] {percent:.1%} ({current}/{total})"
-        
+
         self.info(msg)
-    
+
     def close(self) -> None:
         """Clean up handlers."""
         # Remove handlers from root logger first
@@ -613,15 +657,19 @@ class PipelineLogger:
         if self._prefect_handler:
             self._prefect_handler.close()
             self.logger.removeHandler(self._prefect_handler)
-        
+
         # Delete log file if no errors
-        if self.delete_if_no_errors and self._log_file_path and self._log_file_path.exists():
+        if (
+            self.delete_if_no_errors
+            and self._log_file_path
+            and self._log_file_path.exists()
+        ):
             if not self._has_errors:
                 os.remove(self._log_file_path)
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type:
             self.exception(f"Exception: {exc_val}")

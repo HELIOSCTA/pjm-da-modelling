@@ -25,7 +25,7 @@ override via ``run(...)`` from a notebook.
 
 Usage::
 
-    python -m da_models.baseline_meteo_da_price.pipelines.forecast_single_day_ice_anchored
+    python -m backend.modelling.da_models.baseline_meteo_da_price.pipelines.forecast_single_day_ice_anchored
 """
 
 from __future__ import annotations
@@ -36,15 +36,15 @@ from datetime import date, timedelta
 from pathlib import Path
 
 
-_MODELLING_ROOT = Path(__file__).resolve().parents[4]
-if str(_MODELLING_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MODELLING_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import pandas as pd  # noqa: E402
 
-from da_models.baseline_meteo_da_price import ice_anchor  # noqa: E402
-from da_models.baseline_meteo_da_price import printers as _phase1_printers  # noqa: E402
-from da_models.baseline_meteo_da_price.printers import (  # noqa: E402
+from backend.modelling.da_models.baseline_meteo_da_price import ice_anchor  # noqa: E402
+from backend.modelling.da_models.baseline_meteo_da_price import printers as _phase1_printers  # noqa: E402
+from backend.modelling.da_models.baseline_meteo_da_price.printers import (  # noqa: E402
     SERIES_TO_COL,
     build_bands_table,
     build_bands_vs_actuals,
@@ -55,9 +55,10 @@ from da_models.baseline_meteo_da_price.printers import (  # noqa: E402
     print_bands_vs_actuals_section,
     print_forecast_vs_actuals_section,
 )
-from da_models.common.data import loader  # noqa: E402
-from da_models.common.forecast.output import actuals_from_pool  # noqa: E402
-from utils.logging_utils import (  # noqa: E402
+from backend.modelling.da_models.common.publish import publish_forecast_run  # noqa: E402
+from backend.modelling.da_models.common.data import loader  # noqa: E402
+from backend.modelling.da_models.common.forecast.output import actuals_from_pool  # noqa: E402
+from backend.utils.logging_utils import (  # noqa: E402
     Colors,
     init_logging,
     print_divider,
@@ -75,7 +76,17 @@ LEAD_DAYS: int | None = 1  # DA-cutoff vintage; None for all vintages
 CACHE_DIR: Path | None = None
 ICE_SYMBOL: str = ice_anchor.DEFAULT_SYMBOL  # "PDA D1-IUS"
 ICE_VWAP_CUTOFF: pd.Timestamp | None = None  # None -> all trades to date
-LOG_DIR: Path = _MODELLING_ROOT / "logs"
+LOG_DIR: Path = _REPO_ROOT / "backend" / "modelling" / "logs"
+# Frontend ingestion key — stable identifier for this specific model.
+MODEL_NAME: str = "baseline_meteo_da_price_ice_anchored"
+# Family bucket used by the frontend tabs to group runs across model
+# variants (e.g. an unanchored Meteo baseline would also be "baseline").
+MODEL_FAMILY: str = "baseline"
+# The pipeline always publishes the run to pjm_model_outputs.forecast_runs
+# (one row, upserted via backend.modelling.da_models.common.publish.publish_forecast_run) so the
+# frontend can read it. Batch/backtest callers that must NOT write a row per
+# date pass publish=False to run().
+PUBLISH: bool = True
 
 _COLOR_ON = supports_color()
 _RS = Colors.RESET if _COLOR_ON else ""
@@ -510,18 +521,22 @@ def run(
     cache_dir: Path | None = CACHE_DIR,
     ice_symbol: str = ICE_SYMBOL,
     ice_vwap_cutoff: pd.Timestamp | None = ICE_VWAP_CUTOFF,
+    model_name: str = MODEL_NAME,
+    model_family: str = MODEL_FAMILY,
+    publish: bool = PUBLISH,
     quiet: bool = False,
 ) -> dict:
     """Run the ICE-anchored baseline.
 
-    Returns a dict with: ``forecast_date``, ``run_date``, ``hub``,
-    ``summary_table``, ``members_table``, ``has_actuals``,
-    ``det_forecast_executed``, ``ens_forecast_executed``, ``ice_vwap``,
-    ``ice_volume``, ``ice_n_trades``, ``ice_multipliers``, ``df_forecast``,
-    ``run_id``. ``quiet`` suppresses printing while keeping the return dict
-    full. This pipeline does not publish -- the scheduled
-    ``backend/modelling/`` copy is the sole writer of
-    ``pjm_model_outputs.forecast_runs``.
+    Returns a dict with: ``forecast_date``, ``hub``, ``summary_table``,
+    ``members_table``, ``has_actuals``, ``det_forecast_executed``,
+    ``ens_forecast_executed``, ``ice_vwap``, ``ice_volume``,
+    ``ice_n_trades``, ``ice_multipliers``, ``df_forecast``, ``run_id``.
+    ``quiet`` suppresses printing while keeping the return dict full.
+
+    ``publish`` (default ``True``) upserts the run into
+    ``pjm_model_outputs.forecast_runs`` via ``publish_forecast_run``;
+    batch/backtest callers pass ``publish=False`` to skip the write.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -632,6 +647,45 @@ def run(
         # one value get the scaled one (anchored view).
         dispersion = dispersion_scaled
 
+        if publish and not df_forecast.empty:
+            with pl.timer(f"publish ICE-anchored forecast JSON ({model_name})"):
+                from backend.modelling.da_models.baseline_meteo_da_price.publish import (  # noqa: PLC0415
+                    build_payload,
+                    extract_onpeak_forecast,
+                )
+
+                payload = build_payload(
+                    df_for_fan=df_for_fan,
+                    bands_table_scaled=bands_table_scaled,
+                    bands_table_raw=bands_table_raw,
+                    actuals_hourly=actuals_hourly,
+                    trades=trades,
+                    vwap_result=vwap_result,
+                    target_date=resolved_date,
+                    run_date=resolved_run_date,
+                    model_name=model_name,
+                    model_family=model_family,
+                    run_id=run_id,
+                    hub=hub,
+                    lead_days=lead_days,
+                    det_exec=det_exec,
+                    ens_exec=ens_exec,
+                    ice_symbol=ice_symbol,
+                    ice_cutoff=ice_vwap_cutoff,
+                    shared_scale=shared_scale,
+                    anchor_label=anchor_label,
+                    implied_multipliers=implied_multipliers,
+                )
+                publish_forecast_run(
+                    model_name=model_name,
+                    model_family=model_family,
+                    target_date=resolved_date,
+                    run_date=resolved_run_date,
+                    run_id=run_id,
+                    payload=payload,
+                    da_lmp_total_onpeak_forecast=extract_onpeak_forecast(payload),
+                )
+
         if not quiet:
             print_header(
                 f"BASELINE METEO DA-PRICE (ICE ANCHORED) — {hub} ($/MWh)  |  {resolved_date}",
@@ -701,7 +755,6 @@ def run(
 
         return {
             "forecast_date": str(resolved_date),
-            "run_date": str(resolved_run_date),
             "hub": hub,
             "bands_table_raw": bands_table_raw,
             "bands_table_scaled": bands_table_scaled,

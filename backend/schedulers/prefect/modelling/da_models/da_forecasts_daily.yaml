@@ -1,0 +1,33 @@
+name: helioscta-modelling-pjm-da-forecasts
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM DA Forecasts Daily ──────
+  # Run every promoted single-day DA-price forecaster (baseline + ICE-anchored
+  # baseline + the three KNN like-day variants) and publish each run to
+  # pjm_model_outputs.forecast_runs for the frontend.
+
+  - name: PJM DA Forecasts Daily
+    entrypoint: schedulers/prefect/modelling/pjm/da_forecasts_daily_flows.py:pjm_da_forecasts_daily
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, modelling, da_price, forecast_daily]
+    schedules:
+
+      # ────── Daily at 07:45 EPT ──────
+      # Runs after the Meteologica DA-price + supply/demand marts have rebuilt
+      # and exported to backend/cache/ on their hourly :35 EPT cadence, so the
+      # 07:35 export is settled by 07:45. A downstream trigger off those
+      # deployments would be more robust than this fixed offset -- follow-up.
+      - cron: "45 7 * * *"
+        timezone: "America/New_York"

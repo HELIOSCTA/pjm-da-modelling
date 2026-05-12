@@ -20,7 +20,7 @@ override via ``run(...)`` from a notebook.
 
 Usage::
 
-    python -m da_models.baseline_meteo_da_price.pipelines.forecast_single_day
+    python -m backend.modelling.da_models.baseline_meteo_da_price.pipelines.forecast_single_day
     python modelling/da_models/baseline_meteo_da_price/pipelines/forecast_single_day.py
 """
 
@@ -31,13 +31,13 @@ import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
-_MODELLING_ROOT = Path(__file__).resolve().parents[4]
-if str(_MODELLING_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MODELLING_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import pandas as pd  # noqa: E402
 
-from da_models.baseline_meteo_da_price.printers import (  # noqa: E402
+from backend.modelling.da_models.baseline_meteo_da_price.printers import (  # noqa: E402
     build_bands_table,
     build_bands_vs_actuals,
     build_forecast_vs_actuals,
@@ -48,9 +48,10 @@ from da_models.baseline_meteo_da_price.printers import (  # noqa: E402
     print_config,
     print_forecast_vs_actuals_section,
 )
-from da_models.common.data import loader  # noqa: E402
-from da_models.common.forecast.output import actuals_from_pool  # noqa: E402
-from utils.logging_utils import (  # noqa: E402
+from backend.modelling.da_models.common.data import loader  # noqa: E402
+from backend.modelling.da_models.common.forecast.output import actuals_from_pool  # noqa: E402
+from backend.modelling.da_models.common.publish import publish_forecast_run  # noqa: E402
+from backend.utils.logging_utils import (  # noqa: E402
     init_logging,
     print_divider,
     print_header,
@@ -63,7 +64,17 @@ RUN_DATE: date | None = None
 HUB: str = "WESTERN HUB"
 LEAD_DAYS: int | None = 1  # DA-cutoff vintage; None for all vintages
 CACHE_DIR: Path | None = None
-LOG_DIR: Path = _MODELLING_ROOT / "logs"
+LOG_DIR: Path = _REPO_ROOT / "backend" / "modelling" / "logs"
+# Frontend ingestion identity for pjm_model_outputs.forecast_runs. Distinct
+# from the ICE-anchored sibling so the two coexist in the picker; the payload
+# carries an ICE-anchor block with applied=False (no anchor for this variant).
+PUBLISHED_MODEL_NAME: str = "baseline_meteo_da_price"
+PUBLISHED_MODEL_FAMILY: str = "baseline"
+# The pipeline always publishes the run to pjm_model_outputs.forecast_runs
+# (one row, upserted via backend.modelling.da_models.common.publish.publish_forecast_run) so the
+# frontend can read it. Batch/backtest callers that must NOT write a row per
+# date pass publish=False to run().
+PUBLISH: bool = True
 
 
 def _resolve_target_date(target_date: date | None) -> date:
@@ -81,6 +92,7 @@ def run(
     hub: str = HUB,
     lead_days: int | None = LEAD_DAYS,
     cache_dir: Path | None = CACHE_DIR,
+    publish: bool = PUBLISH,
     quiet: bool = False,
 ) -> dict:
     """Run the baseline and print the two-table report.
@@ -137,6 +149,47 @@ def run(
         dispersion = (
             compute_dispersion_metrics(df_forecast) if not df_forecast.empty else None
         )
+
+        if publish and not df_forecast.empty:
+            from backend.modelling.da_models.baseline_meteo_da_price.publish import (  # noqa: PLC0415
+                build_payload,
+                extract_onpeak_forecast,
+            )
+
+            # Unanchored variant: no ICE anchor, so build_payload gets the raw
+            # bands for both scaled/raw slots, no trades, no VWAP -- it emits a
+            # valid IcePayload with ice_anchor.applied=False.
+            payload = build_payload(
+                df_for_fan=df_forecast,
+                bands_table_scaled=bands_table,
+                bands_table_raw=bands_table,
+                actuals_hourly=actuals_hourly,
+                trades=pd.DataFrame(),
+                vwap_result=None,
+                target_date=resolved_date,
+                run_date=resolved_run_date,
+                model_name=PUBLISHED_MODEL_NAME,
+                model_family=PUBLISHED_MODEL_FAMILY,
+                run_id=run_id,
+                hub=hub,
+                lead_days=lead_days,
+                det_exec=det_exec,
+                ens_exec=ens_exec,
+                ice_symbol="",
+                ice_cutoff=None,
+                shared_scale=None,
+                anchor_label=None,
+                implied_multipliers=None,
+            )
+            publish_forecast_run(
+                model_name=PUBLISHED_MODEL_NAME,
+                model_family=PUBLISHED_MODEL_FAMILY,
+                target_date=resolved_date,
+                run_date=resolved_run_date,
+                run_id=run_id,
+                payload=payload,
+                da_lmp_total_onpeak_forecast=extract_onpeak_forecast(payload),
+            )
 
         if not quiet:
             print_header(

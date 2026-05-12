@@ -13,7 +13,7 @@ sections to stdout.
 
 Usage::
 
-    python -m da_models.like_day_model_knn.meteo_rto_hourly.pipelines.forecast_single_day
+    python -m backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.pipelines.forecast_single_day
     python modelling/da_models/like_day_model_knn/meteo_rto_hourly/pipelines/forecast_single_day.py
 """
 
@@ -25,40 +25,41 @@ from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
-_MODELLING_ROOT = Path(__file__).resolve().parents[4]
-if str(_MODELLING_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MODELLING_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[6]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from da_models.like_day_model_knn import _shared, configs  # noqa: E402
-from da_models.like_day_model_knn.calendar import FunnelCounts  # noqa: E402
-from da_models.like_day_model_knn.analog_store import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn import _shared, configs  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.calendar import FunnelCounts  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.analog_store import (  # noqa: E402
     DEFAULT_STORE_DIR,
     write_analog_explainability,
 )
-from da_models.like_day_model_knn.meteo_rto_hourly.builder import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.builder import (  # noqa: E402
     build_pool,
     build_query_row,
 )
-from da_models.like_day_model_knn.meteo_rto_hourly.engine import find_twins  # noqa: E402
-from da_models.common.configs import HOURS  # noqa: E402
-from da_models.common.forecast.output import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.engine import find_twins  # noqa: E402
+from backend.modelling.da_models.common.configs import HOURS  # noqa: E402
+from backend.modelling.da_models.common.forecast.output import (  # noqa: E402
     actuals_from_pool,
     build_output_table,
 )
-from da_models.like_day_model_knn.meteo_rto_hourly.forecast import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.forecast import (  # noqa: E402
     build_quantiles_table,
     hourly_forecast_from_hour_analogs,
 )
-from da_models.like_day_model_knn.meteo_rto_hourly.metrics import evaluate_forecast  # noqa: E402
-from da_models.like_day_model_knn.meteo_rto_hourly.printers import (  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.metrics import evaluate_forecast  # noqa: E402
+from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.printers import (  # noqa: E402
     print_config,
     print_forecast,
     print_pool_funnel,
     print_quantiles,
 )
+from backend.modelling.da_models.common.publish import publish_forecast_run  # noqa: E402
 
 
 # ── Defaults (edit here instead of using CLI flags) ────────────────────────
@@ -72,14 +73,22 @@ RUN_DATE: date | None = None
 # calendar (broadcast). Same feature footprint as the pjm sibling,
 # different upstream supply/demand source.
 MODEL_NAME: str = configs.METEO_RTO_HOURLY_SUNNY_ALIGNED_SPEC.name
+# Frontend ingestion identity — decoupled from the spec key (above) so
+# swapping spec features doesn't break the published model_name and
+# orphan historical runs in the picker.
+PUBLISHED_MODEL_NAME: str = "meteo_rto_hourly"
+PUBLISHED_MODEL_FAMILY: str = "like_day"
 FLT_RADIUS: int = configs.METEO_RTO_HOURLY_SUNNY_ALIGNED_SPEC.flt_radius
 N_ANALOGS: int | None = None  # None -> configs.DEFAULT_N_ANALOGS
 SEASON_WINDOW_DAYS: int | None = None  # None -> configs.SEASON_WINDOW_DAYS
 MIN_POOL_SIZE: int | None = None  # None -> configs.MIN_POOL_SIZE
 WRITE_ANALOG_STORE: bool = True
 ANALOG_STORE_DIR: Path | None = None  # None -> DEFAULT_STORE_DIR
-# This pipeline does not publish -- the scheduled backend/modelling/ copy is the
-# sole writer of pjm_model_outputs.forecast_runs.
+# The pipeline always publishes the run to pjm_model_outputs.forecast_runs
+# (one row, upserted via backend.modelling.da_models.common.publish.publish_forecast_run) so the
+# frontend can read it. Batch/backtest callers that must NOT write a row per
+# date pass publish=False to run().
+PUBLISH: bool = True
 
 # 80% PI (P10/P90) + IQR (P25/P75) + median.
 DEFAULT_QUANTILES: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75, 0.90)
@@ -148,6 +157,7 @@ def run(
     min_pool_size: int | None = MIN_POOL_SIZE,
     write_analog_store: bool = WRITE_ANALOG_STORE,
     analog_store_dir: Path | None = ANALOG_STORE_DIR,
+    publish: bool = PUBLISH,
     quantiles: tuple[float, ...] | list[float] | None = None,
     display_quantiles: tuple[float, ...] | list[float] | None = None,
     pool: pd.DataFrame | None = None,
@@ -160,10 +170,8 @@ def run(
     """Run the forecast and print the four-section terminal report.
 
     Returns a dict with: ``output_table``, ``quantiles_table``, ``analogs``,
-    ``metrics``, ``forecast_date``, ``run_date``, ``day_type``, ``has_actuals``,
-    ``n_pool``, ``n_analogs_used``, ``scenario``, ``df_forecast``, ``run_id``.
-    This pipeline does not publish -- the scheduled ``backend/modelling/`` copy
-    is the sole writer of ``pjm_model_outputs.forecast_runs``.
+    ``metrics``, ``forecast_date``, ``day_type``, ``has_actuals``, ``n_pool``,
+    ``n_analogs_used``, ``scenario``, ``df_forecast``, ``run_id``.
 
     Reusable artefacts (``pool``, ``query``, ``dates_meta``) — when
     provided, skip the corresponding build step.
@@ -278,6 +286,38 @@ def run(
         pool=pool,
     )
 
+    if publish:
+        from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.publish import (  # noqa: PLC0415
+            build_payload,
+            extract_onpeak_forecast,
+        )
+
+        payload = build_payload(
+            df_forecast=df_forecast,
+            quantiles_table=quantiles_table,
+            analogs=analogs,
+            pool=pool,
+            output_table=output_table,
+            target_date=resolved_date,
+            run_date=resolved_run_date,
+            model_name=PUBLISHED_MODEL_NAME,
+            model_family=PUBLISHED_MODEL_FAMILY,
+            run_id=run_id,
+            hub=config.hub,
+            day_type=day_type,
+            n_analogs=int(config.n_analogs),
+            quantiles=quantiles,
+        )
+        publish_forecast_run(
+            model_name=PUBLISHED_MODEL_NAME,
+            model_family=PUBLISHED_MODEL_FAMILY,
+            target_date=resolved_date,
+            run_date=resolved_run_date,
+            run_id=run_id,
+            payload=payload,
+            da_lmp_total_onpeak_forecast=extract_onpeak_forecast(payload),
+        )
+
     metrics: dict = {}
     block_level: dict = {}
     if has_actuals and len(df_forecast) > 0:
@@ -349,11 +389,11 @@ def run(
                     crps_per_hour[h_idx] = 2.0 * float(np.mean(per_q))
 
     if not quiet:
-        from da_models.like_day_model_knn.meteo_rto_hourly.printers import (
+        from backend.modelling.da_models.like_day_model_knn.meteo_rto_hourly.printers import (
             print_analog_features,
             print_band_calibration,
         )
-        from utils.logging_utils import print_divider, print_header
+        from backend.utils.logging_utils import print_divider, print_header
 
         print_config(config, spec, resolved_date, day_type)
         print_pool_funnel(funnel, resolved_date, day_type, config.hub)
@@ -386,7 +426,6 @@ def run(
         "metrics": metrics,
         "block_level": block_level,
         "forecast_date": str(resolved_date),
-        "run_date": str(resolved_run_date),
         "day_type": day_type,
         "has_actuals": has_actuals,
         "n_pool": len(pool),
