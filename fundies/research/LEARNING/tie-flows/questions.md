@@ -1,0 +1,2 @@
+- TVA scheduling tie flows during May-18-2026 RT. Only south being modelled in DA flows.
+    - Why TVA rt schedule flows were a net exporter durng solar ramp down.
