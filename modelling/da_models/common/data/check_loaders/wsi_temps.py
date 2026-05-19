@@ -1,12 +1,19 @@
-"""Print the coalesced WSI temperature loader as a wide table.
+"""Print the WSI temperature loaders as wide tables.
 
-One row per Date with Source, OnPeak / OffPeak / Flat summaries, and
-HE1..HE24 temperature values (degF).
+Two blocks, in order:
 
-Source column flags whether the underlying row came from the WSI
-observed parquet (preferred where 24-hour coverage exists) or the
-forecast parquet (fallback for future dates and partial-coverage gaps).
-Both parquets are RTO-wide so there's no region split.
+1. **Forecast horizon** — the raw WSI forecast parquet
+   (``load_weather_forecast_hourly``), forward-looking, Date ascending,
+   with a "Forecast Executed (UTC)" column carrying each date's vintage
+   stamp (per the latest-revision view, past dates keep their old stamp).
+2. **Historical realization** — the observed-first coalesced view
+   (``load_weather_coalesced``), Date descending, with a Source column
+   flagging whether each row came from the WSI observed parquet
+   (preferred where 24-hour coverage exists) or the forecast parquet
+   (fallback for future dates and partial-coverage gaps).
+
+Both parquets are RTO-wide so there's no region split. Each row carries
+OnPeak / OffPeak / Flat summaries and HE1..HE24 temperature values (degF).
 
 Usage::
 
@@ -50,6 +57,9 @@ _NUMERIC_COLS: list[str] = ["OnPeak", "OffPeak", "Flat", *HE_COLS]
 _FORMATTERS: dict = {
     col: (lambda v: "" if pd.isna(v) else f"{v:>6.1f}") for col in _NUMERIC_COLS
 }
+_FORMATTERS["Forecast Executed (UTC)"] = lambda v: (
+    "" if pd.isna(v) else pd.Timestamp(v).strftime("%Y-%m-%d %H:%M")
+)
 
 
 def _wide_temps(coalesced: pd.DataFrame) -> pd.DataFrame:
@@ -93,6 +103,60 @@ def build_wsi_temps_table(
         cutoff = coalesced["date"].max() - timedelta(days=lookback_days - 1)
         coalesced = coalesced[coalesced["date"] >= cutoff]
     return _wide_temps(coalesced)
+
+
+def _print_wsi_forecast_block(pl, cache_dir: Path | None) -> None:
+    """Print the raw WSI forecast parquet wide, Date ascending (forward horizon)."""
+    print_header("Forecast horizon (raw WSI forecast parquet)")
+
+    with pl.timer("load WSI forecast parquet"):
+        fcst = loader.load_weather_forecast_hourly(cache_dir=cache_dir)
+
+    if fcst is None or fcst.empty:
+        pl.warning("WSI forecast parquet is empty; nothing to print.")
+        return
+
+    table = _wide_temps(fcst.assign(source="forecast"))
+    table = table.sort_values("Date", ascending=True).reset_index(drop=True)
+    if table.empty:
+        pl.warning("No forecast rows to print.")
+        return
+
+    # Attach the vintage stamp (one per date) right after Source.
+    if "forecast_executed_utc" in fcst.columns:
+        execs = (
+            fcst[["date", "forecast_executed_utc"]]
+            .dropna(subset=["date"])
+            .drop_duplicates(subset=["date"], keep="last")
+            .rename(columns={"date": "Date", "forecast_executed_utc": "Forecast Executed (UTC)"})
+        )
+        table = table.merge(execs, on="Date", how="left")
+        cols = list(table.columns)
+        cols.insert(1, cols.pop(cols.index("Forecast Executed (UTC)")))
+        table = table[cols]
+        exec_vals = table["Forecast Executed (UTC)"].dropna()
+        if not exec_vals.empty:
+            pl.info(
+                "forecast vintage: "
+                f"{exec_vals.min():%Y-%m-%d %H:%M} -> {exec_vals.max():%Y-%m-%d %H:%M} UTC"
+            )
+
+    pl.info(
+        f"rows={len(table):,} | date range: {table['Date'].min()} -> {table['Date'].max()}"
+    )
+    null_he_rows = int(table[HE_COLS].isna().any(axis=1).sum())
+    if null_he_rows:
+        pl.warning(f"{null_he_rows} forecast row(s) have at least one missing HE value")
+
+    with pd.option_context(
+        "display.max_rows",
+        None,
+        "display.max_columns",
+        None,
+        "display.width",
+        None,
+    ):
+        print(table.to_string(index=False, formatters=_FORMATTERS))
 
 
 def _print_wsi_temps_block(
@@ -148,10 +212,12 @@ def run(
 
     pl = init_logging(name="check_loaders_wsi_temps", log_dir=LOG_DIR)
     try:
+        _print_wsi_forecast_block(pl, cache_dir)
+
         lookback_label = (
             f"last {lookback_days}d" if lookback_days is not None else "all dates"
         )
-        print_header(f"load_weather_coalesced ({lookback_label})")
+        print_header(f"Historical realization — load_weather_coalesced ({lookback_label})")
 
         with pl.timer("load coalesced WSI temps"):
             coalesced = loader.load_weather_coalesced(cache_dir=cache_dir)

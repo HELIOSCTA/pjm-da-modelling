@@ -1,0 +1,399 @@
+Connect - Python
+
+                    User Guide
+
+                                                     Prepared by Andrew McSween
+                                                                             Version 2.0
+                                                                                11/10/23
+Table of Contents
+
+1 About This Document .............................................................................................................. 4
+2 Getting Started!......................................................................................................................... 4
+
+   2.1 Pre-Requisites.................................................................................................................... 4
+   2.2 Installation ......................................................................................................................... 4
+   2.3 Importing the Library ........................................................................................................ 4
+   2.4 Additional Notes ............................................................................................................... 4
+3 Snapshot Quotes ....................................................................................................................... 5
+   3.1 Snapshot Get Quotes ......................................................................................................... 5
+   Arguments.................................................................................................................................... 5
+   Example ....................................................................................................................................... 5
+   3.2 Snapshot Time Series Details............................................................................................ 5
+   Arguments.................................................................................................................................... 6
+   Example of basic timeseries request ............................................................................................ 6
+   Example of timeseries request filtered on only times between 11:11 and 19:00 ........................ 6
+   3.3 Snapshot Time & Sales Details ......................................................................................... 6
+   Arguments.................................................................................................................................... 7
+   Example: Basic Time and Sales query ........................................................................................ 7
+   Example: Time and Sales filtered on Blocks............................................................................... 7
+   Example: Time and Sales filtered on multiple Conditions, applying AND to the conditions
+   list. ............................................................................................................................................... 8
+4 Metadata, Symbol and Field Lookup Requests ........................................................................ 8
+   4.1 Autolisting function........................................................................................................... 8
+   Example: get intercommodity spread symbols and generate a times series ................................ 9
+   4.2 Get Conditions................................................................................................................... 9
+   4.3 Get Quote Fields................................................................................................................ 9
+   4.4 Get timeseries Fields ......................................................................................................... 9
+   Example ..................................................................................................................................... 10
+   4.5 Get Time and Sales Fields............................................................................................... 10
+   4.6 Get Deltas ........................................................................................................................ 10
+   Arguments.................................................................................................................................. 10
+   Example: Retrieve updates on only symbols that have been updated. ...................................... 10
+   Arguments.................................................................................................................................. 11
+   4.7 Get Search Facets ............................................................................................................ 11
+   4.8 Get Search Filters ............................................................................................................ 11
+   Arguments.................................................................................................................................. 11
+   Example: Get filters based on `types' facet ............................................................................... 11
+   4.9 Get Search ....................................................................................................................... 11
+   Arguments.................................................................................................................................. 11
+   Example: Search on keyword and filters ................................................................................... 12
+5 Ancillary Requests.................................................................................................................. 12
+   5.1 Help ................................................................................................................................. 12
+   5.2 Hibernation functions ...................................................................................................... 12
+   i Arguments........................................................................................................................... 12
+   Examples: .................................................................................................................................. 12
+   5.3 Start Publisher ................................................................................................................. 12
+   5.4 Restart Publisher ............................................................................................................. 13
+   5.5 Get Subscriptions ............................................................................................................ 13
+   5.6 Clear Subscriptions ......................................................................................................... 13
+   5.7 Set Timeout ..................................................................................................................... 13
+   Arguments.................................................................................................................................. 13
+6 Usage Guidelines .................................................................................................................... 13
+   6.1 ICE Python Request limits .............................................................................................. 13
+1 About This Document
+
+This document is the User Guide for the Connect - Python Capability. The document includes details on
+how to get started and the available requests. For additional details, please review the Jupyter Notebook
+samples on the ICE Connect Python website.
+
+2 Getting Started!
+
+2.1 Pre-Requisites
+
+     · Python - Version 3.4 or later
+     · ICE XL - Version 5.4 or later
+     · Python Library: pywin32 - Allows for the communication between Python and .Net Libraries
+     · Python Library: icepython - Connect Library for data requests
+
+2.2 Installation
+
+     · Ensure Python 3.4 (or later) is properly installed on the Client machine
+     · Ensure the latest ICE XL version is installed, v. 5.4 or later
+
+               o Installer found here
+     · Install pywin32 using pip command
+
+               o Open command prompt
+               o Type: python -m pip install --user pywin32
+               o Note: "--user" is not needed if you're an admin with an admin installation of python
+               o Confirm that the library has installed
+     · Install icepython library using pip command
+               o From command prompt go to your ICE XL directory
+               o Type: cd "%localappdata%\ICE Data Services\ICE XL\bin"
+               o Now install the icepython library
+               o Type: python -m pip install theice.com_ICEPython-0.0.6-py3-none-any.whl
+               o Confirm that the library has installed
+
+2.3 Importing the Library
+
+     · Within Python, import the icepython library
+     · Type: "import icepython as ice" from within Python
+     · Example:
+
+2.4 Additional Notes
+
+     · ICE XL must be installed and authenticated. The Connect - Python functionality uses ICE XL for
+         authentication
+
+     · Any data limits or entitlements are shared between ICE XL and Connect - Python
+     · All Python requests must happen locally to the machine running ICE XL
+     · The Python library is installed and updated through the ICE XL installer
+
+3 Snapshot Quotes
+
+3.1 Snapshot Get Quotes
+
+     · Function: Get_quotes(symbols, fields, bool subscribe=false)
+     · Snapshot quotes returns the latest value for streaming content
+     · Number of symbols is limited to 500 per request
+     · Number of requests are limited to 10 per second
+
+Arguments
+
+     · Request takes a set of symbols, a set of fields, and an additional
+          argument to keep the data streaming to the publisher
+
+     · Symobls and Fields arguments are required
+               o Symbols can be set as an array
+
+     ·
+               o Fields can be set as an array
+
+     ·
+               o subscribe = True will set the subscription to be maintained on the publisher side so
+                    subsequent requests are faster - the latest updates are local. It is recommended that you
+                    subscribe to regularly used symbols.
+               o subscribe = False will unsubscribe the subscription after the initial request. Future
+                    requests will require re-subscribing. This will result in slower updateds
+
+Example
+
+3.2 Snapshot Time Series Details
+
+     · Function: get_timeseries(symbols, fields, granularity, start_date, end_date, timeline, timeref,
+         intradayfilter)
+
+     · Time series request returns a tuple where the date is in the first column, followed by the symbols
+         and fields requested
+
+     · If multiple fields are requested, the output is sorted so all fields for one symbol are placed together
+     · Output has column headers with the symbols and fields, e.g. "IBM.Last"
+Arguments
+
+     · Symbols, Fields, Granularity, Start_date, End_date are required fields
+     · Symbols can be set as an array
+     · Fields can be set as an array
+     · Granularity is one value
+
+               o D = Daily
+               o W = Weekly
+               o M = Monthly
+               o I1 = 1 min
+               o I30 = 30 min
+               o I60 = 1 hour
+     · Start_date can take a date, or date & time
+     · End_date can take a date or date & time
+     · Timeline (optional)
+     · Timeref (optional)
+     · Intradayfilter (optional) - This argument will filter results such that you only return rows that
+          occur within the provide time filter
+
+Example of basic timeseries request
+
+Example of timeseries request filtered on only times between 11:11 and 19:00
+
+3.3 Snapshot Time & Sales Details
+
+Function: get_timesales(symbols, fields, start_date, end_date, filter, conditions, conditionslogic)
+     · Snapshot Time & Sales requests are limited to 1 per second
+     · Snapshot Time & Sales requests are limited to 10 symbols per request
+     · Data is returned in a tuple with date and time in the left most column, with symbols and fields
+         listed in the headers of the columns to the right
+     · If multiple fields are requested, the output is sorted so all fields for one symbol are placed together
+Arguments
+
+    · Symbols can be set as an array
+    · Fields can be set as an array
+    · Start_date can take a date, or date & time
+    · End_date can take a date or date & time
+    · Optional Filter argument can filter results on available filters. See get_filters() to pull available
+
+         filters
+    · Optional conditions array applies a set of conditions
+    · Optional conditionslogic applies a logical operator to your set of conditions (eg, AND, OR)
+
+Example: Basic Time and Sales query
+
+Example: Time and Sales filtered on Blocks
+Example: Time and Sales filtered on multiple Conditions, applying AND to the conditions
+list.
+
+4 Metadata, Symbol and Field Lookup Requests
+
+4.1 Autolisting function
+
+·  Function: get_autolist(root symbol)
+
+·  Autolisting allows for the request of the set of tenors of a given product
+
+·  Results should be returned in an array, which can be used in future requests
+
+·  Monthly futures can be requested with one "*" and the product "Root"
+
+   o        "*BRN-ICE" will return all futures
+
+·  Spreads can be requested with two "*" and the product "Root"
+
+   o        "**BRN-ICE" will return front-back calendar spreads
+
+   o        "**BRN:BRN-ICE" will return all calendar spreads
+
+   o        "**UHU:BRN-ICE'" will return intercommodity spreads
+
+·  Historical data can be requested with + operator
+
+   o        "*+BRN-ICE'" will return historical tenors
+
+·  Options
+
+   o        "***BRN-ICE" will return all expirations for a given product/security
+
+   o        Use suffix "fut" when exchange suffix is not present.
+
+             Example: "symbols = ice.get_autolist('***sb fut')"
+
+   o        On Stocks, when exchange suffix is not present, add `stk'
+
+             Example: symbols ="ice.get_autolist('***sb stk')"
+
+   o        "***BRN-ICE Z24" to get all options for provided expiration
+
+   o        "***BRN-ICE M22 ATM:10" to get all at the money options for a given
+
+   expiration
+        o  "***BRN-ICE Z24 OTM:10" to get all out of the money options for a
+
+        given expiration
+
+        o  "***BRN-ICE m22 ITM:10" to get all in the money options for a given
+
+        expiration
+
+Example: get intercommodity spread symbols and generate a times series
+
+4.2     Get Conditions
+
+    ·   Function: get_conditions()
+    ·   Returns a list of all conditions
+
+4.3     Get Quote Fields
+
+    ·   Function: get_quotes_fields()
+    ·   Returns fields available for symbols
+    ·   Note that this does not take a symbol argument
+
+4.4     Get timeseries Fields
+
+     ·  Function: get_timeseries_fields(symbol)
+     ·  Returns all fields available for a specific symbol via the get_timeseries function
+Example
+
+4.5     Get Time and Sales Fields
+
+    ·   Function: get_timesales_fields(symbol)
+    ·   Returns all fields available for a specific symbol via the get_timesales() function
+
+4.6     Get Deltas
+
+     ·  Function: get_deltas(fields)
+     ·  get_deltas takes a list of field names and returns a list of subscribed symbols where one of the
+        fields has changed since the last update reset
+     ·  get_deltas resets after calling get_quotes or calling get_deltas with reset argument = True
+     ·  On an update reset, all fields and symbols are reset regardless of what was requested in the
+        get_quotes or get_deltas call that initiated the reset.
+
+Arguments
+
+    · List of fields to check for updates
+    · Optional bool reset=false. Setting to True will reset get_deltas
+
+Example: Retrieve updates on only symbols that have been updated.
+Arguments
+
+    · Single symbol
+
+4.7 Get Search Facets
+
+    · Function: get_search_facets()
+    · Returns available search facets
+
+4.8    Get Search Filters
+
+    ·  Function: get_search_filters(array of facets)
+    ·  Returns a set of filters based on provided facet
+
+Arguments
+
+    · Array of facets
+
+Example: Get filters based on `types' facet
+
+4.9    Get Search
+
+    ·  Function: get_search(symbol, rows=100, filters=[], bool symbolsOnly = False)
+    ·  Returns an array of symbols that match the search criteria. SymbolsOnly bool will return only
+       the symbols rather than more detailed symbol data
+
+Arguments
+
+    · Symbol
+    · Rows=n where n is the number of rows to return
+    · Filters=[array of filters]
+    · Bool symbolsOnly=False. Set to True to show only symbol name.
+Example: Search on keyword and filters
+
+5 Ancillary Requests
+
+5.1 Help
+
+     · Function: Help
+     · Help(ice) will output available ICE Python functions
+
+5.2 Hibernation functions
+
+     · Function: get_hybernation()
+     · The ICE XL Publisher will hibernate when not in use.
+     · Connection will occur as soon as a request is made and take the ICE XL Publisher out of
+
+         hibernation mode
+               o Connecting prior to the first request will speed up initial requests to the server
+
+     · Any active subscriptions will prevent the ICE XL Publisher from entering hibernation mode.
+     · There are two functions relating to Hibernation
+
+               o get_hibernation() returns the current state of the publisher
+               o set_hibernation() sets the ICE Publisher to a desired state
+
+      i Arguments
+
+     · Set_hibernation(VAL) can take True or False values
+
+Examples:
+
+5.3 Start Publisher
+
+     · Function: start_publisher()
+· Force publisher to start
+
+5.4    Restart Publisher
+
+    ·  Function: restart_publisher()
+    ·  This will restart the ICEXL and Python publisher.
+
+5.5    Get Subscriptions
+
+    ·  Function: get_subscriptions()
+    ·  Returns an array of symbols that you are currently subscribed to.
+    ·  Subscriptions can be assigned via the get_quotes() function with the subscribe argument = True.
+
+5.6 Clear Subscriptions
+
+    · Function: clear_subscriptions()
+    · Removes all subscriptions
+
+5.7 Set Timeout
+
+    · Function: set_timeout(timeout)
+    · Sets the timeout before the publisher sleeps
+
+Arguments
+
+    · Timeout (in seconds)
+
+6 Usage Guidelines
+
+         ICE Python usage guidelines are outlined below. Please contact us if these guidelines don't
+         match your needs, ICE Data Services provides multiple ways to access datasets either via desktop
+         applications or feeds. For more information, please consult your Data Services Agreement:
+         https://www.ice.com/publicdocs/agreements/ICE_Data_Services_Agreement.pdf
+
+6.1 ICE Python Request limits
+
+       ·  Get_quotes request is limited to 500 symbols per request
+
+       ·  Get_quotes requests are limited to 10 per second
+
+       ·  Snapshot Time & Sales requests are limited to 1 per second
+
+       ·  Snapshot Time & Sales requests are limited to 10 symbols per request
+

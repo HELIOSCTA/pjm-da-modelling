@@ -5,7 +5,7 @@
 }}
 
 ---------------------------
--- DAILY GAS-DAY STAGING (10 PJM-relevant hubs)
+-- DAILY GAS-DAY STAGING (14 PJM-relevant hubs)
 -- Aggregates the hourly grain into one row per gas_day spanning the
 -- full 9:00-9:00 Central interval. Prices are constant across the 24
 -- hourly rows of a gas_day, so MAX collapses without ambiguity.
@@ -28,6 +28,10 @@ SELECT
     MAX(transco_z5_north_cash) AS transco_z5_north_cash,
     MAX(tenn_z4_marcellus_cash) AS tenn_z4_marcellus_cash,
     MAX(transco_leidy_cash) AS transco_leidy_cash,
-    MAX(chicago_cg_cash) AS chicago_cg_cash
+    MAX(chicago_cg_cash) AS chicago_cg_cash,
+    MAX(tenn_z5_cash) AS tenn_z5_cash,
+    MAX(rex_e_midw_cash) AS rex_e_midw_cash,
+    MAX(anr_sw_cash) AS anr_sw_cash,
+    MAX(panhandle_cash) AS panhandle_cash
 FROM {{ ref('staging_v1_ice_gas_day_hourly') }}
 GROUP BY gas_day, trade_date

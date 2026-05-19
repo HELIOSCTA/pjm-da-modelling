@@ -6,7 +6,7 @@
 
 ---------------------------
 -- ICE GAS-DAY DAILY MART
--- 10 PJM-relevant hubs. One row per gas_day with trade_date pointing at
+-- 14 PJM-relevant hubs. One row per gas_day with trade_date pointing at
 -- the actual session that priced this delivery day.
 ---------------------------
 
@@ -27,6 +27,10 @@ WITH FINAL AS (
         ,tenn_z4_marcellus_cash
         ,transco_leidy_cash
         ,chicago_cg_cash
+        ,tenn_z5_cash
+        ,rex_e_midw_cash
+        ,anr_sw_cash
+        ,panhandle_cash
     FROM {{ ref('staging_v1_ice_gas_day_daily') }}
 )
 

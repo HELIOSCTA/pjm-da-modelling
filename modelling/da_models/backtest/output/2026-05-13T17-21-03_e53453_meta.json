@@ -1,0 +1,27 @@
+{
+  "run_id": "2026-05-13T17-21-03_e53453",
+  "kind": "backtest_replay",
+  "hub": "WESTERN HUB",
+  "target_dates": [
+    "2026-05-06",
+    "2026-05-07",
+    "2026-05-08",
+    "2026-05-09",
+    "2026-05-10",
+    "2026-05-11",
+    "2026-05-12"
+  ],
+  "models": [
+    "supply_stack",
+    "linear_arx_pjm_hourly",
+    "linear_arx_meteo_hourly",
+    "baseline_meteo"
+  ],
+  "rows": 672,
+  "registry_known_models": [
+    "baseline_meteo",
+    "linear_arx_meteo_hourly",
+    "linear_arx_pjm_hourly",
+    "supply_stack"
+  ]
+}

@@ -39,6 +39,59 @@ contracts" section. When you change a forecaster here, port the change to its
   and the spec's `feature_groups` reference scalar long col names
   (`load_mw_at_hour`, `solar_at_hour`, `lmp`, etc., catalogued in
   `domains.HOURLY_STEM_TO_LONG_COL`).
+- `modelling/da_models/baseline_meteo_da_price/` — passthrough of the
+  Meteologica DA-price deterministic + ENS forecast as a baseline.
+- `modelling/da_models/linear_arx_da_price/` — LEAR-style linear ARX
+  forecaster: 24 independent per-hour `Ridge` regressions, target in
+  `asinh` space, exponential recency weighting, residual-quantile bands,
+  Western Hub. Shared machinery lives at the package root (`configs.py`
+  estimator/window/band constants; `features/common.py` panel assembly;
+  `trainer.py`, `forecast.py`, `printers.py`; `run.py::run_single_day`).
+  Two variants differ only in the demand block: **`pjm_hourly/`** — PJM
+  RTO supply-demand + sub-zonal *load* (MIDATL/WEST/SOUTH); **`meteo_hourly/`**
+  — Meteologica regional supply-demand (load/solar/wind/net-load for
+  RTO + all three sub-zones, the sub-zonal renewable detail PJM doesn't
+  publish). Each variant: `config.py` (variant knobs), `builder.py`
+  (`build_panel`), `pipelines/forecast_single_day.py::run()`;
+  `meteo_hourly/` also has `pipelines/forecast_next_14_days.py` — a
+  D+1..D+14 strip that trains once, takes the further-out demand from the
+  latest published Meteologica vintage, and forward-fills the feeds that
+  don't reach the horizon (outages, ICE next-day gas) from their last
+  known value (`features/common.py::assemble_panel` grew
+  `extra_target_dates` + `forward_fill_target_cols` for this). The
+  feed-agnostic feeds (weather, ICE next-day gas, PJM outage forecast,
+  calendar + engineered interactions) and the optional toggle-able
+  backward-LMP anchor are shared. Design memo + Tier-2 roadmap (quantile
+  regression, conformal bands, multi-window):
+  `modelling/@TODO/pjm-research-for-modelling/linear_regression_model.md`.
+- `modelling/da_models/supply_stack/` — structural merit-order forecaster
+  (per `pjm-research-for-modelling/supply_stack_model.md`). **Per-unit
+  PJM fleet** (`data/pjm_fleet.parquet`, ~2,800 thermal units after
+  netting renewables off load) extracted from the legacy Excel stack
+  model — `data/_extract_fleet_from_excel.py` builds it from
+  `.archive/.excel/PJM_Stack_Model_v1_2026_mar_10.xlsx`; refresh annually
+  (or swap for a real EIA-860/PUDL pull later). Each hour: build the
+  outage-derated cost-ordered stack (`stack/merit_order.py` — `var_cost =
+  heat_rate × fuel_price + VOM + RGGI carbon`; gas units priced by the 4
+  scraped ICE hubs, coal/oil/uranium + the other gas hubs from
+  `configs.FUEL_PRICES`), dispatch the hour's net load (`stack/dispatch.py`
+  — clearing price = marginal var cost × bid-stack markup(util) +
+  congestion + hour-of-day ramp adder + reserve-utilization scarcity
+  adder(util)), Monte-Carlo bands from load/forced-outage/gas draws.
+  Forward-looking and extrapolates by construction (a heat-event day just
+  dispatches further up the convex curve), so it complements the
+  data-driven models during regime shifts; demand comes from
+  `load_meteologica_supply_demand_coalesced` (longest horizon → next-week
+  dates work). Entry: `pipelines/forecast_single_day.py::run()`.
+  **Calibration is provisional** — per-unit heat rates/VOM are real, but
+  the curves (bid markup, scarcity bands, ramp adder), the coal/oil price
+  constants, and the available-capacity assumption (currently nameplate −
+  outages, no reserve-requirement haircut → on a 108 GW net-load day it
+  sits at ~82% utilization and never reaches the scarcity bands, so it
+  under-prices heat events vs Meteologica) are hand-set, not fitted; the
+  design-memo Phase-5 backtest (price-duration-curve, marginal-fuel-match,
+  DM test) is what tunes them. Tier-2: validation/backtest harness, then
+  ensemble with the linear ARX + baseline_meteo via QRA.
 - `modelling/data/cache/` — parquet cache.
 - `modelling/streamlit_app/` — operator console.
 

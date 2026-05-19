@@ -1,0 +1,39 @@
+name: helioscta-power-pjm
+
+prefect-version: 3.0.0
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
+
+deployments:
+
+  # ────── PJM Reserve Market Results Hourly ──────
+  # Daily umbrella: scrape the PJM cleared reserve market (SR / PR /
+  # 30MIN / REG MCP + cleared MW + requirement) for the rolling D-7..D+2
+  # window, rebuild the `pjm_reserve_market_results_hourly` dbt mart,
+  # mirror to the modelling parquet cache. Consumed by the supply-stack
+  # DA-LMP model to replace the static operating-reserve constant.
+  #
+  # Backward-only feed (today and forward dates return empty), so a
+  # daily run is enough — every hour the previous day settles cleanly.
+  # Schedule it after the morning PJM publish window so D-1 is fully
+  # populated.
+
+  - name: PJM Reserve Market Results Hourly
+    entrypoint: schedulers/prefect/power/pjm/pjm_reserve_market_results_hourly_flows.py:pjm_reserve_market_results_hourly
+    work_pool:
+      name: default-agent-pool
+      work_queue_name: default
+    tags: [pjm, power, reserves, reserve_market_results]
+    schedules:
+
+      # ────── Three runs per day at 06:30 / 12:30 / 18:30 Denver ──────
+      # Cron field rules: comma-separated lists MUST NOT contain spaces.
+      # "30 6, 12, 18 * * *" is invalid (7 tokens instead of 5) and would
+      # be rejected by the deploy step; correct form is "30 6,12,18 * * *".
+      - cron: "30 6,12,18 * * *"
+        timezone: "America/Denver"

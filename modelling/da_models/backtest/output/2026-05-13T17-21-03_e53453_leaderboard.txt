@@ -1,0 +1,43 @@
+=== Point metrics -- overall ===
+             model_name   n        mae       rmse       bias   mape_pct       rmae
+         baseline_meteo 168      6.740      8.786      3.012     14.817      1.000
+linear_arx_meteo_hourly 168      4.201      5.773      0.652      9.106      0.623
+  linear_arx_pjm_hourly 168      3.879      5.344      0.033      8.434      0.575
+           supply_stack 168      6.041      9.047     -2.507     12.177      0.896
+
+=== Point metrics -- by block (OnPeak HE8-23 / OffPeak) ===
+             model_name   block   n        mae       rmse       bias       rmae
+         baseline_meteo OffPeak  56      4.236      5.071      1.135      1.000
+linear_arx_meteo_hourly OffPeak  56      2.414      3.252     -0.350      0.570
+  linear_arx_pjm_hourly OffPeak  56      2.617      3.323     -0.833      0.618
+           supply_stack OffPeak  56      4.626      8.166     -4.234      1.092
+         baseline_meteo  OnPeak 112      7.992     10.145      3.951      1.000
+linear_arx_meteo_hourly  OnPeak 112      5.094      6.685      1.152      0.637
+  linear_arx_pjm_hourly  OnPeak 112      4.509      6.109      0.465      0.564
+           supply_stack  OnPeak 112      6.749      9.456     -1.643      0.844
+
+=== Point metrics -- by day_type ===
+             model_name day_type   n        mae       rmse       bias       rmae
+         baseline_meteo  weekday 120      7.304      9.536      5.725      1.000
+linear_arx_meteo_hourly  weekday 120      4.069      5.519      1.442      0.557
+  linear_arx_pjm_hourly  weekday 120      3.723      4.986      0.681      0.510
+           supply_stack  weekday 120      6.026      8.913     -2.343      0.825
+         baseline_meteo  weekend  48      5.332      6.544     -3.768      1.000
+linear_arx_meteo_hourly  weekend  48      4.529      6.363     -1.324      0.849
+  linear_arx_pjm_hourly  weekend  48      4.268      6.149     -1.587      0.801
+           supply_stack  weekend  48      6.079      9.372     -2.917      1.140
+
+=== Quantile bands -- overall ===
+             model_name   n coverage_p10_p90 sharpness_p10_p90_mw pinball_mean
+         baseline_meteo 168            0.393               11.243        2.249
+linear_arx_meteo_hourly 168            0.935               19.295        1.492
+  linear_arx_pjm_hourly 168            0.970               20.601        1.483
+           supply_stack 168            0.458                7.224        2.494
+
+=== Price duration curve -- price at percentile ===
+             model_name        p05        p25        p50        p75        p95
+         baseline_meteo     85.820     56.400     41.420     33.990     26.728
+linear_arx_meteo_hourly     79.487     52.176     39.615     33.880     29.164
+  linear_arx_pjm_hourly     79.960     50.991     39.503     33.696     29.332
+           supply_stack     65.474     48.240     38.448     33.401     30.850
+                 actual     75.635     50.797     39.534     33.343     29.653

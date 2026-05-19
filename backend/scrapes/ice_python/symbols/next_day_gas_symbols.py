@@ -179,6 +179,13 @@ NEXT_DAY_GAS_SYMBOLS: list[dict] = [
         "region": "northeast",
     },
     {
+        "symbol": "Z28 D1-IPG",
+        "description": "Tennessee Z5 (TGP-Z5 200L)",
+        "product_type": "gas",
+        "contract_type": "next_day",
+        "region": "northeast",
+    },
+    {
         "symbol": "YQE D1-IPG",
         "description": "Transco Leidy",
         "product_type": "gas",
@@ -233,6 +240,27 @@ NEXT_DAY_GAS_SYMBOLS: list[dict] = [
     {
         "symbol": "XJZ D1-IPG",
         "description": "MichCon",
+        "product_type": "gas",
+        "contract_type": "next_day",
+        "region": "midwest",
+    },
+    {
+        "symbol": "YVQ D1-IPG",
+        "description": "REX East-Midwest",
+        "product_type": "gas",
+        "contract_type": "next_day",
+        "region": "midwest",
+    },
+    {
+        "symbol": "XZL D1-IPG",
+        "description": "ANR Southwest",
+        "product_type": "gas",
+        "contract_type": "next_day",
+        "region": "midwest",
+    },
+    {
+        "symbol": "XIH D1-IPG",
+        "description": "Panhandle",
         "product_type": "gas",
         "contract_type": "next_day",
         "region": "midwest",

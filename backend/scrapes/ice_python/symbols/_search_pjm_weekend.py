@@ -1,14 +1,20 @@
-"""Use icepython's get_search to find the PJM WH DA Off-Peak Weekend symbol.
+"""Verify 3 user-supplied ICE next-day gas symbol candidates.
 
-Round-3 discovery: round 1 found PDO is the DA Off-Peak root, round 2 found
-no weekend tenor on PDO. icepython exposes get_search / get_search_facets /
-get_search_filters — let's ask ICE directly instead of guessing tenors.
+Tennessee Z5 (`Z28 D1-IPG`) is already added to `next_day_gas_symbols.py`.
+These 3 still need a real timeseries pull to confirm they exist and return
+prices in the same shape as the existing gas hubs:
+
+    YVQ D1-IPG  -> REX East-Midwest
+    XZL D1-IPG  -> ANR Southwest
+    XIH D1-IPG  -> Panhandle Oklahoma
+
+Also tries the search-symbol lookup so we can see the canonical description.
 """
 
 from __future__ import annotations
 
 import sys
-from inspect import signature
+from datetime import datetime, timedelta
 from pathlib import Path
 from pprint import pprint
 
@@ -19,26 +25,59 @@ if str(_PROJECT_ROOT) not in sys.path:
 from backend.scrapes.ice_python import utils  # noqa: E402
 
 
-def _try(label: str, fn, *args, **kwargs) -> None:
-    print()
-    print("-" * 70)
-    print(f">>> {label}")
-    print("-" * 70)
+CANDIDATES: list[tuple[str, str]] = [
+    ("YVQ D1-IPG", "REX East-Midwest"),
+    ("XZL D1-IPG", "ANR Southwest"),
+    ("XIH D1-IPG", "Panhandle Oklahoma"),
+]
+
+
+def _describe(ice, symbol: str) -> None:
+    """Look the symbol up in get_search so we see ICE's own description."""
     try:
-        result = fn(*args, **kwargs)
+        result = ice.get_search(symbol)
     except Exception as exc:
-        print(f"  ERROR: {exc}")
+        print(f"  search ERROR: {exc}")
         return
-    if hasattr(result, "__len__"):
-        try:
-            n = len(result)
-            print(f"  (len={n})")
-            preview = result[:30] if n > 30 else result
-            pprint(preview)
-            return
-        except Exception:
-            pass
-    pprint(result)
+    if not result:
+        print("  search: no hits")
+        return
+    # exact match first
+    exact = [row for row in result if row[0] == symbol]
+    if exact:
+        print("  search exact:")
+        for row in exact:
+            print(f"    {row}")
+        return
+    print(f"  search (no exact match, top 3 of {len(result)}):")
+    for row in result[:3]:
+        print(f"    {row}")
+
+
+def _pull(symbol: str) -> None:
+    start = datetime.now() - timedelta(days=30)
+    end = datetime.now()
+    try:
+        df = utils.get_timeseries(
+            symbol=symbol,
+            data_type="VWAP Close",
+            granularity="D",
+            start_date=start,
+            end_date=end,
+            date_col=utils.DEFAULT_DATE_COLUMN,
+            date_format=utils.DEFAULT_DATE_FORMAT,
+        )
+    except Exception as exc:
+        print(f"  pull ERROR: {exc}")
+        return
+    if df is None or df.empty:
+        print("  pull: empty frame")
+        return
+    print(f"  pull: rows={len(df)}, columns={list(df.columns)}")
+    print("  head:")
+    print(df.head(3).to_string(index=False))
+    print("  tail:")
+    print(df.tail(3).to_string(index=False))
 
 
 def run() -> None:
@@ -49,36 +88,13 @@ def run() -> None:
 
     ice = utils.get_icepython_module()
 
-    for name in ("get_search", "get_search_facets", "get_search_filters"):
-        fn = getattr(ice, name, None)
-        if fn is None:
-            continue
-        try:
-            sig = signature(fn)
-        except (TypeError, ValueError):
-            sig = "(introspection unavailable)"
-        print(f"{name}{sig}")
-        doc = (fn.__doc__ or "").strip()
-        if doc:
-            print(f"  doc: {doc[:400]}")
-
-    # Try get_search_facets / filters with no args first to learn the shape.
-    _try("get_search_facets()", ice.get_search_facets)
-    _try("get_search_filters()", ice.get_search_filters)
-
-    # Now try a few search queries.
-    queries = [
-        "PJM Off-Peak Weekend",
-        "PJM Western Hub Off-Peak Weekend",
-        "PJM WH DA Off-Peak Weekend",
-        "PJM Off-Peak Wknd",
-        "PJM Weekend",
-        "PJM 2x16",
-        "PJM Off-Peak",
-        "PDO",
-    ]
-    for q in queries:
-        _try(f"get_search({q!r})", ice.get_search, q)
+    for symbol, label in CANDIDATES:
+        print()
+        print("=" * 70)
+        print(f"### {symbol}  ({label})")
+        print("=" * 70)
+        _describe(ice, symbol)
+        _pull(symbol)
 
 
 if __name__ == "__main__":

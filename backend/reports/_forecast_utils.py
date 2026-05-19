@@ -252,6 +252,33 @@ def empty_html(msg: str) -> str:
     return f"<div style='padding:14px;color:#f87171;font-family:monospace;'>{msg}</div>"
 
 
+def deferred_plotly_html(
+    fig: go.Figure,
+    *,
+    div_id: str,
+    height: int = 420,
+    config: dict | None = None,
+) -> str:
+    """Placeholder + JSON spec; dashboard runtime calls Plotly.newPlot
+    only when the chart's parent group becomes visible.
+
+    Avoids 100+ inline Plotly.newPlot calls firing at page load.
+    """
+    import plotly.io as pio
+    fig_json = pio.to_json(fig, validate=False)
+    config_json = json.dumps(config or {})
+    payload = (
+        f'{{"figure":{fig_json},"config":{config_json}}}'
+        .replace("</", "<\\/")
+    )
+    return (
+        f'<div id="{div_id}" class="plotly-deferred" '
+        f'style="min-height:{height}px;"></div>'
+        f'<script type="application/json" '
+        f'data-plotly-div="{div_id}">{payload}</script>'
+    )
+
+
 def cell_class(val, sign_colors: bool) -> str:
     if not sign_colors or pd.isna(val):
         return ""

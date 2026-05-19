@@ -291,7 +291,16 @@ def run_forecast(
     cache_dir: Path | None = None,
     pool: pd.DataFrame | None = None,
     feature_group_weights_override: dict[str, float] | None = None,
+    query: pd.DataFrame | None = None,
 ) -> dict:
+    """Run the Sunny KNN forecast for one target date.
+
+    ``query`` lets callers inject a pre-built 24-row feature frame —
+    the multi-day ``meteo_rto_hourly`` horizon pipeline uses it to feed
+    Meteologica-sourced + forward-filled feature rows without re-running
+    ``build_query_row``'s lead-1 PJM chain. When ``None`` (default), the
+    query is built in-process via ``build_query_row(target_date, ...)``.
+    """
     cfg = config or configs.KnnModelConfig()
     if target_date is None:
         target_date = cfg.resolved_target_date()
@@ -309,7 +318,10 @@ def run_forecast(
             cache_dir=cache_dir,
             spec=spec,
         )
-    query = build_query_row(target_date=target_date, cache_dir=cache_dir, spec=spec)
+    if query is None:
+        query = build_query_row(
+            target_date=target_date, cache_dir=cache_dir, spec=spec
+        )
     dates_meta = load_pjm_dates_daily(cache_dir=cache_dir)
 
     from da_models.like_day_model_knn_sunny.pjm_rto_hourly.engine import (

@@ -1,6 +1,6 @@
 {
     "python.defaultInterpreterPath": "C:/Users/AidanKeaveny/miniconda3/envs/helioscta-pjm-da-dev/python.exe",
-    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvironment": false,
     "terminal.integrated.defaultProfile.windows": "Git Bash",
 
     // Color Customizations — active window gets #0f3460, inactive falls back to theme

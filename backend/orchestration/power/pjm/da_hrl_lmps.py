@@ -31,7 +31,7 @@ logger = logging_utils.init_logging(
 """
 
 
-POLL_CEILING_SECONDS = 2 * 60 * 60  # 2 hours
+POLL_CEILING_SECONDS = 5 * 60 * 60  # 5 hours — single 11 AM MST run polls through 4 PM MST
 
 
 def _build_url(

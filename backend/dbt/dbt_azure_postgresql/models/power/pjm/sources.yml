@@ -33,6 +33,8 @@ sources:
         description: "Ancillary services prices (synchronized reserve, non-synchronized reserve, secondary reserve, regulation) from PJM Data Miner 2. Hourly grain."
       - name: dispatched_reserves
         description: "Dispatched reserve quantity, requirement, clearing price, and shortage indicator by area and reserve type from PJM Data Miner 2. 5-minute updates, 30-day retention."
+      - name: reserve_market_results
+        description: "PJM cleared reserve market: clearing price (MCP), requirement (as_req_mw), cleared supply (total_mw) and supply-source breakdowns (as_mw, ss_mw, tier1_mw, nsr_mw, dsr_as_mw) by service (SR = Synchronized Reserve, PR = Primary Reserve, 30MIN = 30-Minute Reserve, REG = Regulation with separate capability/performance prices) and locale (PJM_RTO system-wide, MAD = Mid-Atlantic-Dominion sub-zone). From PJM Data Miner 2 reserve_market_results feed. Hourly grain, first available 2013-06-14, indefinite retention. Backward-looking only — today and forward dates return empty. Highest-impact regime feature for the supply-stack model — operating-reserve MW (SR + PR + 30MIN) is what's co-optimised out of the energy market each hour."
       - name: unverified_five_min_lmps
         description: "Unverified 5-minute real-time LMPs by pricing hub from PJM Data Miner 2. Reveals intra-hour spike severity masked by hourly averages."
       - name: solar_generation_by_area

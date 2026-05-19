@@ -5,7 +5,7 @@
 }}
 
 ---------------------------
--- HOURLY GAS-DAY STAGING (10 PJM-relevant hubs)
+-- HOURLY GAS-DAY STAGING (14 PJM-relevant hubs)
 -- Source pivots ICE prices by trade_date and forward-fills gaps at
 -- trade-date grain before joining the spine. This staging is a
 -- pass-through that pins the column contract for the published mart.
@@ -29,5 +29,9 @@ SELECT
     transco_z5_north_cash,
     tenn_z4_marcellus_cash,
     transco_leidy_cash,
-    chicago_cg_cash
+    chicago_cg_cash,
+    tenn_z5_cash,
+    rex_e_midw_cash,
+    anr_sw_cash,
+    panhandle_cash
 FROM {{ ref('source_v1_ice_gas_day_hourly') }}

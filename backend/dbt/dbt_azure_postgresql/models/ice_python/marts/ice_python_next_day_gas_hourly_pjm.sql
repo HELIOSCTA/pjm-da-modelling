@@ -63,7 +63,11 @@ GAS_DAILY AS (
         transco_z5_north_cash,
         tenn_z4_marcellus_cash,
         transco_leidy_cash,
-        chicago_cg_cash
+        chicago_cg_cash,
+        tenn_z5_cash,
+        rex_e_midw_cash,
+        anr_sw_cash,
+        panhandle_cash
     FROM {{ ref('staging_v1_ice_gas_day_daily') }}
 ),
 
@@ -89,7 +93,11 @@ FINAL AS (
         g.transco_z5_north_cash,
         g.tenn_z4_marcellus_cash,
         g.transco_leidy_cash,
-        g.chicago_cg_cash
+        g.chicago_cg_cash,
+        g.tenn_z5_cash,
+        g.rex_e_midw_cash,
+        g.anr_sw_cash,
+        g.panhandle_cash
     FROM PJM_HOURS_WITH_GAS_DAY p
     INNER JOIN GAS_DAILY g
         ON p.gas_day = g.gas_day

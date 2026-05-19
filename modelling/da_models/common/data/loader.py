@@ -49,6 +49,7 @@ _DEFAULT_PATTERNS: dict[str, tuple[str, ...]] = {
     "day_gen_capacity": ("pjm_day_gen_capacity_daily",),
     "installed_capacity": ("ea_pjm_installed_capacity_monthly",),
     "pjm_dates_daily": ("pjm_dates_daily",),
+    "reserve_market_results_hourly": ("pjm_reserve_market_results_hourly",),
 }
 
 _DATE_CANDIDATES = ("date", "forecast_date")
@@ -695,6 +696,11 @@ def _normalize_weather_hourly(df: pd.DataFrame) -> pd.DataFrame:
     temp_col = _first_present(
         output.columns, ("temperature", "temp", "temperature_f", "temp_f")
     )
+    # WSI forecast parquet carries the vintage stamp; observed does not.
+    exec_col = _first_present(
+        output.columns,
+        ("forecast_execution_datetime_utc", "forecast_execution_datetime"),
+    )
 
     if date_col is None or hour_col is None or temp_col is None:
         raise KeyError(
@@ -753,6 +759,24 @@ def _normalize_weather_hourly(df: pd.DataFrame) -> pd.DataFrame:
     normalized = normalized.groupby(["date", "hour_ending"], as_index=False).mean(
         numeric_only=True
     )
+
+    # Re-attach the forecast vintage stamp (one per date), if present. Kept
+    # out of the numeric groupby above so it survives as a datetime.
+    if exec_col is not None:
+        execs = output[[date_col, exec_col]].rename(
+            columns={date_col: "date", exec_col: "forecast_executed_utc"}
+        )
+        execs["date"] = _coerce_date(execs, "date")
+        execs["forecast_executed_utc"] = pd.to_datetime(
+            execs["forecast_executed_utc"], errors="coerce"
+        )
+        execs = (
+            execs.dropna(subset=["date"])
+            .groupby("date", as_index=False)["forecast_executed_utc"]
+            .max()
+        )
+        normalized = normalized.merge(execs, on="date", how="left")
+
     return normalized
 
 
@@ -1225,6 +1249,53 @@ def _normalize_pjm_dates_daily(df: pd.DataFrame) -> pd.DataFrame:
     return output.sort_values("date").reset_index(drop=True)
 
 
+def _normalize_reserve_market_results_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """PJM cleared operating reserves (system-wide PJM_RTO locale), wide
+    per (date, hour_ending).
+
+    The dbt mart ``pjm_reserve_market_results_hourly`` is already clean
+    (one row per delivery hour, per-service cleared MW / requirement / MCP
+    columns, plus derived ``operating_reserve_mw_cleared`` /
+    ``operating_reserve_requirement_mw`` / ``reserve_scarcity_flag``).
+    This normalizer just type-coerces ``date`` / ``hour_ending`` and
+    drops malformed rows. Backward-only: today and forward dates won't
+    have rows; forward-looking consumers compute a rolling profile.
+    """
+    output = df.copy()
+    if "date" not in output.columns or "hour_ending" not in output.columns:
+        raise KeyError(
+            "Could not normalize reserve_market_results_hourly; expected date/hour columns. "
+            f"Columns: {list(output.columns)}"
+        )
+    output["date"] = _coerce_date(output, "date")
+    output["hour_ending"] = _coerce_hour(output, "hour_ending")
+    output = output.dropna(subset=["date", "hour_ending"])
+    output["hour_ending"] = output["hour_ending"].astype(int)
+    for col in (
+        "sr_total_mw",
+        "sr_requirement_mw",
+        "sr_mcp",
+        "pr_total_mw",
+        "pr_requirement_mw",
+        "pr_mcp",
+        "pr_nsr_mw",
+        "min30_total_mw",
+        "min30_requirement_mw",
+        "min30_mcp",
+        "reg_total_mw",
+        "reg_requirement_mw",
+        "reg_ccp",
+        "reg_pcp",
+        "operating_reserve_mw_cleared",
+        "operating_reserve_requirement_mw",
+    ):
+        if col in output.columns:
+            output[col] = pd.to_numeric(output[col], errors="coerce")
+    if "reserve_scarcity_flag" in output.columns:
+        output["reserve_scarcity_flag"] = output["reserve_scarcity_flag"].astype(bool)
+    return output.sort_values(["date", "hour_ending"]).reset_index(drop=True)
+
+
 _NORMALIZERS = {
     "lmps_da": _normalize_lmps_da,
     "lmps_da_sep": _normalize_lmps_da_sep,
@@ -1252,6 +1323,7 @@ _NORMALIZERS = {
     "day_gen_capacity": _normalize_day_gen_capacity,
     "installed_capacity": _normalize_installed_capacity,
     "pjm_dates_daily": _normalize_pjm_dates_daily,
+    "reserve_market_results_hourly": _normalize_reserve_market_results_hourly,
 }
 
 
@@ -2293,6 +2365,30 @@ def load_pjm_dates_daily(
     """
     return _load_dataset(
         "pjm_dates_daily", path=path, cache_dir=cache_dir, columns=columns
+    )
+
+
+def load_reserve_market_results_hourly(
+    *,
+    path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """PJM cleared operating-reserve market, hourly, system-wide (PJM_RTO).
+
+    Wide per (date, hour_ending) with per-service columns (SR / PR / 30MIN
+    / REG) for cleared MW, requirement MW, and MCP, plus the two derived
+    columns the supply-stack model reads -- ``operating_reserve_mw_cleared``
+    (SR + PR + 30MIN total_mw) and ``operating_reserve_requirement_mw``
+    (SR + PR + 30MIN as_req_mw, the more stable forward proxy) -- and the
+    ``reserve_scarcity_flag`` boolean (MCP > $10 in any of SR/PR/30MIN).
+
+    Backward-only feed: today and forward delivery dates won't have rows.
+    Forward-looking consumers compute a rolling profile by (DOW, HE) from
+    the historical rows. Mart: ``pjm_da_modelling_cleaned.pjm_reserve_market_results_hourly``.
+    """
+    return _load_dataset(
+        "reserve_market_results_hourly", path=path, cache_dir=cache_dir, columns=columns
     )
 
 

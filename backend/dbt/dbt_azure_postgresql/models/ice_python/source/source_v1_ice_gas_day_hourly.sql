@@ -5,7 +5,7 @@
 }}
 
 ---------------------------
--- ICE NEXT-DAY GAS — gas_day-keyed source (10 PJM-relevant hubs)
+-- ICE NEXT-DAY GAS — gas_day-keyed source (14 PJM-relevant hubs)
 -- Pivots the raw ICE feed by trade_date into one daily AVG per hub,
 -- forward-fills sparse trade_dates at trade-date grain (small dataset
 -- of ~1.5k weekday sessions), then joins the gas-day spine so every
@@ -25,6 +25,10 @@
     {'symbol': 'Z1Q D1-IPG',  'col': 'tenn_z4_marcellus_cash'},
     {'symbol': 'YQE D1-IPG',  'col': 'transco_leidy_cash'},
     {'symbol': 'YHF D1-IPG',  'col': 'chicago_cg_cash'},
+    {'symbol': 'Z28 D1-IPG',  'col': 'tenn_z5_cash'},
+    {'symbol': 'YVQ D1-IPG',  'col': 'rex_e_midw_cash'},
+    {'symbol': 'XZL D1-IPG',  'col': 'anr_sw_cash'},
+    {'symbol': 'XIH D1-IPG',  'col': 'panhandle_cash'},
 ] %}
 
 WITH SPINE AS (

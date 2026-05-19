@@ -1,8 +1,137 @@
 
 ### Trading
-### Notes
+### Term
+### Fundies
 ### Reading
 - #### Gridstatus
+
+
+---------------------
+
+## 2026-05-18 (Monday)
+
+### Trading
+
+Emergency Messages
+
+Capacity Peak Forecast
+
+Forced outages came in strong
+
+Changes to Forecasts
+
+
+BULLISH WHUB
+- CONASTON
+- LADYSMTH
+- MEADOW BROOK / BEDINGTON
+
+NOT BULLISH WHUB
+- EDWARDS FERRY - DICKERSON STATION D 230 KV
+- CROZET_230KV291B
+
+
+### Term
+### Fundies
+### Reading
+
+- #### Gridstatus
+PJM issued a Maximum Generation Emergency/Load Management Alert this morning.
+
+This alert, which is issued concurrently with an EEA1, indicates that the RTO may be prepared to utilize demand response and or bring generation online beyond economic limits.
+
+The RTO is expected to see tight conditions emerge tomorrow as the RTO has brought its load forecast up to 134 GW over the evening peak. At the same time, even after issuing a maintenance outage recall alert, generation outages have remained stubborn, currently at 47.4 GW today and expected to drop to 41 GW tomorrow.
+
+Combined load and outages put the RTO close to an effective 180 GW peak over the evening, which could drive serious levels of energy price volatility and may even, as today's alert alludes to, drive some demand response given how tight margins could be.
+
+Models still point to feels like temperatures in the mid-90s for much of the I-95 corridor, while also indicating strong demand suppression risk in COMED with potentially strong storms in the region, limiting demand and likely driving strong W-E congestion throughout much of tomorrow and likely through Wednesday.
+
+
+- #### PJM Emergency Message
+A Maximum Generation Emergency/Load Management Alert and an EEA1 have been issued from 00:01 on 05.18.2026 through 23:59 on 05.18.2026 . Maximum Generation Emergency has been called into the operating capacity. Per M-13, Generation Dispatchers should provide PJM with an estimate of the amount of time they need to return to service any generator on a Planned Outage. This 'Early Return Time' should be updated via eDART, and will not affect the Planned Outage estimated end date.
+View Posting: https://emergencyprocedures.pjm.com/ep/pages/viewposting.jsf?id=105085
+
+### Trading
+### Term
+### Fundies
+### Reading
+- #### Gridstatus
+
+## 2026-05-16 (Saturday)
+
+GM
+
+On Outages Monday is still forecasted for 41 gws, risk of forced coming in stronger.
+
+Saw changes to this Graceton line today
+
+
+
+PJM forecast got revised higher for Monday mostly from MidAtl.
+
+PJM and Meteologica mostly disagree on MidATL for Mon-Wed.
+
+
+
+
+
+
+## 2026-05-14 (Thursday)
+
+### Trading
+### Term
+
+- Why is June getting Hit?
+
+- Cal 27, mostly from Summer 27
+  - RGGI?
+
+### Fundies
+
+- Gas plants (If this warren county and st charles come back)
+  - St charles
+
+- Forced outages came in softer today
+
+- COMED nuclear running lower but wind is picking up 3 gw tmw
+  - Dresden / CPV Three Rivers / Morris 
+  - Quad Cities / Cordova
+  - Kendall Co. (Gas running stronger)
+
+System Energy
+- Should clear $1-2 weaker than yesterday at 38.2 (last Friday cleared 37.4)
+
+- Constraints (lower load but stronger wind / solar)
+  - LADYSMTH HIT575 CB 500KV
+  - CONASTON_500KVCNS-PEA_1_LN
+
+RISK/REWARD
+- 42 as high clear / 38 as low 
+
+### Reading
+
+- #### Gridstatus
+
+Cooling load has overperformed across PJM today, particularly in Eastern PJM, as temperatures have risen into the 70s ahead of a round of rain.
+
+This has led to an increase in energy price volatility, but has also helped drive increased Ladysmith CB congestion.
+
+While the portions of Dominion that are seeing the highest temperatures are on the source, these areas, except for Richmond and the Newport News area, have relatively low load levels compared to areas on the sink, like NoVA, and its rich collection of data centers, as well as further major population centers North along the I-95 corridor.
+
+Beyond the side cooling load, outages like the Ladysmith - Elmont 500kV line are contributing to increased volatility this afternoon. One thing that I can confirm has at least partially helped to push back on flows is Brandon Shores. I have eyes on the plant as I'm waiting for my flight back to Boston, so I'll report back if there is any visible change in plant output!
+
+- #### Gridstatus
+I'm wrapping up my time at the PJM meeting of members, and the shared role of each state in the RTO's operations was a key part of each discussion, so in honor of that, let's take a look at seasonal changes in flows between the PJM states.
+
+To do so, I used the PJM Net Exports By State Hourly dataset. *Importantly, this dataset doesn't measure actual power flows, just the delta between load and generation in each state. * In Spring, and throughout other seasons, as I'll get into, there's a clear split across PJM's Western and Eastern states. Almost all of the RTO's Eastern states, except PA, are large net importers, while the West is dominated by large exporters, such as Illinois.
+
+Pennsylvania is the largest exporter by far, enabled by its large fleet of thermal generation and large history within the energy sector, with large access to coal and increasingly Marcellus gas. On the other hand, Virginia has seen flows into the Commonwealth increase this spring, due in part to an increase in off-peak load that is likely due to additional data center development.
+
+In the West, Illinois' role as a net exporter is often made clear by the state's exposure to negative congestion. Numerous baseload nuclear plants, in addition to nearby wind generation, are often more than able to meet the region's load, which leads to prolonged negative pricing, like we have seen today.
+
+I'l keep digging into the seasonal trends across regions over the week, and how this can translate into risks over the remainder of the year.
+
+--------
 
 ## 2026-05-11 (Monday)
 

@@ -189,9 +189,40 @@ PJM_RTO_HOURLY_SUNNY_FULL_SPEC = ModelSpec(
     ),
 )
 
+# Meteologica-fed sibling of the default sunny spec. Uses the same scalar
+# domains *minus* temperature_scalar — the Meteologica 14-day horizon
+# outruns the weather-forecast mart, so the variant drops temperature
+# rather than carrying a stale signal. Pool is unchanged (historical
+# RT/lead-1 sources); only the target-date query is sourced from
+# Meteologica latest_only + forward-filled outage / gas. See
+# ``meteo_rto_hourly/`` for the variant pipelines.
+METEO_RTO_HOURLY_SUNNY_SPEC = ModelSpec(
+    name="meteo_rto_hourly_sunny",
+    description=(
+        "Sunny scalar features sourced from Meteologica's latest published "
+        "regional vintage for D+1..D+14 (load + load ramps + solar + wind + "
+        "net_load) plus WSI hourly weather forecast (temperature) + "
+        "daily-broadcast outage / gas / calendar. Temperature relies on the "
+        "WSI forecast horizon (~14 days); horizon-edge days that fall off "
+        "the WSI feed leave temp_at_hour NaN and the strip flags feat_ok=False."
+    ),
+    match_unit="hour",
+    domains=(
+        "rto_load_scalar",
+        "load_ramps_scalar",
+        "temperature_scalar",
+        "renewable_at_hour_scalar",
+        "rto_net_load_scalar",
+        "outages_scalar",
+        "gas_scalar",
+        "calendar_scalar",
+    ),
+)
+
 MODEL_REGISTRY: dict[str, ModelSpec] = {
     PJM_RTO_HOURLY_SUNNY_SPEC.name: PJM_RTO_HOURLY_SUNNY_SPEC,
     PJM_RTO_HOURLY_SUNNY_FULL_SPEC.name: PJM_RTO_HOURLY_SUNNY_FULL_SPEC,
+    METEO_RTO_HOURLY_SUNNY_SPEC.name: METEO_RTO_HOURLY_SUNNY_SPEC,
 }
 
 DEFAULT_MODEL: str = PJM_RTO_HOURLY_SUNNY_SPEC.name

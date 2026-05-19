@@ -22,6 +22,6 @@ deployments:
     tags: [pjm, power, lmps_da]
     schedules:
 
-      # ────── Daily run at 11:00 AM MST (1:00 PM EPT), polls every 10s until data lands ──────
+      # ────── Daily run at 11:00 AM MST (1:00 PM EPT), polls until 4:00 PM MST (6:00 PM EPT) ──────
       - cron: "0 11 * * *"
         timezone: "America/Denver"

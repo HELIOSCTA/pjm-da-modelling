@@ -711,6 +711,37 @@ class HTMLDashboardBuilder:
     <script>
         const DEFAULT_GROUP_ID = "{first_active_group}";
 
+        function _initDeferredPlotly() {{
+            // Lazy-init any .plotly-deferred placeholders inside currently
+            // visible sections. Each placeholder has a sibling
+            // <script type="application/json" data-plotly-div="..."> with
+            // the figure spec. Inlining 100+ Plotly.newPlot calls at page
+            // load is what makes large dashboards feel sluggish — running
+            // them on group activation amortizes the cost.
+            if (!window.Plotly) return;
+            document.querySelectorAll(
+                '.content-section:not(.group-hidden) .plotly-deferred:not(.plotly-ready)'
+            ).forEach(div => {{
+                const spec = document.querySelector(
+                    'script[data-plotly-div="' + div.id + '"]'
+                );
+                if (!spec) return;
+                try {{
+                    const parsed = JSON.parse(spec.textContent);
+                    const fig = parsed.figure || parsed;
+                    Plotly.newPlot(
+                        div,
+                        fig.data || [],
+                        fig.layout || {{}},
+                        parsed.config || {{}}
+                    );
+                    div.classList.add('plotly-ready');
+                }} catch (e) {{
+                    console.error('plotly-deferred init failed for', div.id, e);
+                }}
+            }});
+        }}
+
         function setActiveGroup(groupId) {{
             // Outer pane highlight
             document.querySelectorAll('.outer-nav-item').forEach(el => {{
@@ -733,6 +764,9 @@ class HTMLDashboardBuilder:
                 '.inner-nav-group:not(.group-hidden) .nav-item'
             );
             if (firstNav) firstNav.classList.add('active');
+
+            // Init deferred charts now that this group's sections are visible.
+            _initDeferredPlotly();
 
             // Plotly charts that were rendered while their section was hidden
             // may have stale layout sizes — force a resize after they reappear.
